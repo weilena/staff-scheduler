@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>員工打卡|大忠店・謎先生</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI","Microsoft JhengHei",sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 16px}
+h1{font-size:20px;margin-bottom:4px}
+.sub{color:#94a3b8;font-size:13px;margin-bottom:20px}
+.card{background:#1e293b;border-radius:16px;padding:18px;width:100%;max-width:420px;margin-bottom:14px}
+.roster{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.roster button{background:#334155;border:none;color:#e2e8f0;padding:14px 6px;border-radius:10px;font-size:16px;cursor:pointer}
+.roster button.on{background:#2563eb;font-weight:700}
+input{width:100%;border:none;border-radius:10px;padding:14px;font-size:20px;text-align:center;letter-spacing:6px;background:#0f172a;color:#fff;margin:10px 0}
+.btns{display:flex;gap:12px}
+.btns button{flex:1;border:none;border-radius:14px;padding:22px 0;font-size:20px;font-weight:700;cursor:pointer;color:#fff}
+.in{background:#059669}.out{background:#dc2626}
+.btns button:disabled{opacity:.35}
+.status{font-size:15px;line-height:1.7;color:#cbd5e1}
+.msg{min-height:24px;font-size:15px;margin-top:6px}
+.ok{color:#34d399}.err{color:#f87171}
+table{width:100%;border-collapse:collapse;font-size:14px;margin-top:8px}
+td{padding:5px 4px;border-bottom:1px solid #334155}
+.pill{padding:1px 10px;border-radius:20px;font-size:12.5px}
+.pin{background:#065f46;color:#d1fae5}.pout{background:#7f1d1d;color:#fecaca}
+</style>
+</head>
+<body>
+<h1>🕐 員工打卡</h1>
+<p class="sub">大忠店・謎先生|選自己 → 輸入 PIN → 打卡</p>
+
+<div class="card">
+  <div class="roster" id="roster"><button disabled>載入中…</button></div>
+</div>
+
+<div class="card" id="panel" style="display:none">
+  <div class="status" id="who"></div>
+  <input id="pin" inputmode="numeric" maxlength="6" placeholder="PIN" autocomplete="off">
+  <div class="btns">
+    <button class="in"  id="btnIn"  onclick="punch('in')">上班</button>
+    <button class="out" id="btnOut" onclick="punch('out')">下班</button>
+  </div>
+  <div class="msg" id="msg"></div>
+  <table id="today"></table>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="config.js"></script>
+<script>
+const sbc=supabase.createClient(CFG.SUPABASE_URL,CFG.SUPABASE_ANON_KEY);
+let me=null,busy=false;
+
+async function loadRoster(){
+  const{data,error}=await sbc.rpc('punch_roster');
+  const box=document.getElementById('roster');
+  if(error||!data||!data.length){
+    box.innerHTML='<button disabled>'+(error?'連線失敗':'尚無可打卡員工(請管理者先設定 PIN)')+'</button>';
+    return;
+  }
+  box.innerHTML=data.map(e=>`<button onclick="pick('${e.id}','${e.name.replace(/'/g,'')}')" id="r_${e.id}">${e.name}</button>`).join('');
+  const saved=localStorage.getItem('punchMe');
+  if(saved){
+    const s=JSON.parse(saved);
+    if(data.some(e=>e.id===s.id)){pick(s.id,s.name);document.getElementById('pin').value=s.pin||'';refreshStatus()}
+  }
+}
+function pick(id,name){
+  me={id,name};
+  document.querySelectorAll('.roster button').forEach(b=>b.classList.remove('on'));
+  const btn=document.getElementById('r_'+id);if(btn)btn.classList.add('on');
+  document.getElementById('panel').style.display='';
+  document.getElementById('who').textContent=name+',你好!';
+  document.getElementById('msg').textContent='';
+  document.getElementById('today').innerHTML='';
+}
+async function refreshStatus(){
+  const pin=document.getElementById('pin').value.trim();
+  if(!me||!pin)return;
+  const{data}=await sbc.rpc('punch_status',{p_emp:me.id,p_pin:pin});
+  if(data&&data.ok)renderStatus(data);
+}
+function renderStatus(d){
+  const onDuty=d.last_type==='in';
+  document.getElementById('who').innerHTML=d.name+',目前 <b style="color:'+(onDuty?'#34d399':'#94a3b8')+'">'+(onDuty?'上班中(自 '+String(d.last_ts).slice(11,16)+')':'未上班')+'</b>';
+  document.getElementById('today').innerHTML=(d.today||[]).map(p=>
+    '<tr><td>'+String(p.ts).slice(11,16)+'</td><td><span class="pill '+(p.type==='in'?'pin':'pout')+'">'+(p.type==='in'?'上班':'下班')+'</span></td></tr>').join('');
+}
+async function punch(type){
+  if(busy)return;
+  const pin=document.getElementById('pin').value.trim();
+  const msg=document.getElementById('msg');
+  if(!me){msg.className='msg err';msg.textContent='請先選擇自己的名字';return}
+  if(!pin){msg.className='msg err';msg.textContent='請輸入 PIN';return}
+  busy=true;
+  document.getElementById('btnIn').disabled=document.getElementById('btnOut').disabled=true;
+  try{
+    const{data,error}=await sbc.rpc('do_punch',{p_emp:me.id,p_pin:pin,p_type:type});
+    if(error)throw new Error(error.message);
+    if(!data.ok)throw new Error(data.msg);
+    msg.className='msg ok';
+    msg.textContent='✅ '+data.name+' '+(type==='in'?'上班':'下班')+'打卡成功 '+String(data.ts).slice(11,16);
+    localStorage.setItem('punchMe',JSON.stringify({id:me.id,name:me.name,pin}));
+    await refreshStatus();
+  }catch(e){
+    msg.className='msg err';msg.textContent='❌ '+e.message;
+  }finally{
+    busy=false;
+    document.getElementById('btnIn').disabled=document.getElementById('btnOut').disabled=false;
+  }
+}
+document.getElementById('pin').addEventListener('change',refreshStatus);
+loadRoster();
+</script>
+</body>
+</html>
