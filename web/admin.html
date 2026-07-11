@@ -82,6 +82,7 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
 .punch-btns{display:flex;gap:14px;margin:10px 0}
 .punch-btns button{flex:1;padding:20px;font-size:19px;border-radius:14px}
 .big-status{font-size:15px;padding:10px 12px;border-radius:10px;background:#f1f5f9}
+.cancelled{opacity:.58;text-decoration:line-through;filter:grayscale(.7)}
 .pill{padding:2px 10px;border-radius:20px;font-size:12.5px;font-weight:600}
 .pill.in{background:#d1fae5;color:#065f46}
 .pill.out{background:#e2e8f0;color:#334155}
@@ -151,6 +152,10 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
       <div class="field grow"><label>月薪(元)</label><input type="number" id="efSalary" min="0" placeholder="正職用"></div>
     </div>
     <div class="field"><label>打卡 PIN(4–6 位數字;店員手機 QR 打卡用,留空=不開放)</label><input id="efPin" maxlength="6" inputmode="numeric" placeholder="例:1234"></div>
+    <div class="row">
+      <div class="field grow"><label>到職日</label><input type="date" id="efStartDate"></div>
+      <div class="field grow"><label>離職日(最後工作日)</label><input type="date" id="efEndDate"></div>
+    </div>
     <label class="cklab" style="margin:0"><input type="checkbox" id="efActive" checked> 在職中(停用後不出現在排班與打卡)</label>
   </div>
   <div class="dlg-f">
@@ -264,7 +269,7 @@ async function afterLogin(){
   if(S.settings.npcRestMin==null)S.settings.npcRestMin=30;
   if(!Array.isArray(S.closedDates))S.closedDates=[];
   S.themes.forEach(function(t){if(!Array.isArray(t.slots))t.slots=[];if(t.payGM==null)t.payGM=300;if(t.payNPC==null)t.payNPC=0});
-  S.employees.forEach(function(e){if(!e.availX)e.availX={}});
+  S.employees.forEach(function(e){if(!e.availX)e.availX={};if(e.startDate==null)e.startDate='';if(e.endDate==null)e.endDate=''});
   renderNav();render();
 }
 let saveTimer=null;
@@ -363,6 +368,14 @@ function effectiveAvail(e,ds){
   if(e.availX&&e.availX[ds])return e.availX[ds];
   return e.avail?.[dateWD(ds)];
 }
+function employedOn(e,ds){
+  return !!e.active&&(!e.startDate||ds>=e.startDate)&&(!e.endDate||ds<=e.endDate);
+}
+function employedInMonth(e,month){
+  const start=month+'-01';
+  const end=fmtDate(new Date(Number(month.slice(0,4)),Number(month.slice(5,7)),0));
+  return (e.active||!!e.endDate)&&(!e.startDate||e.startDate<=end)&&(!e.endDate||e.endDate>=start);
+}
 
 /* ============ 導覽 ============ */
 const TABS=[['sched','排班表'],['punch','打卡'],['pay','薪資'],['emps','員工'],['themes','主題'],['skills','技能表'],['avail','可上班時間'],['data','資料備份']];
@@ -444,8 +457,8 @@ function vMonth(){
       ${shifts.map(sh=>{
         const st=store(sh.storeId);
         const staffed=sh.assignments.some(a=>a.empId);
-        return `<div class="chip ${staffed?'':'unstaffed'}" style="background:${st?st.color:'#64748b'}"
-          onclick="event.stopPropagation();openShift('${sh.id}')">${sh.start} ${esc(shiftLabel(sh))}${staffed?'':' ⚠未排'}</div>`;
+        return `<div class="chip ${sh.status==='cancelled'?'cancelled':staffed?'':'unstaffed'}" style="background:${sh.status==='cancelled'?'#64748b':st?st.color:'#64748b'}"
+          onclick="event.stopPropagation();openShift('${sh.id}')">${sh.start} ${esc(shiftLabel(sh))}${sh.status==='cancelled'?' 已取消':staffed?'':' ⚠未排'}</div>`;
       }).join('')}
     </div>`;
   }).join('')}</div>`;
@@ -473,7 +486,7 @@ function vDaySessions(){
   ${S.closedDates.includes(ds)?'<div style="background:#fee2e2;color:#b91c1c;padding:8px 12px;border-radius:8px;margin-bottom:12px;font-weight:600">🔴 本日店休</div>':''}
   <div style="background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:12px">
     <b style="font-size:13.5px">當日人力(依回報)</b><br>
-    ${S.employees.filter(e=>e.active).map(e=>{
+    ${S.employees.filter(e=>employedOn(e,ds)).map(e=>{
       const a=effectiveAvail(e,ds);
       return a&&a.on
         ?`<span class="tag" style="background:#d1fae5;color:#065f46">${esc(e.name)} ${a.start}–${a.end}</span>`
@@ -489,7 +502,7 @@ function vDaySessions(){
         const sh=findSlotShift(ds,t.id,slot);
         if(sh){
           const names=sh.assignments.filter(a=>a.empId).map(a=>{const e=emp(a.empId);return e?`${esc(e.name)}(${a.role})`:''}).filter(Boolean).join('、');
-          return `<div class="slotbox ${names?'staffed':'unstaffed'}" onclick="openShift('${sh.id}')"><b>${slot}</b><br>${names||'⚠ 未排人'}</div>`;
+          return `<div class="slotbox ${sh.status==='cancelled'?'cancelled':names?'staffed':'unstaffed'}" onclick="openShift('${sh.id}')"><b>${slot}</b><br>${sh.status==='cancelled'?'已取消':names||'⚠ 未排人'}</div>`;
         }
         return `<div class="slotbox" onclick="createSlotShift('${t.id}','${slot}')"><b>${slot}</b><br>＋開場</div>`;
       }).join('')}</div></td></tr>`).join('')}
@@ -497,7 +510,7 @@ function vDaySessions(){
   }).join('')}
   ${others.length?`<h3 style="margin:14px 0 8px">其他班次(櫃台/自訂時間)</h3>
     <table><tr><th>時間</th><th>店別</th><th>內容</th><th>人員</th></tr>
-    ${others.map(sh=>`<tr onclick="openShift('${sh.id}')" style="cursor:pointer">
+    ${others.map(sh=>`<tr class="${sh.status==='cancelled'?'cancelled':''}" onclick="openShift('${sh.id}')" style="cursor:pointer">
       <td>${sh.start}–${sh.end}</td><td>${esc(store(sh.storeId)?.name||'')}</td><td>${esc(shiftLabel(sh))}</td>
       <td>${sh.assignments.filter(a=>a.empId).map(a=>`${esc(emp(a.empId)?.name||'?')}(${a.role})`).join('、')||'<i class="muted">未排人</i>'}</td></tr>`).join('')}</table>`:''}
   `;
@@ -534,8 +547,8 @@ function vWeek(){
         ${shifts.map(sh=>{
           const st=store(sh.storeId);
           const who=sh.assignments.filter(a=>a.empId).map(a=>{const e=emp(a.empId);return e?`${esc(e.name)}(${a.role})`:''}).filter(Boolean).join('、')||'<i>未排人</i>';
-          return `<div class="shift" style="background:${st?st.color:'#64748b'}" onclick="openShift('${sh.id}')">
-            <b>${sh.start||''}–${sh.end||''}</b> ${esc(shiftLabel(sh))}<br><span class="who">${who}</span></div>`;
+          return `<div class="shift ${sh.status==='cancelled'?'cancelled':''}" style="background:${sh.status==='cancelled'?'#64748b':st?st.color:'#64748b'}" onclick="openShift('${sh.id}')">
+            <b>${sh.start||''}–${sh.end||''}</b> ${esc(shiftLabel(sh))}${sh.status==='cancelled'?' (已取消)':''}<br><span class="who">${who}</span></div>`;
         }).join('')||'<span class="muted" style="font-size:12px">—</span>'}
       </div>`;
     }).join('')}</div>`;
@@ -660,6 +673,11 @@ function npcChainWarning(e,date,start,end){
 /* 核心衝突檢查:開場前 prepMin 分鐘就要到位;跨店需留 travelMin 分鐘路程 */
 function empWarnings(e,date,start,end,storeId,role){
   const w=[];
+  if(!employedOn(e,date)){
+    if(e.startDate&&date<e.startDate)w.push(`尚未到職(${e.startDate})`);
+    else if(e.endDate&&date>e.endDate)w.push(`已離職(${e.endDate})`);
+    else w.push('已停用');
+  }
   const prep=S.settings.prepMin||0, travel=S.settings.travelMin||0;
   const s=toMin(start)!=null?toMin(start)-prep:null, en=toMin(end);
   const av=effectiveAvail(e,date);
@@ -667,7 +685,7 @@ function empWarnings(e,date,start,end,storeId,role){
   else if(s!=null&&en!=null&&(toMin(av.start)>s||toMin(av.end)<en))w.push(`超出可上班時段${av.start}–${av.end}(開場前${prep}分要到)`);
   if(s==null||en==null)return w;
   for(const sh of S.shifts){
-    if(sh.id===editShiftId||sh.date!==date)continue;
+    if(sh.id===editShiftId||sh.date!==date||sh.status==='cancelled')continue;
     if(!sh.assignments.some(a=>a.empId===e.id))continue;
     const s2=toMin(sh.start)-prep, e2=toMin(sh.end);
     const sameStore=sh.storeId===storeId;
@@ -761,7 +779,7 @@ function lastPunch(empId){
   return p[p.length-1]||null;
 }
 function vPunch(){
-  const actives=S.employees.filter(e=>e.active);
+  const actives=S.employees.filter(e=>employedOn(e,todayStr()));
   if(punchEmp&&!actives.some(e=>e.id===punchEmp))punchEmp='';
   const sel=punchEmp?emp(punchEmp):null;
   const lp=sel?lastPunch(punchEmp):null;
@@ -844,7 +862,7 @@ function pairPunches(empId,month){
   return rows;
 }
 function attendTable(month){
-  const actives=S.employees.filter(e=>e.active);
+  const actives=S.employees.filter(e=>employedInMonth(e,month));
   let rows='';
   for(const e of actives){
     for(const r of pairPunches(e.id,month)){
@@ -861,7 +879,7 @@ let payMonth=monthStr();
 function schedMinutes(empId,month){
   let m=0;
   for(const sh of S.shifts){
-    if(sh.date.slice(0,7)!==month)continue;
+    if(sh.status==='cancelled'||sh.date.slice(0,7)!==month)continue;
     if(!sh.assignments.some(a=>a.empId===empId))continue;
     m+=Math.max(0,toMin(sh.end)-toMin(sh.start));
   }
@@ -874,7 +892,7 @@ function actualMinutes(empId,month){
 function sessionStats(empId,month){
   let pay=0,gm=0,npc=0;const detail={};
   for(const sh of S.shifts){
-    if(sh.date.slice(0,7)!==month||sh.kind!=='theme')continue;
+    if(sh.status==='cancelled'||sh.date.slice(0,7)!==month||sh.kind!=='theme')continue;
     const t=theme(sh.themeId);if(!t)continue;
     for(const a of sh.assignments){
       if(a.empId!==empId)continue;
@@ -891,14 +909,14 @@ function sessionStats(empId,month){
 function hourlyMinutes(empId,month){
   let m=0;
   for(const sh of S.shifts){
-    if(sh.date.slice(0,7)!==month||sh.kind==='theme')continue;
+    if(sh.status==='cancelled'||sh.date.slice(0,7)!==month||sh.kind==='theme')continue;
     if(!sh.assignments.some(a=>a.empId===empId))continue;
     m+=Math.max(0,toMin(sh.end)-toMin(sh.start));
   }
   return m;
 }
 function vPay(){
-  const actives=S.employees.filter(e=>e.active);
+  const actives=S.employees.filter(e=>employedInMonth(e,payMonth));
   const rows=actives.map(e=>{
     const ss=sessionStats(e.id,payMonth);
     const hm=hourlyMinutes(e.id,payMonth);
@@ -965,7 +983,7 @@ function vEmps(){
       <td class="num">${e.hourlyRate||'—'}</td><td class="num">${e.monthlySalary?e.monthlySalary.toLocaleString():'—'}</td>
       <td>${Object.entries(e.skills||{}).filter(([,r])=>r.length).map(([tid,r])=>{const t=theme(tid);return t?`<span class="tag">${esc(t.name)}:${r.join('/')}</span>`:''}).join('')||'<span class="muted">未設定</span>'}</td>
       <td>${(e.counters||[]).map(sid=>esc(store(sid)?.name||'')).join('、')||'<span class="muted">—</span>'}</td>
-      <td>${e.active?'在職':'停用'}</td>
+      <td>${e.active?'在職':'停用'}${e.startDate?`<br><span class="muted">到職 ${esc(e.startDate)}</span>`:''}${e.endDate?`<br><span class="muted">離職 ${esc(e.endDate)}</span>`:''}</td>
       <td><button class="btn gray sm" onclick="openEmp('${e.id}')">編輯</button></td></tr>`).join('')}</table>`
     :'<p class="muted">尚無員工,點右上「新增員工」開始。技能與可上班時間分別在「技能表」「可上班時間」頁設定。</p>'}
   </div>`;
@@ -979,6 +997,8 @@ function openEmp(id){
   document.getElementById('efRate').value=e?(e.hourlyRate||''):'';
   document.getElementById('efSalary').value=e?(e.monthlySalary||''):'';
   document.getElementById('efPin').value=e?(e.pin||''):'';
+  document.getElementById('efStartDate').value=e?(e.startDate||''):'';
+  document.getElementById('efEndDate').value=e?(e.endDate||''):'';
   document.getElementById('efActive').checked=e?e.active:true;
   dlgEmp.showModal();
 }
@@ -990,8 +1010,11 @@ function saveEmp(){
     hourlyRate:Number(document.getElementById('efRate').value)||0,
     monthlySalary:Number(document.getElementById('efSalary').value)||0,
     pin:document.getElementById('efPin').value.trim(),
+    startDate:document.getElementById('efStartDate').value,
+    endDate:document.getElementById('efEndDate').value,
     active:document.getElementById('efActive').checked
   };
+  if(data.startDate&&data.endDate&&data.endDate<data.startDate)return alert('離職日不可早於到職日');
   if(editEmpId){Object.assign(emp(editEmpId),data)}
   else S.employees.push({id:uid(),skills:{},counters:[],avail:defaultAvail(),...data});
   save();dlgEmp.close();render();

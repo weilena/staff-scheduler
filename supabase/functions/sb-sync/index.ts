@@ -1,36 +1,72 @@
-// SimplyBook → Supabase 自動同步(Edge Function)
-// 只讀取(getBookings),絕不寫入/修改 SimplyBook 的任何資料。
-//
-// 認證方式(SimplyBook 官方 JSON-RPC 管理 API):
-//   getUserToken(公司代號, 使用者帳號, 使用者密碼或 API User Key)
-//   之後以 X-Company-Login + X-User-Token 呼叫 /admin/ 服務
-//
-// 需要的 Secrets(由老闆自己執行 supabase secrets set,金鑰不寫在程式裡):
-//   SB_COMPANY       = SimplyBook 公司代號(例:bglescape)
-//   SB_USER_LOGIN    = SimplyBook 管理者的登入帳號
-//   SB_USER_PASSWORD = 該管理者的密碼,或其 API User Key(api_user_key_ 開頭)
-//   SYNC_SECRET      = 自訂亂碼,呼叫本函式時 ?key= 帶上,防止外人觸發
-//
-// 部署:supabase functions deploy sb-sync --no-verify-jwt
-
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-// 注意:你們的租戶在 .asia 網域(SimplyBook API 設定頁可確認端點)
 const LOGIN_URL = "https://user-api.simplybook.asia/login";
 const ADMIN_URL = "https://user-api.simplybook.asia/admin/";
+const DAY = 86_400_000;
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function dstr(d: Date) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+function validDate(v: string | null) { return !!v && /^\d{4}-\d{2}-\d{2}$/.test(v); }
+function minutes(v: string) {
+  const [h, m] = v.split(":").map(Number);
+  return h * 60 + m;
+}
+function list(value: unknown): any[] {
+  if (Array.isArray(value)) return value;
+  return value && typeof value === "object" ? Object.values(value) : [];
+}
+function pick(row: any, keys: string[]) {
+  for (const key of keys) if (row?.[key] != null && row[key] !== "") return row[key];
+  return "";
+}
 
 async function rpc(url: string, headers: Record<string, string>, method: string, params: unknown[]) {
-  const r = await fetch(url, {
+  const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...headers },
-    body: JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 }),
+    body: JSON.stringify({ jsonrpc: "2.0", method, params, id: crypto.randomUUID() }),
   });
-  const j = await r.json();
-  if (j.error) throw new Error(method + " 失敗: " + JSON.stringify(j.error));
-  return j.result;
+  const body = await response.json();
+  if (!response.ok || body.error) throw new Error(`${method}: ${JSON.stringify(body.error ?? body)}`);
+  return body.result;
+}
+
+function conflictWarnings(shifts: any[], employees: any[], prepMin: number, travelMin: number) {
+  const warnings = new Map<string, string[]>();
+  for (const shift of shifts) {
+    if (shift.status === "cancelled") continue;
+    for (const assignment of shift.assignments ?? []) {
+      if (!assignment.empId) continue;
+      const employee = employees.find((item: any) => item.id === assignment.empId);
+      if (!employee) continue;
+      let message = "";
+      if (!employee.active) message = `${employee.id}:員工已停用`;
+      else if (employee.startDate && shift.date < employee.startDate) message = `${employee.id}:尚未到職`;
+      else if (employee.endDate && shift.date > employee.endDate) message = `${employee.id}:已超過離職日`;
+      if (message) warnings.set(shift.id, [...(warnings.get(shift.id) ?? []), message]);
+    }
+  }
+  for (let i = 0; i < shifts.length; i++) {
+    const a = shifts[i];
+    if (a.status === "cancelled") continue;
+    for (let j = i + 1; j < shifts.length; j++) {
+      const b = shifts[j];
+      if (b.status === "cancelled" || a.date !== b.date) continue;
+      const shared = (a.assignments ?? []).map((x: any) => x.empId).filter(Boolean)
+        .filter((id: string) => (b.assignments ?? []).some((x: any) => x.empId === id));
+      if (!shared.length) continue;
+      const travel = a.storeId === b.storeId ? 0 : travelMin;
+      const overlaps = minutes(a.start) - prepMin < minutes(b.end) + travel &&
+        minutes(a.end) + travel > minutes(b.start) - prepMin;
+      if (!overlaps) continue;
+      for (const id of shared) {
+        const msg = `${id}:${a.storeId === b.storeId ? "人員撞班" : `跨店移動不足 ${travelMin} 分鐘`}`;
+        warnings.set(a.id, [...(warnings.get(a.id) ?? []), msg]);
+        warnings.set(b.id, [...(warnings.get(b.id) ?? []), msg]);
+      }
+    }
+  }
+  return warnings;
 }
 
 Deno.serve(async (req) => {
@@ -40,95 +76,118 @@ Deno.serve(async (req) => {
       return new Response("unauthorized", { status: 401 });
     }
 
-    const company = Deno.env.get("SB_COMPANY")!;
-    const userLogin = Deno.env.get("SB_USER_LOGIN")!;
-    const userPassword = Deno.env.get("SB_USER_PASSWORD")!;
-    const supa = createClient(
+    const now = new Date();
+    const defaultFrom = dstr(new Date(now.getTime() - 7 * DAY));
+    const defaultTo = dstr(new Date(now.getTime() + 60 * DAY));
+    const from = url.searchParams.get("from") ?? defaultFrom;
+    const to = url.searchParams.get("to") ?? defaultTo;
+    const apply = url.searchParams.get("apply") === "1";
+    if (!validDate(from) || !validDate(to) || from > to) {
+      return Response.json({ error: "日期格式需為 YYYY-MM-DD，且結束日不可早於開始日" }, { status: 400 });
+    }
+    if ((new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) / DAY > 93) {
+      return Response.json({ error: "單次同步最多 93 天" }, { status: 400 });
+    }
+
+    const company = Deno.env.get("SB_COMPANY");
+    const userLogin = Deno.env.get("SB_USER_LOGIN");
+    const userKey = Deno.env.get("SB_USER_PASSWORD"); // SimplyBook API User Key，不是主帳號密碼
+    if (!company || !userLogin || !userKey) throw new Error("SimplyBook Secrets 尚未設定完整");
+
+    const token = await rpc(LOGIN_URL, {}, "getUserToken", [company, userLogin, userKey]);
+    const headers = { "X-Company-Login": company, "X-User-Token": String(token) };
+    const filters = { date_from: from, date_to: to, order: "date_start_asc" };
+    const [activeRaw, cancelledRaw] = await Promise.all([
+      rpc(ADMIN_URL, headers, "getBookings", [{ ...filters, booking_type: "non_cancelled" }]),
+      rpc(ADMIN_URL, headers, "getBookings", [{ ...filters, booking_type: "cancelled" }]),
+    ]);
+    const active = list(activeRaw);
+    const cancelled = list(cancelledRaw);
+
+    const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
-
-    // 1. 取得管理 API token(官方 getUserToken;密碼欄可用 API User Key)
-    const token = await rpc(LOGIN_URL, {}, "getUserToken", [company, userLogin, userPassword]);
-    const H = { "X-Company-Login": company, "X-User-Token": String(token) };
-
-    // 2. 抓「前 7 天 ~ 後 60 天」的預約(有效 + 已取消各抓一次)——純讀取
-    const now = new Date();
-    const from = dstr(new Date(now.getTime() - 7 * 864e5));
-    const to = dstr(new Date(now.getTime() + 60 * 864e5));
-    const active: any[] = await rpc(ADMIN_URL, H, "getBookings",
-      [{ date_from: from, date_to: to, booking_type: "non_cancelled", order: "date_start_asc" }]) ?? [];
-    const cancelled: any[] = await rpc(ADMIN_URL, H, "getBookings",
-      [{ date_from: from, date_to: to, booking_type: "cancelled" }]) ?? [];
-
-    // 3. 讀系統設定(主題對照、員工名單)
-    const { data: cfgRow } = await supa.from("config").select("data").eq("id", 1).single();
-    const cfg = cfgRow!.data;
-
-    // 4. 讀既有的 SimplyBook 班次(保留後台手動改過的人員安排)
-    const { data: existing } = await supa.from("shifts").select("id,data")
-      .eq("source", "simplybook").gte("date", from).lte("date", to);
-    const exMap = new Map((existing ?? []).map((r: any) => [r.id, r.data]));
-
-    const pick = (b: any, keys: string[]) => {
-      for (const k of keys) if (b[k] != null && b[k] !== "") return b[k];
-      return "";
-    };
+    const [{ data: cfgRow, error: cfgError }, { data: existing, error: shiftsError }] = await Promise.all([
+      supabase.from("config").select("data").eq("id", 1).single(),
+      supabase.from("shifts").select("id,data").gte("date", from).lte("date", to),
+    ]);
+    if (cfgError) throw cfgError;
+    if (shiftsError) throw shiftsError;
+    const cfg = cfgRow.data;
+    const existingRows = existing ?? [];
+    const existingMap = new Map(existingRows.map((row: any) => [row.id, row.data]));
 
     const upserts: any[] = [];
-    let skippedService = 0;
-
-    for (const b of active) {
-      const code = String(pick(b, ["code", "id"]));
-      const id = "sb_" + code;
-      const startRaw = String(pick(b, ["start_date", "start_date_time"]));
-      const endRaw = String(pick(b, ["end_date", "end_date_time"]));
-      const svcName = String(pick(b, ["event_name", "event", "service_name"]));
-      const provName = String(pick(b, ["unit_name", "unit", "provider_name"]));
-      const clientName = String(pick(b, ["client_name", "client"]));
-      if (!startRaw || !svcName) { skippedService++; continue; }
-
-      const t = cfg.themes.find((t: any) => svcName.startsWith(t.name));
-      if (!t) { skippedService++; continue; }
-
-      const emp = cfg.employees.find((e: any) =>
-        e.name === provName || (e.aliases ?? []).includes(provName)
-      );
-
-      const date = startRaw.slice(0, 10);
-      const start = startRaw.slice(11, 16);
-      const end = endRaw ? endRaw.slice(11, 16) : start;
-      const role = (t.payNPC ?? 0) > 0 ? "NPC" : "場控";
-
-      const prev = exMap.get(id);
+    const ignored: any[] = [];
+    for (const booking of active) {
+      const code = String(pick(booking, ["code", "id"]));
+      const id = `sb_${code}`;
+      const startRaw = String(pick(booking, ["start_date", "start_date_time"]));
+      const endRaw = String(pick(booking, ["end_date", "end_date_time"]));
+      const serviceName = String(pick(booking, ["event_name", "event", "service_name"]));
+      const providerName = String(pick(booking, ["unit_name", "unit", "provider_name"]));
+      const previous: any = existingMap.get(id);
+      const selectedTheme = cfg.themes.find((theme: any) => serviceName.startsWith(theme.name));
+      if (!code || !startRaw || !selectedTheme) {
+        ignored.push({ bookingId: code || "unknown", reason: !selectedTheme ? `找不到主題對應:${serviceName}` : "缺少日期或 ID" });
+        continue;
+      }
+      const employee = cfg.employees.find((item: any) => item.name === providerName || (item.aliases ?? []).includes(providerName));
+      const role = (selectedTheme.payNPC ?? 0) > 0 ? "NPC" : "場控";
       const shift = {
-        id, date, storeId: t.storeId, kind: "theme", themeId: t.id, start, end,
-        note: `預約:${clientName}(${code})`,
-        assignments: prev?.manualEdit
-          ? prev.assignments // 後台手動改過的人員安排,同步時不覆蓋
-          : [{ role, empId: emp ? emp.id : "" }],
-        ...(prev?.manualEdit ? { manualEdit: true } : {}),
+        id,
+        date: startRaw.slice(0, 10),
+        storeId: selectedTheme.storeId,
+        kind: "theme",
+        themeId: selectedTheme.id,
+        start: startRaw.slice(11, 16),
+        end: endRaw ? endRaw.slice(11, 16) : startRaw.slice(11, 16),
+        note: `SimplyBook 預約 ${code}`,
+        status: "active",
+        sourceUpdatedAt: new Date().toISOString(),
+        assignments: previous?.manualEdit ? previous.assignments : [{ role, empId: employee?.id ?? "" }],
+        ...(previous?.manualEdit ? { manualEdit: true } : {}),
       };
-      upserts.push({ id, date, source: "simplybook", data: shift });
+      upserts.push({ id, date: shift.date, source: "simplybook", data: shift });
     }
 
-    // 5. 已取消的預約 → 移除對應班次
-    const deletes = cancelled
-      .map((b: any) => "sb_" + String(pick(b, ["code", "id"])))
-      .filter((id: string) => exMap.has(id));
-
-    if (upserts.length) {
-      const { error } = await supa.from("shifts").upsert(upserts);
-      if (error) return new Response("寫入失敗: " + error.message, { status: 500 });
+    const cancelledUpdates: any[] = [];
+    for (const booking of cancelled) {
+      const code = String(pick(booking, ["code", "id"]));
+      const id = `sb_${code}`;
+      const previous: any = existingMap.get(id);
+      if (!previous) continue;
+      const shift = { ...previous, status: "cancelled", cancelledAt: new Date().toISOString(), sourceUpdatedAt: new Date().toISOString() };
+      cancelledUpdates.push({ id, date: shift.date, source: "simplybook", data: shift });
     }
-    if (deletes.length) await supa.from("shifts").delete().in("id", deletes);
+
+    const merged = [
+      ...existingRows.map((row: any) => row.data).filter((shift: any) =>
+        !upserts.some((row) => row.id === shift.id) && !cancelledUpdates.some((row) => row.id === shift.id)
+      ),
+      ...upserts.map((row) => row.data),
+      ...cancelledUpdates.map((row) => row.data),
+    ];
+    const warnings = conflictWarnings(merged, cfg.employees ?? [], cfg.settings?.prepMin ?? 10, cfg.settings?.travelMin ?? 12);
+    for (const row of [...upserts, ...cancelledUpdates]) row.data.syncWarnings = warnings.get(row.id) ?? [];
+
+    if (apply && (upserts.length || cancelledUpdates.length)) {
+      const { error } = await supabase.from("shifts").upsert([...upserts, ...cancelledUpdates]);
+      if (error) throw error;
+    }
 
     return Response.json({
-      fetched: active.length, upserted: upserts.length,
-      deleted: deletes.length, skipped: skippedService,
-      range: [from, to],
+      mode: apply ? "applied" : "preview",
+      range: { from, to },
+      fetched: { active: active.length, cancelled: cancelled.length },
+      changes: { upsert: upserts.length, markCancelled: cancelledUpdates.length, ignored: ignored.length },
+      conflicts: [...warnings.entries()].map(([shiftId, messages]) => ({ shiftId, messages })),
+      ignored: ignored.slice(0, 50),
+      hint: apply ? undefined : "確認預覽後，以相同日期加上 apply=1 套用",
     });
-  } catch (e) {
-    return new Response("同步錯誤: " + (e as Error).message, { status: 500 });
+  } catch (error) {
+    console.error(error);
+    return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 });
