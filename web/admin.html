@@ -237,6 +237,13 @@ function seedConfig(){
 }
 async function boot(){
   document.getElementById('view').innerHTML='<p class="muted" style="padding:20px">連線中…</p>';
+  if(isDemo()&&!window.DEMO_DATA){ // 試玩模式:載入示範資料(6/1–7/5 真實場次,客人姓名已移除)
+    await new Promise(function(res){
+      const s=document.createElement('script');
+      s.src='demo-data.js';s.onload=res;s.onerror=res;
+      document.head.appendChild(s);
+    });
+  }
   sbc=isDemo()?makeMockSb():supabase.createClient(CFG.SUPABASE_URL,CFG.SUPABASE_ANON_KEY);
   const r=await sbc.auth.getSession();
   if(!(r.data&&r.data.session)&&!isDemo()){
@@ -301,6 +308,12 @@ function dbDeletePunch(id){
 }
 function makeMockSb(){
   const db={config:null,shifts:new Map(),punches:new Map()};
+  if(window.DEMO_DATA){
+    const D=window.DEMO_DATA;
+    db.config={data:JSON.parse(JSON.stringify(D.config))};
+    (D.shifts||[]).forEach(function(s){db.shifts.set(s.id,{id:s.id,date:s.date,source:'demo',data:JSON.parse(JSON.stringify(s))})});
+    (D.punches||[]).forEach(function(p){db.punches.set(p.id,{id:p.id,emp_id:p.empId,ts:p.ts,type:p.type,source:'demo'})});
+  }
   function ok(d){return{data:d,error:null}}
   function table(t){
     return{
