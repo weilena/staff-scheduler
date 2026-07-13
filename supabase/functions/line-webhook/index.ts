@@ -26,6 +26,26 @@ async function reply(replyToken: string, messages: any[]) {
   if (!response.ok) throw new Error(`LINE reply failed: ${await response.text()}`);
 }
 
+function employeePortalMessages() {
+  const portal = Deno.env.get("LINE_LIFF_URL") ?? "";
+  if (!portal) return [{ type: "text", text: "員工入口尚未完成設定，請通知管理員。" }];
+  const link = (tab: string) => `${portal}${portal.includes("?") ? "&" : "?"}tab=${tab}`;
+  return [{
+    type: "template",
+    altText: "員工班表與打卡選單",
+    template: {
+      type: "buttons",
+      title: "mythworker 員工專區",
+      text: "請選擇要使用的功能",
+      actions: [
+        { type: "uri", label: "查看班表", uri: link("schedule") },
+        { type: "uri", label: "手機定位打卡", uri: link("punch") },
+        { type: "uri", label: "換班與我的申請", uri: link("mine") },
+      ],
+    },
+  }];
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "METHOD_NOT_ALLOWED" }, 405);
   const raw = await req.text();
@@ -45,8 +65,11 @@ Deno.serve(async (req) => {
       if (error) throw error;
     }
     if (event.type === "follow" && event.replyToken) {
-      const portal = Deno.env.get("LINE_LIFF_URL") ?? "";
-      await reply(event.replyToken, [{ type: "text", text: `歡迎使用員工排班系統。請由員工入口完成一次性綁定。${portal ? `\n${portal}` : ""}` }]);
+      await reply(event.replyToken, employeePortalMessages());
+      continue;
+    }
+    if (event.type === "message" && event.message?.type === "text" && event.replyToken) {
+      await reply(event.replyToken, employeePortalMessages());
       continue;
     }
     if (event.type !== "postback" || !event.replyToken || !event.source?.userId) continue;
