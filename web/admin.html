@@ -323,9 +323,11 @@ async function afterLogin(){
   if(!cfg||!cfg.data){const d=seedConfig();await sbc.from('config').upsert({id:1,data:d});cfg={data:d}}
   const shRes=await sbc.from('shifts').select('id,data');
   const puRes=await sbc.from('punches').select('*');
+  const ciRes=await sbc.from('session_checkins').select('*');
   S=Object.assign({},cfg.data,{
     shifts:(shRes.data||[]).map(function(r){return r.data}),
-    punches:(puRes.data||[]).map(function(p){return{id:p.id,empId:p.emp_id,type:p.type,ts:p.ts,source:p.source,worksiteId:p.worksite_id,verification:p.verification,reviewState:p.review_state,voidedAt:p.voided_at,voidReason:p.void_reason,shiftIds:p.shift_ids||[]}})
+    punches:(puRes.data||[]).map(function(p){return{id:p.id,empId:p.emp_id,type:p.type,ts:p.ts,source:p.source,worksiteId:p.worksite_id,verification:p.verification,reviewState:p.review_state,voidedAt:p.voided_at,voidReason:p.void_reason,shiftIds:p.shift_ids||[],raw:p.raw||{},workItem:p.raw?.work_item||null}}),
+    sessionCheckins:(ciRes.data||[]).map(function(x){return{id:x.id,empId:x.emp_id,shiftId:x.shift_id,checkedInAt:x.checked_in_at,worksiteId:x.worksite_id,verification:x.verification,source:x.source,note:x.note||''}})
   });
   if(!S.settings)S.settings={prepMin:10,travelMin:12};
   if(S.settings.npcMaxChain==null)S.settings.npcMaxChain=2;
@@ -1124,7 +1126,7 @@ function vPunch(){
       <input id="mpReason" placeholder="補登原因（必填）" style="min-width:180px">
       <button class="btn sm" onclick="manualPunch()">管理員補登</button>
     </div>
-    ${attendTable(punchMonth)}
+    ${sel?employeeAttendanceDetail(sel.id,punchMonth):'<p class="muted">選擇員工後，可查看該員工每筆工作、班表時間與實際上下班時間。</p>'}
     <p class="muted" style="margin-top:8px">之後可改成匯入「打卡之星」匯出的檔案;目前先用此頁打卡或補登。</p>
   </div>`;
 }
@@ -1170,15 +1172,32 @@ function pairPunches(empId,month){
   const ps=S.punches.filter(p=>p.empId===empId&&!p.voidedAt&&p.ts.slice(0,7)===month).sort((a,b)=>a.ts.localeCompare(b.ts));
   const rows=[];let open=null;
   for(const p of ps){
-    if(p.type==='in'){if(open)rows.push({date:open.ts.slice(0,10),in:open.ts.slice(11,16),out:null,min:0});open=p}
+    if(p.type==='in'){if(open)rows.push({date:open.ts.slice(0,10),in:open.ts.slice(11,16),out:null,min:0,inPunch:open,outPunch:null});open=p}
     else{
       if(open){rows.push({date:open.ts.slice(0,10),in:open.ts.slice(11,16),out:p.ts.slice(11,16),
-        min:Math.max(0,(new Date(p.ts)-new Date(open.ts))/60000)});open=null}
-      else rows.push({date:p.ts.slice(0,10),in:null,out:p.ts.slice(11,16),min:0});
+        min:Math.max(0,(new Date(p.ts)-new Date(open.ts))/60000),inPunch:open,outPunch:p});open=null}
+      else rows.push({date:p.ts.slice(0,10),in:null,out:p.ts.slice(11,16),min:0,inPunch:null,outPunch:p});
     }
   }
-  if(open)rows.push({date:open.ts.slice(0,10),in:open.ts.slice(11,16),out:null,min:0});
+  if(open)rows.push({date:open.ts.slice(0,10),in:open.ts.slice(11,16),out:null,min:0,inPunch:open,outPunch:null});
   return rows;
+}
+function employeeAttendanceDetail(empId,month){
+  const rows=[];
+  for(const sh of S.shifts.filter(s=>s.date.slice(0,7)===month&&s.status!=='cancelled')){
+    const a=(sh.assignments||[]).find(x=>x.empId===empId);
+    if(!a||String(a.role).toUpperCase()!=='NPC')continue;
+    const c=(S.sessionCheckins||[]).find(x=>x.empId===empId&&x.shiftId===sh.id);
+    rows.push({date:sh.date,item:shiftLabel(sh)+'（NPC）',scheduled:`${sh.start}–${sh.end}`,actualIn:c?.checkedInAt?.slice(11,16)||'尚未報到',actualOut:'場次制',hours:'按場次',status:c?'已報到':'缺報到',note:c?.note||''});
+  }
+  for(const r of pairPunches(empId,month)){
+    const p=r.inPunch||r.outPunch,ids=p?.shiftIds||[],shifts=ids.map(id=>S.shifts.find(s=>s.id===id)).filter(Boolean),labels=p?.workItem?.labels||[];
+    const scheduled=shifts.length?[...new Set(shifts.map(s=>`${s.start}–${s.end}`))].join('、'):'未連結班表';
+    const item=labels.length?labels.join('、'):shifts.length?[...new Set(shifts.map(shiftLabel))].join('、'):'工作項目待確認';
+    rows.push({date:r.date,item,scheduled,actualIn:r.in||'缺卡',actualOut:r.out||'缺卡',hours:r.min?fmtHr(r.min):'—',status:r.in&&r.out?'完成':'異常',note:p?.raw?.reason||''});
+  }
+  rows.sort((a,b)=>(b.date+b.actualIn).localeCompare(a.date+a.actualIn));
+  return `<h3 style="margin-top:16px">${esc(emp(empId)?.name||empId)}・${month} 出勤明細</h3>${rows.length?`<div style="overflow:auto"><table><tr><th>日期</th><th>工作項目</th><th>班表時間</th><th>實際上班／報到</th><th>實際下班</th><th>工時</th><th>狀態</th><th>註記</th></tr>${rows.map(r=>`<tr><td>${r.date}</td><td>${esc(r.item)}</td><td>${esc(r.scheduled)}</td><td>${esc(r.actualIn)}</td><td>${esc(r.actualOut)}</td><td>${esc(r.hours)}</td><td>${esc(r.status)}</td><td>${esc(r.note||'—')}</td></tr>`).join('')}</table></div>`:'<p class="muted">這個月份尚無紀錄</p>'}`;
 }
 function attendTable(month){
   const actives=S.employees.filter(e=>employedInMonth(e,month));

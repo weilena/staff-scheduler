@@ -39,9 +39,10 @@ Deno.serve(async (req) => {
 
     if (action === "bootstrap") {
       const now = new Date(), from = dateText(new Date(now.getTime() - 7 * DAY)), to = dateText(new Date(now.getTime() + 60 * DAY));
-      const [{ data: worksites }, { data: punches }, { data: requests }, { data: responses }, { data: attendanceDays }, { data: attendanceRequests }] = await Promise.all([
+      const [{ data: worksites }, { data: punches }, { data: sessionCheckins }, { data: requests }, { data: responses }, { data: attendanceDays }, { data: attendanceRequests }] = await Promise.all([
         sb.from("worksites").select("id,name,radius_m,enabled").eq("enabled", true),
         sb.from("punches").select("id,ts,type,worksite_id,verification,review_state,voided_at,void_reason,shift_ids,raw").eq("emp_id", employee.id).gte("ts", from).order("ts", { ascending: false }).limit(60),
+        sb.from("session_checkins").select("id,shift_id,checked_in_at,worksite_id,verification,source,note").eq("emp_id", employee.id).gte("checked_in_at", from).order("checked_in_at", { ascending: false }).limit(100),
         sb.from("shift_requests").select("*").or(`requester_emp_id.eq.${employee.id},target_emp_id.eq.${employee.id},target_emp_id.is.null`).order("created_at", { ascending: false }).limit(100),
         sb.from("shift_request_responses").select("*").eq("emp_id", employee.id),
         sb.from("attendance_daily").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: false }).limit(70),
@@ -59,7 +60,7 @@ Deno.serve(async (req) => {
       }));
       return json({ me: { id: employee.id, name: employee.name, role: account.role }, stores: cfg.stores, themes: cfg.themes,
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches, requests, responses,
-        attendanceDays, attendanceRequests, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
+        attendanceDays, attendanceRequests, sessionCheckins, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
 
     if (action === "punch") {
@@ -82,7 +83,11 @@ Deno.serve(async (req) => {
           !(s.assignments ?? []).some((a: any) => a.empId === employee.id));
         if (invalidSelection || selectedShifts.length !== requestedIds.length) return json({ error: "選取的場次不屬於你今天在這間店的班表，請重新整理後再試。" }, 409);
         if (selectedShifts.length) {
-          workItem = { source: "scheduled", labels: selectedShifts.map((s: any) => {
+          const roles = selectedShifts.map((s: any) => (s.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "");
+          const npcOnly = roles.length > 0 && roles.every((role: string) => role.toUpperCase() === "NPC");
+          const mixedNpc = roles.some((role: string) => role.toUpperCase() === "NPC") && !npcOnly;
+          if (mixedNpc) return json({ error: "NPC 場次與需要上下班打卡的工作請分開操作。" }, 400);
+          workItem = { source: "scheduled", attendance_mode: npcOnly ? "session_checkin" : "clock_range", labels: selectedShifts.map((s: any) => {
             const theme = (cfg.themes ?? []).find((t: any) => t.id === s.themeId)?.name;
             const label = s.kind === "theme" ? theme : s.kind === "counter" ? (s.storeId === "ms" ? "謎先生櫃台" : "桌遊大忠店櫃台") :
               s.kind === "cleaning" ? "每週大清潔" : s.kind === "practice" ? "練習場" : s.kind === "floor" ? "場控／現場支援" : "其他工作";
@@ -103,6 +108,15 @@ Deno.serve(async (req) => {
         workItem = latest.raw?.work_item ?? null;
         if (latest.raw?.verification === "line_location_unassigned") verification = "line_location_unassigned";
         else if (latest.worksite_id !== site.id) verification = "line_location_cross_site";
+      }
+      if (type === "in" && workItem?.attendance_mode === "session_checkin") {
+        const checkedInAt = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
+          hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date()).replace(" ", "T");
+        const rows = selectedShifts.map((s: any) => ({ emp_id: employee.id, shift_id: s.id, checked_in_at: checkedInAt,
+          worksite_id: site.id, latitude: lat, longitude: lng, accuracy_m: accuracy, verification, source: "line" }));
+        const { error: checkinError } = await sb.from("session_checkins").insert(rows);
+        if (checkinError) return json({ error: checkinError.code === "23505" ? "這個 NPC 場次已經完成報到" : checkinError.message }, checkinError.code === "23505" ? 409 : 500);
+        return json({ ok: true, mode: "session_checkin", ts: checkedInAt, site: site.name, distance: Math.round(site.distance), workItem });
       }
       const { data, error } = await sb.rpc("record_line_punch", { p_emp: employee.id, p_type: type, p_worksite: site.id,
         p_lat: lat, p_lng: lng, p_accuracy: accuracy, p_verification: verification, p_shift_ids: selectedShifts.map((s: any) => s.id),

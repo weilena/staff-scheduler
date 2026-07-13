@@ -51,14 +51,16 @@ async function respond(id,response){try{const x=await api({action:'respond-reque
 const taipeiDate=(offset=0)=>{const d=new Date(Date.now()+offset*86400000);return d.toLocaleDateString('sv-SE',{timeZone:'Asia/Taipei'})};
 function dateClass(date){return date===taipeiDate()?'today':date===taipeiDate(1)?'tomorrow':'future'}
 function attendanceState(s){
+  const role=(s.assignments||[]).find(a=>a.empId===D.me.id)?.role||'',npc=role.toUpperCase()==='NPC';
+  if(npc){const checkin=(D.sessionCheckins||[]).find(x=>x.shift_id===s.id);return checkin?{key:'done',text:`NPC 已報到 ${checkin.checked_in_at.slice(11,16)}`}:{key:'need-in',text:'NPC 尚未報到打卡'}}
   const ps=(D.punches||[]).filter(p=>!p.voided_at&&(p.shift_ids||[]).includes(s.id)).sort((a,b)=>a.ts.localeCompare(b.ts));
   if(!ps.some(p=>p.type==='in'))return {key:'need-in',text:'尚未上班打卡'};
   if(ps[ps.length-1]?.type==='in')return {key:'working',text:'已上班・工作結束記得下班打卡'};
   return {key:'done',text:'上下班打卡已完成'};
 }
 function shiftCard(s,all=true){
-  const mine=(s.assignments||[]).some(a=>a.empId===D.me.id),state=mine&&s.date===taipeiDate()?attendanceState(s):null;
-  const direct=state?.key==='need-in'?`<button style="margin-top:9px" onclick="directShiftPunch('in','${esc(s.id)}')">這一場上班打卡</button>`:state?.key==='working'?`<button class="danger" style="margin-top:9px" onclick="directShiftPunch('out','${esc(s.id)}')">這一場下班打卡</button>`:'';
+  const mine=(s.assignments||[]).some(a=>a.empId===D.me.id),role=(s.assignments||[]).find(a=>a.empId===D.me.id)?.role||'',npc=role.toUpperCase()==='NPC',state=mine&&s.date===taipeiDate()?attendanceState(s):null;
+  const direct=state?.key==='need-in'?`<button style="margin-top:9px" onclick="directShiftPunch('in','${esc(s.id)}')">${npc?'NPC 場次報到':'這一場上班打卡'}</button>`:state?.key==='working'?`<button class="danger" style="margin-top:9px" onclick="directShiftPunch('out','${esc(s.id)}')">這一場下班打卡</button>`:'';
   return `<div class="shift ${dateClass(s.date)} ${s.status==='cancelled'?'cancelled':''}"><b>${esc(s.date)}　${esc(s.start)}–${esc(s.end)}</b><br>${esc(storeName(s.storeId))}・${esc(shiftName(s))}<br>${all?`<span class="muted">${(s.assignments||[]).map(a=>esc(empName(a.empId))+' ('+esc(a.role)+')').join('、')}</span>`:''}${state?`<br><span class="status ${state.key}">${state.text}</span><br>${direct}`:''}</div>`
 }
 function directShiftPunch(type,id){
@@ -71,7 +73,7 @@ function directShiftPunch(type,id){
   punchBusy=true;render();
   navigator.geolocation.getCurrentPosition(async p=>{try{
     const x=await api({action:'punch',type,latitude:p.coords.latitude,longitude:p.coords.longitude,accuracy:p.coords.accuracy,shiftIds:type==='in'?[id]:[],workItemCode:''});
-    alert(`${x.site} ${action}打卡成功\n伺服器時間：${x.ts.replace('T',' ')}\n工作項目：${shiftName(s)}${role?'（'+role+'）':''}${x.warning?'\n\n提醒：'+x.warning:''}`);
+    alert(`${x.site} ${x.mode==='session_checkin'?'NPC 場次報到':action+'打卡'}成功\n伺服器時間：${x.ts.replace('T',' ')}\n工作項目：${shiftName(s)}${role?'（'+role+'）':''}${x.mode==='session_checkin'?'\n此場以場次計算，不需要下班打卡。':''}${x.warning?'\n\n提醒：'+x.warning:''}`);
     await load();show('home');
   }catch(e){alert(e.message)}finally{punchBusy=false;render()}},e=>{punchBusy=false;render();alert('無法取得定位：'+e.message)},{enableHighAccuracy:true,timeout:20000,maximumAge:0});
 }
