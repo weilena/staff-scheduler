@@ -88,6 +88,7 @@ function home(){
   const today=taipeiDate(),allToday=D.shifts.filter(s=>s.date===today&&s.status!=='cancelled').sort((a,b)=>a.start.localeCompare(b.start)),mine=allToday.filter(s=>(s.assignments||[]).some(a=>a.empId===D.me.id));
   const states=mine.map(attendanceState),needIn=states.filter(x=>x.key==='need-in').length,working=states.filter(x=>x.key==='working').length,done=states.filter(x=>x.key==='done').length;
   app.innerHTML=`<div class="card"><h2>我的今日班表</h2><div class="row"><span class="tag">我的 ${mine.length} 場</span><span class="tag">未打卡 ${needIn}</span><span class="tag">上班中 ${working}</span><span class="tag">已完成 ${done}</span></div><div class="legend"><span class="tomorrow">黃色：未打卡</span><span class="future">藍色：上班中</span><span class="today">綠色：已完成</span></div><div class="reminder">到店先完成上班定位打卡；工作結束離店前，務必再完成下班定位打卡。NPC 只需場次報到。</div>${mine.map(s=>shiftCard(s)).join('')||'<p class="muted">今天沒有指派給你的工作</p>'}</div><div class="grid"><button onclick="show('punch')">前往定位打卡</button><button class="secondary" onclick="show('schedule')">查看完整班表</button></div>`
+  if(D.me.role==='manager')app.insertAdjacentHTML('beforeend',`<div class="card"><h2>管理員功能</h2><p class="muted">你同時保留員工打卡功能；安排班表、指派人員及查看全體資料請進入管理後台。</p><a class="button" style="display:block;text-align:center;text-decoration:none" href="https://weilena.github.io/staff-scheduler/web/admin.html" target="_blank" rel="noopener">開啟排班管理後台</a></div>`);
 }
 function schedule(){
   const list=[...D.shifts].filter(s=>s.status!=='cancelled').sort((a,b)=>(a.date+a.start).localeCompare(b.date+b.start));

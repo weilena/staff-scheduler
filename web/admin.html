@@ -471,6 +471,7 @@ function dateWD(ds){return new Date(ds+'T00:00:00').getDay()}
 /* 當日有效可上班時間:特定日期回報 > 每週固定 */
 function effectiveAvail(e,ds){
   if(e.availX&&e.availX[ds])return e.availX[ds];
+  if(e.type==='full')return {on:true,start:'09:00',end:'22:30',assumedFullTime:true};
   return e.avail?.[dateWD(ds)];
 }
 function employedOn(e,ds){
@@ -779,6 +780,20 @@ function moveWeek(n){
   const d=new Date(weekAnchor+'T00:00:00');d.setDate(d.getDate()+n*7);
   weekAnchor=fmtDate(d);render();
 }
+async function copyManualWeekToNext(){
+  const days=weekDates(weekAnchor),nextDays=days.map(ds=>{const d=new Date(ds+'T00:00:00');d.setDate(d.getDate()+7);return fmtDate(d)});
+  const source=S.shifts.filter(sh=>days.includes(sh.date)&&!isCx(sh)&&!String(sh.id).startsWith('sb_'));
+  if(!source.length)return alert('本週沒有可複製的人工班次。SimplyBook 場次不會由這裡複製。');
+  if(!confirm(`將本週 ${source.length} 筆人工班次複製到下週？\n\n包含櫃台、清潔、練習場、駐店及人工建立的班次；不包含 SimplyBook 同步場次。`))return;
+  let added=0;
+  for(const sh of source){
+    const date=nextDays[days.indexOf(sh.date)],exists=S.shifts.some(x=>x.date===date&&x.storeId===sh.storeId&&x.kind===sh.kind&&x.themeId===sh.themeId&&x.start===sh.start&&x.end===sh.end);
+    if(exists)continue;
+    const copy={...JSON.parse(JSON.stringify(sh)),id:uid(),date,status:'active',recurringFrom:sh.id};
+    S.shifts.push(copy);dbUpsertShift(copy);added++;
+  }
+  const d=new Date(weekAnchor+'T00:00:00');d.setDate(d.getDate()+7);weekAnchor=fmtDate(d);render();alert(`已新增 ${added} 筆下週班次；重複時段已略過。`);
+}
 function vWeek(){
   const days=weekDates(weekAnchor);
   const td=todayStr();
@@ -787,6 +802,7 @@ function vWeek(){
       <input type="date" value="${weekAnchor}" onchange="weekAnchor=this.value;render()">
       <button class="btn gray sm" onclick="moveWeek(1)">下週 →</button>
       <button class="btn gray sm" onclick="weekAnchor=todayStr();render()">本週</button>
+      <button class="btn sm" onclick="copyManualWeekToNext()">複製人工班次到下週</button>
     </div>
     <p class="muted" style="margin-bottom:8px">每欄上方為當日人力(綠=可上班、灰=兼職休、<span class="leavered" style="padding:0 4px;border-radius:4px">紅=正職休</span>);黃底=有未排人場次。</p>
     <div class="week">${days.map(ds=>{
@@ -1625,7 +1641,7 @@ function vAvail(){
       <select onchange="availEmp=this.value;render()">${actives.map(x=>`<option value="${x.id}" ${x.id===availEmp?'selected':''}>${esc(x.name)}</option>`).join('')}</select>
       <span class="muted">改動即時儲存。判斷順序:特定日期回報 > 每週固定。</span></div>
     <h3 style="margin:6px 0 8px">每週固定(基本盤)</h3>
-    <p class="muted" style="margin-bottom:8px">正職建議整週打開;兼職建議整週關閉、改用下方逐日回報(對應現行 Google 日曆做法)。</p>
+    <p class="muted" style="margin-bottom:8px">正職未填特定日期休假時，一律視為可上班；兼職依每週固定與下方逐日回報判斷。</p>
     <table><tr><th>星期</th><th>可上班</th><th>從</th><th>到</th></tr>
     ${[1,2,3,4,5,6,0].map(d=>{
       const a=e.avail?.[d]||{on:false,start:'09:00',end:'22:00'};

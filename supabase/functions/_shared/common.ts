@@ -47,6 +47,9 @@ export function employedOn(emp: any, date: string) {
 
 function availability(emp: any, date: string) {
   if (emp?.availX?.[date]) return emp.availX[date];
+  // Full-time staff report leave rather than ordinary availability. A date
+  // without a date-specific leave entry is therefore available by default.
+  if (emp?.type === "full") return { on: true, start: "09:00", end: "22:30", assumedFullTime: true };
   const day = new Date(`${date}T00:00:00+08:00`).getDay();
   return emp?.avail?.[day] ?? emp?.avail?.[String(day)];
 }
