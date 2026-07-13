@@ -58,7 +58,22 @@ function attendanceState(s){
 }
 function shiftCard(s,all=true){
   const mine=(s.assignments||[]).some(a=>a.empId===D.me.id),state=mine&&s.date===taipeiDate()?attendanceState(s):null;
-  return `<div class="shift ${dateClass(s.date)} ${s.status==='cancelled'?'cancelled':''}"><b>${esc(s.date)}　${esc(s.start)}–${esc(s.end)}</b><br>${esc(storeName(s.storeId))}・${esc(shiftName(s))}<br>${all?`<span class="muted">${(s.assignments||[]).map(a=>esc(empName(a.empId))+' ('+esc(a.role)+')').join('、')}</span>`:''}${state?`<br><span class="status ${state.key}">${state.text}</span>`:''}</div>`
+  const direct=state?.key==='need-in'?`<button style="margin-top:9px" onclick="directShiftPunch('in','${esc(s.id)}')">這一場上班打卡</button>`:state?.key==='working'?`<button class="danger" style="margin-top:9px" onclick="directShiftPunch('out','${esc(s.id)}')">這一場下班打卡</button>`:'';
+  return `<div class="shift ${dateClass(s.date)} ${s.status==='cancelled'?'cancelled':''}"><b>${esc(s.date)}　${esc(s.start)}–${esc(s.end)}</b><br>${esc(storeName(s.storeId))}・${esc(shiftName(s))}<br>${all?`<span class="muted">${(s.assignments||[]).map(a=>esc(empName(a.empId))+' ('+esc(a.role)+')').join('、')}</span>`:''}${state?`<br><span class="status ${state.key}">${state.text}</span><br>${direct}`:''}</div>`
+}
+function directShiftPunch(type,id){
+  if(punchBusy)return;
+  const s=D.shifts.find(x=>x.id===id),role=(s?.assignments||[]).find(a=>a.empId===D.me.id)?.role||'';
+  if(!s)return alert('找不到這筆場次，請重新整理後再試。');
+  const action=type==='in'?'上班':'下班';
+  if(!confirm(`確認${action}打卡？\n\n${s.start}–${s.end}　${shiftName(s)}${role?'（'+role+'）':''}\n${storeName(s.storeId)}\n\n系統將立即取得手機精確定位。`))return;
+  if(!navigator.geolocation)return alert('此手機不支援定位打卡');
+  punchBusy=true;render();
+  navigator.geolocation.getCurrentPosition(async p=>{try{
+    const x=await api({action:'punch',type,latitude:p.coords.latitude,longitude:p.coords.longitude,accuracy:p.coords.accuracy,shiftIds:type==='in'?[id]:[],workItemCode:''});
+    alert(`${x.site} ${action}打卡成功\n伺服器時間：${x.ts.replace('T',' ')}\n工作項目：${shiftName(s)}${role?'（'+role+'）':''}${x.warning?'\n\n提醒：'+x.warning:''}`);
+    await load();show('home');
+  }catch(e){alert(e.message)}finally{punchBusy=false;render()}},e=>{punchBusy=false;render();alert('無法取得定位：'+e.message)},{enableHighAccuracy:true,timeout:20000,maximumAge:0});
 }
 function home(){
   const today=taipeiDate(),allToday=D.shifts.filter(s=>s.date===today&&s.status!=='cancelled').sort((a,b)=>a.start.localeCompare(b.start)),mine=allToday.filter(s=>(s.assignments||[]).some(a=>a.empId===D.me.id));
