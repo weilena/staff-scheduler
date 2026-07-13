@@ -225,8 +225,12 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
       <div class="field grow"><label>需 NPC 人數</label><input type="number" id="tfNPC" min="0" value="0"></div>
     </div>
     <div class="row">
-      <div class="field grow"><label>場控每場(元)</label><input type="number" id="tfPayGM" min="0" value="300"></div>
-      <div class="field grow"><label>NPC 每場(元)</label><input type="number" id="tfPayNPC" min="0" value="0"></div>
+      <div class="field grow"><label>場控平日／場</label><input type="number" id="tfPayGM" min="0" value="300"></div>
+      <div class="field grow"><label>場控假日／場</label><input type="number" id="tfPayGMHoliday" min="0" value="300"></div>
+    </div>
+    <div class="row">
+      <div class="field grow"><label>NPC 平日／場</label><input type="number" id="tfPayNPC" min="0" value="0"></div>
+      <div class="field grow"><label>NPC 假日／場</label><input type="number" id="tfPayNPCHoliday" min="0" value="0"></div>
     </div>
     <label class="cklab" style="margin:0"><input type="checkbox" id="tfActive" checked> 開放中(關閉後不出現在排班)</label>
   </div>
@@ -336,7 +340,20 @@ async function afterLogin(){
   if(S.settings.npcRestMin==null)S.settings.npcRestMin=30;
   if(S.settings.reminderHour==null)S.settings.reminderHour=20;
   if(!Array.isArray(S.closedDates))S.closedDates=[];
-  S.themes.forEach(function(t){if(!Array.isArray(t.slots))t.slots=[];if(t.payGM==null)t.payGM=300;if(t.payNPC==null)t.payNPC=0});
+  let payrollDefaultsChanged=false;
+  S.themes.forEach(function(t){
+    if(!Array.isArray(t.slots))t.slots=[];if(t.payGM==null)t.payGM=300;if(t.payNPC==null)t.payNPC=0;
+    if(t.payGMHoliday==null){t.payGMHoliday=t.payGM;payrollDefaultsChanged=true}
+    if(t.payNPCHoliday==null){t.payNPCHoliday=t.payNPC;payrollDefaultsChanged=true}
+    const rates={
+      '詭獄':{npc:450,npcHoliday:650,gm:300,gmHoliday:500},'詭獄加場':{npc:450,npcHoliday:650,gm:300,gmHoliday:500},
+      '詭店':{npc:550,npcHoliday:750},'詭廁':{npc:450,npcHoliday:650}
+    }[t.name];
+    if(rates){for(const [k,v] of Object.entries({payNPC:rates.npc,payNPCHoliday:rates.npcHoliday,payGM:rates.gm,payGMHoliday:rates.gmHoliday})){if(v!=null&&t[k]!==v){t[k]=v;payrollDefaultsChanged=true}}}
+  });
+  if(S.settings.practiceHourlyRate==null){S.settings.practiceHourlyRate=196;payrollDefaultsChanged=true}
+  if(S.settings.floorHourlyRate==null){S.settings.floorHourlyRate=200;payrollDefaultsChanged=true}
+  if(payrollDefaultsChanged)setTimeout(save,0);
   S.employees.forEach(function(e){if(!e.availX)e.availX={};if(e.startDate==null)e.startDate='';if(e.endDate==null)e.endDate=''});
   // 店別黑白對比色(舊藍/紫自動換成黑/白;若使用者自訂過非舊色則保留)
   {let changed=false;S.stores.forEach(function(s){
@@ -1216,6 +1233,13 @@ function attendTable(month){
 
 /* ============ 薪資 ============ */
 let payMonth=monthStr();
+function isHolidayRate(date){const wd=dateWD(date);return wd===0||wd===6}
+function themeSessionRate(t,role,date){
+  const holiday=isHolidayRate(date);
+  if(role==='NPC')return Number(holiday?(t.payNPCHoliday??t.payNPC):(t.payNPC??0))||0;
+  if(role==='場控')return Number(holiday?(t.payGMHoliday??t.payGM):(t.payGM??0))||0;
+  return 0;
+}
 function schedMinutes(empId,month){
   let m=0;
   for(const sh of S.shifts){
@@ -1237,8 +1261,8 @@ function sessionStats(empId,month){
     for(const a of sh.assignments){
       if(a.empId!==empId)continue;
       let r=0;
-      if(a.role==='NPC'){npc++;r=t.payNPC||0}
-      else if(a.role==='場控'){gm++;r=t.payGM||0}
+      if(a.role==='NPC'){npc++;r=themeSessionRate(t,a.role,sh.date)}
+      else if(a.role==='場控'){gm++;r=themeSessionRate(t,a.role,sh.date)}
       pay+=r;
       const k=`${t.name}${a.role}`;detail[k]=(detail[k]||0)+1;
     }
@@ -1259,6 +1283,17 @@ function hourlyMinutes(empId,month){
 function approvedHourlyMinutes(empId,month){
   return (LINE.daily||[]).filter(x=>x.emp_id===empId&&String(x.work_date).slice(0,7)===month&&x.status==='approved')
     .reduce((n,x)=>n+Math.max(0,Number(x.payable_minutes)||0),0);
+}
+function approvedHourlyBreakdown(e,month){
+  let minutes=0,pay=0;
+  for(const d of (LINE.daily||[]).filter(x=>x.emp_id===e.id&&String(x.work_date).slice(0,7)===month&&x.status==='approved')){
+    const payable=Math.max(0,Number(d.payable_minutes)||0);if(!payable)continue;
+    const shifts=S.shifts.filter(sh=>!isCx(sh)&&sh.date===d.work_date&&sh.kind!=='theme'&&(sh.assignments||[]).some(a=>a.empId===e.id));
+    const weighted=shifts.map(sh=>({m:Math.max(0,toMin(sh.end)-toMin(sh.start)),rate:sh.kind==='practice'?(S.settings.practiceHourlyRate||196):sh.kind==='floor'?(S.settings.floorHourlyRate||200):(e.hourlyRate||0)}));
+    const scheduled=weighted.reduce((n,x)=>n+x.m,0);minutes+=payable;
+    if(scheduled)pay+=weighted.reduce((n,x)=>n+(payable*x.m/scheduled)/60*x.rate,0);else pay+=payable/60*(e.hourlyRate||0);
+  }
+  return{minutes,pay:Math.round(pay)};
 }
 function approvedOvertimeMinutes(empId,month){
   return (LINE.overtime||[]).filter(x=>x.emp_id===empId&&String(x.work_date).slice(0,7)===month&&x.status==='approved')
@@ -1283,7 +1318,7 @@ function empSessions(empId,month){
     if(!a)continue;
     const t=sh.kind==='theme'?theme(sh.themeId):null;
     let fee=0;
-    if(!isCx(sh)&&t){fee=a.role==='NPC'?(t.payNPC||0):(t.payGM||0);}
+    if(!isCx(sh)&&t){fee=themeSessionRate(t,a.role,sh.date);}
     rows.push({date:sh.date,start:sh.start,end:sh.end,
       kind:sh.kind,label:shiftLabel(sh),role:a.role,
       store:store(sh.storeId)?.name||'',fee,cancelled:isCx(sh),cx:cxLabel(sh)});
@@ -1327,8 +1362,7 @@ function vPay(){
   const actives=S.employees.filter(e=>employedInMonth(e,payMonth));
   const rows=actives.map(e=>{
     const ss=sessionStats(e.id,payMonth);
-    const hm=approvedHourlyMinutes(e.id,payMonth);
-    const hp=Math.round(hm/60*(e.hourlyRate||0));
+    const hourly=approvedHourlyBreakdown(e,payMonth),hm=hourly.minutes,hp=hourly.pay;
     const base=e.type==='full'?(e.monthlySalary||0):0;
     const am=actualMinutes(e.id,payMonth);
     // 正職加班只採管理員核准分鐘，不讓缺卡或異常長工時自動進薪資。
@@ -1360,7 +1394,7 @@ function vPay(){
         <td class="num"><b>${total.toLocaleString()}</b></td></tr>`).join('')}
       <tr><td colspan="11" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
     </table>
-    <p class="muted" style="margin-top:8px">場次費=每場依主題費率（「主題」頁可調）；時薪費=管理員逐日核准的打卡計薪分鐘×時薪；正職=月薪+已核准加班費。原始打卡、缺卡與異常長工時不會直接進薪資。已取消／颱風天場次不列入。</p>
+    <p class="muted" style="margin-top:8px">場次費依主題與平日／假日費率（週六、週日採假日價）；練習場時薪 $${S.settings.practiceHourlyRate||196}、駐店場控時薪 $${S.settings.floorHourlyRate||200}，其他櫃台／清潔採員工時薪。時薪工作須經管理員核准計薪分鐘；原始缺卡與異常工時不會直接進薪資。</p>
   </div>`;
 }
 function exportPayCSV(){
@@ -1368,8 +1402,7 @@ function exportPayCSV(){
   let csv='﻿員工,身分,場控場次,NPC場次,場次費,櫃台駐店時數,時薪費,月薪,打卡時數,合計,場次明細\n';
   for(const e of actives){
     const ss=sessionStats(e.id,payMonth);
-    const hm=approvedHourlyMinutes(e.id,payMonth);
-    const hp=Math.round(hm/60*(e.hourlyRate||0));
+    const hourly=approvedHourlyBreakdown(e,payMonth),hm=hourly.minutes,hp=hourly.pay;
     const base=e.type==='full'?(e.monthlySalary||0):0;
     const am=actualMinutes(e.id,payMonth);
     const detail=Object.entries(ss.detail).map(([k,n])=>k+'×'+n).join('、');
@@ -1480,14 +1513,14 @@ function vThemes(){
     <div class="row" style="margin-bottom:10px"><h2 class="grow">主題管理</h2>
     <button class="btn" onclick="openTheme(null)">＋ 新增主題</button></div>
     ${S.stores.map(s=>`<h3 style="margin:12px 0 8px"><span class="badge" style="background:${s.color};color:${textOn(s.color)};border:1px solid ${lum(s.color)>0.82?'#cbd5e1':'transparent'}">${esc(s.name)}</span></h3>
-    <table><tr><th>主題</th><th class="num">場次長度</th><th>場次時刻</th><th class="num">需場控</th><th class="num">需NPC</th><th class="num">場控/場</th><th class="num">NPC/場</th><th>狀態</th><th></th></tr>
+    <table><tr><th>主題</th><th class="num">場次長度</th><th>場次時刻</th><th class="num">需場控</th><th class="num">需NPC</th><th class="num">場控平日</th><th class="num">場控假日</th><th class="num">NPC平日</th><th class="num">NPC假日</th><th>狀態</th><th></th></tr>
     ${S.themes.filter(t=>t.storeId===s.id).map(t=>`<tr style="${t.active?'':'opacity:.5'}">
       <td><b>${esc(t.name)}</b></td><td class="num">${t.dur} 分</td>
       <td style="font-size:13px">${(t.slots||[]).join('、')||'<span class="muted">未設定</span>'}</td>
       <td class="num">${t.needGM}</td><td class="num">${t.needNPC}</td>
-      <td class="num">$${t.payGM||0}</td><td class="num">${t.payNPC?'$'+t.payNPC:'—'}</td>
+      <td class="num">$${t.payGM||0}</td><td class="num">$${t.payGMHoliday??t.payGM??0}</td><td class="num">${t.payNPC?'$'+t.payNPC:'—'}</td><td class="num">${t.payNPCHoliday?'$'+t.payNPCHoliday:'—'}</td>
       <td>${t.active?'開放':'關閉'}</td>
-      <td><button class="btn gray sm" onclick="openTheme('${t.id}')">編輯</button></td></tr>`).join('')||'<tr><td colspan="9" class="muted">尚無主題</td></tr>'}
+      <td><button class="btn gray sm" onclick="openTheme('${t.id}')">編輯</button></td></tr>`).join('')||'<tr><td colspan="11" class="muted">尚無主題</td></tr>'}
     </table>`).join('')}
     <p class="muted" style="margin-top:8px">場次長度先用「場次間隔 − 10 分整理」估算,和實際不符請點「編輯」修改。店別分配若有誤也可在編輯裡改。</p>
   </div>`;
@@ -1503,7 +1536,9 @@ function openTheme(id){
   document.getElementById('tfGM').value=t?t.needGM:1;
   document.getElementById('tfNPC').value=t?t.needNPC:0;
   document.getElementById('tfPayGM').value=t?(t.payGM??300):300;
+  document.getElementById('tfPayGMHoliday').value=t?(t.payGMHoliday??t.payGM??300):300;
   document.getElementById('tfPayNPC').value=t?(t.payNPC??0):0;
+  document.getElementById('tfPayNPCHoliday').value=t?(t.payNPCHoliday??t.payNPC??0):0;
   document.getElementById('tfActive').checked=t?t.active:true;
   dlgTheme.showModal();
 }
@@ -1522,7 +1557,9 @@ function saveTheme(){
     needGM:Number(document.getElementById('tfGM').value)||0,
     needNPC:Number(document.getElementById('tfNPC').value)||0,
     payGM:Number(document.getElementById('tfPayGM').value)||0,
+    payGMHoliday:Number(document.getElementById('tfPayGMHoliday').value)||0,
     payNPC:Number(document.getElementById('tfPayNPC').value)||0,
+    payNPCHoliday:Number(document.getElementById('tfPayNPCHoliday').value)||0,
     active:document.getElementById('tfActive').checked
   };
   if(editThemeId)Object.assign(theme(editThemeId),data);
