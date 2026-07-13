@@ -33,7 +33,7 @@ function bindView(name){document.getElementById('hello').textContent=name||'首�
 async function bind(){try{await api({action:'bind',code:document.getElementById('bindCode').value});await load()}catch(e){alert(e.message)}}
 function show(k){tab=k;document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.tab===k));render()}
 const empName=id=>D.employees.find(e=>e.id===id)?.name||'未排人',storeName=id=>D.stores.find(s=>s.id===id)?.name||id,themeName=id=>D.themes.find(t=>t.id===id)?.name||'其他班';
-const shiftName=s=>s.kind==='theme'?themeName(s.themeId):s.kind==='floor'?'駐店場控':'櫃台班';
+const shiftName=s=>s.kind==='theme'?themeName(s.themeId):s.kind==='floor'?'駐店場控':s.kind==='cleaning'?'每周大清潔':s.kind==='practice'?'練習場':s.kind==='counter'?(s.storeId==='ms'?'謎先生櫃台':s.storeId==='dz'?'桌遊大忠店櫃台':'櫃台班'):'其他班別';
 const myShifts=()=>D.shifts.filter(s=>s.status!=='cancelled'&&(s.assignments||[]).some(a=>a.empId===D.me.id));
 function shiftCard(s,all=true){const mine=(s.assignments||[]).some(a=>a.empId===D.me.id);return `<div class="shift ${mine?'mine':''} ${s.status==='cancelled'?'cancelled':''}"><b>${esc(s.date)}　${esc(s.start)}–${esc(s.end)}</b><br>${esc(storeName(s.storeId))}・${esc(shiftName(s))}<br>${all?`<span class="muted">${(s.assignments||[]).map(a=>esc(empName(a.empId))+' ('+esc(a.role)+')').join('、')}</span>`:''}</div>`}
 function render(){if(!D)return;if(tab==='home')home();else if(tab==='schedule')schedule();else if(tab==='punch')punchView();else if(tab==='requests')requestView();else mineView()}

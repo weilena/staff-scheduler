@@ -129,6 +129,7 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
           <option value="theme">主題場次</option>
           <option value="counter">櫃台班</option>
           <option value="floor">駐店場控班</option>
+          <option value="cleaning">每周大清潔</option>
           <option value="practice">練習場(時數依打卡之星)</option>
         </select>
       </div>
@@ -261,7 +262,7 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
 </div>
 <script>
 /* ============ 資料 ============ */
-const ROLES=['場控','NPC','櫃台'];
+const ROLES=['場控','NPC','櫃台','練習場'];
 const WD=['日','一','二','三','四','五','六'];
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
 function defaultAvail(){const a={};for(let i=0;i<7;i++)a[i]={on:true,start:'09:00',end:'22:30'};return a}
@@ -283,7 +284,7 @@ let LINE={accounts:[],worksites:[],requests:[],responses:[],attendance:[],overti
 function isDemo(){return (window.CFG&&CFG.DEMO)||/[?&]demo=1/.test(location.search)}
 function seedConfig(){
   return {
-    stores:[{id:'dz',name:'大忠店',color:'#111827'},{id:'ms',name:'謎先生',color:'#e5e7eb'}],
+    stores:[{id:'dz',name:'勃根地大忠店',color:'#111827'},{id:'ms',name:'謎先生',color:'#e5e7eb'}],
     themes:seedThemes(),
     settings:{prepMin:10,travelMin:12,npcMaxChain:2,npcRestMin:30},
     closedDates:[],
@@ -592,8 +593,10 @@ function staffLoadPanel(){
 function shiftLabel(sh){
   if(sh.kind==='theme'){const t=theme(sh.themeId);return t?t.name:'(主題已刪)'}
   if(sh.kind==='floor')return '駐店場控';
+  if(sh.kind==='cleaning')return '每周大清潔';
   if(sh.kind==='practice')return '練習場';
-  return '櫃台班';
+  if(sh.kind==='counter')return sh.storeId==='ms'?'謎先生櫃台':sh.storeId==='dz'?'桌遊大忠店櫃台':'櫃台班';
+  return '其他班別';
 }
 /* 是否已取消(涵蓋 cancelled / cancelled_typhoon / cancelled_customer / cancelled_other)*/
 function isCx(sh){return sh.status&&String(sh.status).indexOf('cancelled')===0}
@@ -897,12 +900,13 @@ function defaultSlots(){
     const t=theme(document.getElementById('sfTheme').value);
     for(let i=0;i<(t?t.needGM:1);i++)dlgSlotsArr.push({role:'場控',empId:''});
     for(let i=0;i<(t?t.needNPC:0);i++)dlgSlotsArr.push({role:'NPC',empId:''});
-  }else if(kind==='floor'||kind==='practice')dlgSlotsArr.push({role:'場控',empId:''});
+  }else if(kind==='practice')dlgSlotsArr.push({role:'練習場',empId:''});
+  else if(kind==='floor'||kind==='cleaning')dlgSlotsArr.push({role:'場控',empId:''});
   else dlgSlotsArr.push({role:'櫃台',empId:''});
 }
 function addSlot(){
   const kind=document.getElementById('sfKind').value;
-  dlgSlotsArr.push({role:kind==='counter'?'櫃台':'場控',empId:''});
+  dlgSlotsArr.push({role:kind==='counter'?'櫃台':kind==='practice'?'練習場':'場控',empId:''});
   renderSlots();
 }
 function rmSlot(i){dlgSlotsArr.splice(i,1);renderSlots()}
