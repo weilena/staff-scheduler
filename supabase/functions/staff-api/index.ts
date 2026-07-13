@@ -5,7 +5,7 @@ const dateText = (d: Date) => d.toISOString().slice(0, 10);
 const MANUAL_WORK_ITEMS: Record<string, string> = {
   grandma: "外婆", haunted_shop: "詭店", haunted_prison: "詭獄", shit_power: "屎力全開",
   haunted_toilet: "詭廁", escapee: "越獄者", orphan: "孤兒怨", mr_mystery_counter: "謎先生櫃台",
-  burgundy_counter: "桌遊大忠店櫃台", weekly_cleaning: "每週大清潔", practice: "練習場",
+  burgundy_counter: "桌遊大忠店櫃台", weekly_cleaning: "每週大清潔", practice: "練習場", floor_support: "場控／現場支援",
 };
 
 Deno.serve(async (req) => {
@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
     if (!employee?.active) return json({ error: "員工帳號已停用" }, 403);
 
     if (action === "bootstrap") {
-      const now = new Date(), from = dateText(new Date(now.getTime() - 7 * DAY)), to = dateText(new Date(now.getTime() + 60 * DAY));
+      const now = new Date(), from = dateText(new Date(now.getTime() - 60 * DAY)), to = dateText(new Date(now.getTime() + 60 * DAY));
       const [{ data: worksites }, { data: punches }, { data: sessionCheckins }, { data: shiftConfirmations }, { data: requests }, { data: responses }, { data: attendanceDays }, { data: attendanceRequests }] = await Promise.all([
         sb.from("worksites").select("id,name,radius_m,enabled").eq("enabled", true),
         sb.from("punches").select("id,ts,type,worksite_id,verification,review_state,voided_at,void_reason,shift_ids,raw").eq("emp_id", employee.id).gte("ts", from).order("ts", { ascending: false }).limit(60),
@@ -212,7 +212,7 @@ Deno.serve(async (req) => {
       const reason = String(input.reason ?? "").trim();
       if (!reason) return json({ error: "請填寫補卡原因" }, 400);
       const requestType = String(input.requestType ?? "");
-      if (!["missing_in", "missing_out", "correction"].includes(requestType)) return json({ error: "請選擇補上班卡、補下班卡或更正整日時間" }, 400);
+      if (!["missing_in", "missing_out", "correction", "npc_checkin"].includes(requestType)) return json({ error: "請選擇補上班卡、補下班卡、NPC 補報到或更正整日時間" }, 400);
       const punchDate = String(input.punchDate ?? "");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(punchDate)) return json({ error: "補卡日期格式錯誤" }, 400);
       const requested = input.requested ?? {};
@@ -221,11 +221,19 @@ Deno.serve(async (req) => {
       requested.workItem = { code: workItemCode, labels: [MANUAL_WORK_ITEMS[workItemCode]], source: "attendance_request" };
       delete requested.workItemCode;
       const timeOk = (v: unknown) => /^([01]\d|2[0-3]):[0-5]\d$/.test(String(v ?? ""));
-      if (["missing_in", "missing_out"].includes(requestType) && !timeOk(requested.time)) return json({ error: "請填寫正確的補卡時間" }, 400);
+      if (["missing_in", "missing_out", "npc_checkin"].includes(requestType) && !timeOk(requested.time)) return json({ error: "請填寫正確的補卡時間" }, 400);
       if (requestType === "correction" && (!timeOk(requested.inTime) || !timeOk(requested.outTime) || requested.inTime >= requested.outTime))
         return json({ error: "請填寫正確且先後順序一致的上下班時間" }, 400);
-      const { data: duplicate } = await sb.from("attendance_requests").select("id").eq("emp_id", employee.id).eq("punch_date", punchDate).eq("status", "pending").maybeSingle();
-      if (duplicate) return json({ error: "這一天已有待審核的補卡申請" }, 409);
+      if (requestType === "npc_checkin") {
+        const shift = shifts.find((s: any) => String(s.id) === String(requested.shiftId ?? ""));
+        const role = (shift?.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "";
+        if (!shift || shift.date !== punchDate || String(role).toUpperCase() !== "NPC") return json({ error: "NPC 補報到必須連結到本人過去的 NPC 場次" }, 400);
+      }
+      const { data: pendingSameDay } = await sb.from("attendance_requests").select("request_type,requested").eq("emp_id", employee.id).eq("punch_date", punchDate).eq("status", "pending");
+      const duplicate = (pendingSameDay ?? []).some((r: any) => requestType === "npc_checkin"
+        ? r.request_type === requestType && String(r.requested?.shiftId ?? "") === String(requested.shiftId ?? "")
+        : r.request_type === requestType && JSON.stringify(r.requested ?? {}) === JSON.stringify(requested));
+      if (duplicate) return json({ error: "這個場次已有相同的待審補卡申請" }, 409);
       const { error } = await sb.from("attendance_requests").insert({ emp_id: employee.id, punch_date: punchDate,
         request_type: requestType, requested, reason });
       if (error) throw error;
