@@ -1149,10 +1149,22 @@ function manualPunch(){
   });
 }
 async function voidPunch(id){
-  const reason=prompt('原始打卡不能刪除。請填寫作廢原因：');if(!reason)return;
-  const r=await sbc.rpc('void_punch',{p_id:id,p_reason:reason});
-  if(r.error||!r.data?.ok)return alert(r.error?.message||r.data?.msg||'作廢失敗');
+  const reason=(prompt('原始打卡不能刪除。請填寫作廢原因（至少 3 個字）：')||'').trim();
+  if(!reason)return;
+  if(reason.length<3)return alert('作廢原因至少需要 3 個字，請寫清楚原因後再送出。');
+  if(!confirm(`確定要作廢這筆打卡嗎？\n\n原因：${reason}\n\n原始紀錄仍會保留，且不能復原。`))return;
+  const punch=S.punches.find(p=>p.id===id);
+  if(!punch)return alert('找不到這筆打卡，請重新整理後再試。');
+  const user=await sbc.auth.getUser();
+  const now=new Date().toISOString();
+  const r=await sbc.from('punches').update({voided_at:now,voided_by:user.data?.user?.id||null,void_reason:reason,review_state:'voided'}).eq('id',id).is('voided_at',null).select('id');
+  if(r.error)return alert(`作廢失敗：${r.error.message}`);
+  if(!r.data?.length)return alert('這筆紀錄已經作廢，或目前帳號沒有作廢權限。');
+  await sbc.from('audit_log').insert({actor_type:'supabase_admin',actor_id:user.data?.user?.id||null,action:'void_punch',target_type:'punch',target_id:id,details:{reason,original:punch}});
+  const day=String(punch.ts||'').slice(0,10);
+  if(day)await sbc.rpc('recalculate_attendance_day',{p_emp:punch.empId,p_date:day});
   await afterLogin();tab='punch';renderNav();render();
+  alert('這筆打卡已成功作廢，原始紀錄與原因已保留。');
 }
 function pairPunches(empId,month){
   const ps=S.punches.filter(p=>p.empId===empId&&!p.voidedAt&&p.ts.slice(0,7)===month).sort((a,b)=>a.ts.localeCompare(b.ts));
