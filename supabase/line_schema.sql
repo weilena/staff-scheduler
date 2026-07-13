@@ -26,14 +26,24 @@ create index if not exists line_bind_codes_emp_idx on line_bind_codes(emp_id);
 create table if not exists worksites (
   id text primary key,
   name text not null,
+  address text,
   latitude double precision,
   longitude double precision,
   radius_m integer not null default 200 check (radius_m between 20 and 2000),
   enabled boolean not null default true,
   updated_at timestamptz not null default now()
 );
-insert into worksites(id,name) values ('dz','大忠店'),('ms','謎先生')
-on conflict (id) do nothing;
+alter table worksites add column if not exists address text;
+insert into worksites(id,name,address,latitude,longitude,radius_m) values
+  ('dz','勃根地大忠店','臺中市西區大忠街21號',24.144356997751,120.656631030448,200),
+  ('ms','謎先生','臺中市西區市府路39號10樓',24.137674986449,120.677875969875,200)
+on conflict (id) do update set
+  name=excluded.name,
+  address=coalesce(worksites.address,excluded.address),
+  latitude=coalesce(worksites.latitude,excluded.latitude),
+  longitude=coalesce(worksites.longitude,excluded.longitude),
+  radius_m=coalesce(worksites.radius_m,excluded.radius_m),
+  updated_at=now();
 
 alter table punches add column if not exists worksite_id text references worksites(id);
 alter table punches add column if not exists latitude double precision;
