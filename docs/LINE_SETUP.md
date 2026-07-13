@@ -2,6 +2,8 @@
 
 程式已完成 LINE 登入、定位打卡、查班、讓班／換班、加場回覆、補卡／加班審核與通知額度控制。正式連線前需要建立一個測試 LINE 官方帳號；不要把任何密碼或 Token 貼進 GitHub、聊天或 `web/config.js`。
 
+為節省 LINE 計費訊息，加場及公開讓班只會依資格與當月班數排序，通知最多 2 位合適員工；指定換班只通知指定同事。員工按鈕回覆仍使用免費 Reply。
+
 ## 1. 更新 Supabase 資料庫
 
 在 Supabase Dashboard → **SQL Editor** 開啟並執行 `supabase/line_schema.sql`。成功時顯示 `Success. No rows returned` 是正常的。

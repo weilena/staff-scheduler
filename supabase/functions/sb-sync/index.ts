@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { eligibilityErrors, queueNotification } from "../_shared/common.ts";
+import { eligibilityErrors, queueNotification, rankCandidatesByWorkload } from "../_shared/common.ts";
 
 const LOGIN_URL = "https://user-api.simplybook.asia/login";
 const ADMIN_URL = "https://user-api.simplybook.asia/admin/";
@@ -231,7 +231,8 @@ Deno.serve(async (req) => {
               request_type: "extra", shift_id: after.id, deadline, details: { source: "simplybook", role: assignment.role, slotIndex },
             }).select().single();
             if (requestError) throw requestError;
-            const candidates = (cfg.employees ?? []).filter((e: any) => eligibilityErrors(e, after, assignment.role, merged, cfg).length === 0);
+            const eligible = (cfg.employees ?? []).filter((e: any) => eligibilityErrors(e, after, assignment.role, merged, cfg).length === 0);
+            const candidates = rankCandidatesByWorkload(eligible, merged, after.date, 2);
             for (const employee of candidates) await queueNotification(supabase, employee.id, "extra_shift", {
               title: "臨時加場徵人", text: `${after.date} ${after.start}–${after.end} ${selectedThemeName(cfg, after.themeId)}（${assignment.role}），是否可以接班？`,
               requestId: request.id, actions: true, shiftId: after.id,

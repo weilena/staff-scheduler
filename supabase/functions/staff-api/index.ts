@@ -1,4 +1,4 @@
-import { cors, distanceMeters, eligibilityErrors, getContext, json, queueNotification, serviceClient, verifyLineIdToken } from "../_shared/common.ts";
+import { cors, distanceMeters, eligibilityErrors, getContext, json, queueNotification, rankCandidatesByWorkload, serviceClient, verifyLineIdToken } from "../_shared/common.ts";
 
 const DAY = 86_400_000;
 const dateText = (d: Date) => d.toISOString().slice(0, 10);
@@ -91,9 +91,10 @@ Deno.serve(async (req) => {
       if (error) throw error;
       const targetRole = (shift.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "";
       const offeredEmployeeIds = new Set((offeredShift?.assignments ?? []).map((a: any) => a.empId).filter(Boolean));
-      const candidates = (cfg.employees ?? []).filter((e: any) => e.id !== employee.id && (!input.targetEmpId || e.id === input.targetEmpId))
+      const eligibleCandidates = (cfg.employees ?? []).filter((e: any) => e.id !== employee.id && (!input.targetEmpId || e.id === input.targetEmpId))
         .filter((e: any) => type !== "swap" || offeredEmployeeIds.has(e.id))
         .filter((e: any) => eligibilityErrors(e, shift, targetRole, shifts, cfg, [offeredId].filter(Boolean) as string[]).length === 0);
+      const candidates = rankCandidatesByWorkload(eligibleCandidates, shifts, shift.date, 2);
       if (!candidates.length) {
         await sb.from("shift_requests").delete().eq("id", request.id);
         return json({ error: "目前找不到符合技能與時間的接班者" }, 409);

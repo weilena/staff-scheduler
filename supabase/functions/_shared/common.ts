@@ -85,6 +85,25 @@ export function eligibilityErrors(emp: any, target: any, role: string, shifts: a
   return [...new Set(errors)];
 }
 
+export function rankCandidatesByWorkload(candidates: any[], shifts: any[], targetDate: string, limit = 2) {
+  const month = String(targetDate ?? "").slice(0, 7);
+  const workload = new Map<string, number>();
+  for (const shift of shifts ?? []) {
+    if (shift?.status === "cancelled" || String(shift?.date ?? "").slice(0, 7) !== month) continue;
+    for (const assignment of shift.assignments ?? []) {
+      if (!assignment?.empId) continue;
+      workload.set(String(assignment.empId), (workload.get(String(assignment.empId)) ?? 0) + 1);
+    }
+  }
+  return [...candidates]
+    .sort((a: any, b: any) => {
+      const countDiff = (workload.get(String(a.id)) ?? 0) - (workload.get(String(b.id)) ?? 0);
+      if (countDiff) return countDiff;
+      return String(a.name ?? a.id).localeCompare(String(b.name ?? b.id), "zh-Hant");
+    })
+    .slice(0, Math.max(0, limit));
+}
+
 export async function getContext(sb: any) {
   const [{ data: config, error: configError }, { data: rows, error: shiftError }] = await Promise.all([
     sb.from("config").select("data").eq("id", 1).single(),
