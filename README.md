@@ -7,8 +7,10 @@
 ```
 web/admin.html      管理後台(功能與單機版相同+登入)
 web/punch.html      店員手機打卡頁(選名字+PIN)
+web/staff.html      LINE/LIFF 員工入口(定位打卡、班表、讓班/換班)
 web/config.js       雲端連線設定(要填兩個值)
 supabase/schema.sql 資料庫結構(貼進 SQL Editor 執行)
+supabase/line_schema.sql LINE 身分、定位、換班、審核與通知擴充
 supabase/functions/sb-sync/index.ts  SimplyBook 自動同步程式
 ```
 
@@ -76,6 +78,12 @@ supabase/functions/sb-sync/index.ts  SimplyBook 自動同步程式
 - 人員對照:用 SimplyBook 服務供應者名字比對員工姓名;別名(如「穆穆」=宏穆)可在員工資料的 aliases 欄位設定
 - 後台**手動改過**的 SimplyBook 班次(換人),之後同步不會覆蓋
 - NPC 職主題(詭廁/詭獄/加場/詭店)自動掛 NPC 角色,其餘掛場控 → 薪資按主題頁費率論場計酬
+
+## LINE 員工入口
+
+LINE 版本提供本人 LINE 綁定、店內定位打卡、個人／全員班表、讓班／換班、加場回覆、補卡申請、加班審核與每月訊息額度控制。
+
+完整設定與兩週並行測試流程請看 [`docs/LINE_SETUP.md`](docs/LINE_SETUP.md)。建立 LINE Channel 前，`web/staff.html` 會顯示「尚未連接 LINE 測試帳號」，不影響原管理後台。
 
 ## 費用
 - Supabase 免費方案:500MB 資料庫+每月 50 萬次 Edge Function 呼叫,以這個規模綽綽有餘

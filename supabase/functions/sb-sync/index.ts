@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { eligibilityErrors, queueNotification } from "../_shared/common.ts";
 
 const LOGIN_URL = "https://user-api.simplybook.asia/login";
 const ADMIN_URL = "https://user-api.simplybook.asia/admin/";
@@ -18,6 +19,9 @@ function list(value: unknown): any[] {
 function pick(row: any, keys: string[]) {
   for (const key of keys) if (row?.[key] != null && row[key] !== "") return row[key];
   return "";
+}
+function selectedThemeName(cfg: any, themeId: string) {
+  return cfg.themes?.find((theme: any) => theme.id === themeId)?.name ?? "場次";
 }
 
 async function rpc(url: string, headers: Record<string, string>, method: string, params: unknown[]) {
@@ -72,7 +76,8 @@ function conflictWarnings(shifts: any[], employees: any[], prepMin: number, trav
 Deno.serve(async (req) => {
   try {
     const url = new URL(req.url);
-    if (url.searchParams.get("key") !== Deno.env.get("SYNC_SECRET")) {
+    const suppliedKey = req.headers.get("x-sync-secret") ?? url.searchParams.get("key");
+    if (!suppliedKey || suppliedKey !== Deno.env.get("SYNC_SECRET")) {
       return new Response("unauthorized", { status: 401 });
     }
 
@@ -200,6 +205,46 @@ Deno.serve(async (req) => {
     if (apply && (upserts.length || cancelledUpdates.length)) {
       const { error } = await supabase.from("shifts").upsert([...upserts, ...cancelledUpdates]);
       if (error) throw error;
+
+      // 只對真正受影響的人推播；idempotency key 避免重複同步造成重複訊息。
+      for (const row of upserts) {
+        const before: any = existingMap.get(row.id);
+        const after = row.data;
+        const beforeAssigned = new Set((before?.assignments ?? []).map((a: any) => a.empId).filter(Boolean));
+        const afterAssigned = new Set((after.assignments ?? []).map((a: any) => a.empId).filter(Boolean));
+        const changed = before && (before.date !== after.date || before.start !== after.start || before.end !== after.end || before.storeId !== after.storeId);
+        if (changed) {
+          for (const empId of new Set([...beforeAssigned, ...afterAssigned])) await queueNotification(supabase, String(empId), "shift_changed", {
+            title: "班次時間異動", text: `${after.date} ${after.start}–${after.end}，請開啟員工入口確認。`, shiftId: after.id,
+          }, true, `sb-change:${after.id}:${after.sourceUpdatedAt}:${empId}`);
+        }
+        const emptySlots = (after.assignments ?? []).map((assignment: any, slotIndex: number) => ({ assignment, slotIndex }))
+          .filter((slot: any) => !slot.assignment.empId);
+        if (emptySlots.length) {
+          const { data: existingRequests } = await supabase.from("shift_requests").select("id,details").eq("shift_id", after.id)
+            .in("status", ["open", "pending_manager"]);
+          for (const { assignment, slotIndex } of emptySlots) {
+            if ((existingRequests ?? []).some((request: any) => Number(request.details?.slotIndex) === slotIndex)) continue;
+            const shiftTime = new Date(`${after.date}T${after.start}:00+08:00`).getTime();
+            const deadline = new Date(Math.max(Date.now() + 60 * 60_000, shiftTime - 2 * 60 * 60_000)).toISOString();
+            const { data: request, error: requestError } = await supabase.from("shift_requests").insert({
+              request_type: "extra", shift_id: after.id, deadline, details: { source: "simplybook", role: assignment.role, slotIndex },
+            }).select().single();
+            if (requestError) throw requestError;
+            const candidates = (cfg.employees ?? []).filter((e: any) => eligibilityErrors(e, after, assignment.role, merged, cfg).length === 0);
+            for (const employee of candidates) await queueNotification(supabase, employee.id, "extra_shift", {
+              title: "臨時加場徵人", text: `${after.date} ${after.start}–${after.end} ${selectedThemeName(cfg, after.themeId)}（${assignment.role}），是否可以接班？`,
+              requestId: request.id, actions: true, shiftId: after.id,
+            }, false, `extra:${request.id}:${employee.id}`);
+          }
+        }
+      }
+      for (const row of cancelledUpdates) {
+        const before: any = existingMap.get(row.id);
+        for (const assignment of before?.assignments ?? []) if (assignment.empId) await queueNotification(supabase, assignment.empId, "shift_cancelled", {
+          title: "班次取消", text: `${before.date} ${before.start}–${before.end} 的班次已取消。`, shiftId: before.id,
+        }, true, `sb-cancel:${before.id}:${row.data.cancelledAt}:${assignment.empId}`);
+      }
     }
 
     return Response.json({
