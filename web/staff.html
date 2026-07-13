@@ -85,12 +85,24 @@ function schedule(){
   app.innerHTML=`<div class="card"><h2>未來班表</h2><div class="legend"><span class="today">綠色：今天</span><span class="tomorrow">黃色：明天</span><span class="future">藍色：其他日期</span></div><p class="muted">一般班表供全員查看；只有自己的今日場次會顯示打卡狀態。</p>${list.map(s=>shiftCard(s)).join('')||'<p>目前沒有班次</p>'}</div>`
 }
 function workLabels(p){return Array.isArray(p?.work_item?.labels)?p.work_item.labels:[]}
+function recentSessionsHtml(){
+  const punches=[...(D.punches||[])].filter(p=>!p.voided_at).sort((a,b)=>a.ts.localeCompare(b.ts)),rows=[];let open=null;
+  for(const p of punches){
+    if(p.type==='in'){if(open)rows.push({in:open,out:null});open=p}
+    else if(open){rows.push({in:open,out:p});open=null}
+    else rows.push({in:null,out:p});
+  }
+  if(open)rows.push({in:open,out:null});
+  return rows.reverse().slice(0,10).map(r=>{const base=r.in||r.out,labels=[...new Set([...workLabels(r.in),...workLabels(r.out)])],date=base?.ts?.slice(0,10)||'',inTime=r.in?.ts?.slice(11,16)||'缺卡',outTime=r.out?.ts?.slice(11,16)||'尚未下班',state=!r.in||!r.out?'異常／未完成':'已完成';return `<div class="record"><div class="row"><span class="grow"><b>${esc(date)}　${esc(inTime)}–${esc(outTime)}</b></span><span class="tag">${state}</span></div><span class="muted">${labels.length?labels.map(esc).join('、'):'工作項目待確認'}<br>${esc(D.worksites.find(w=>w.id===base?.worksite_id)?.name||'管理員補登')}</span></div>`}).join('')||'<p class="muted">尚無紀錄</p>';
+}
 function punchView(){
   const active=(D.punches||[]).filter(p=>!p.voided_at),last=active[0],on=last?.type==='in',today=taipeiDate(),todayShifts=myShifts().filter(s=>s.date===today).sort((a,b)=>a.start.localeCompare(b.start)),day=(D.attendanceDays||[]).find(x=>x.work_date===today);
   const choices=todayShifts.map(s=>{const role=(s.assignments||[]).find(a=>a.empId===D.me.id)?.role||'';return `<label class="work-choice"><input class="shift-pick" type="checkbox" value="${esc(s.id)}"><span><b>${esc(s.start)}–${esc(s.end)}　${esc(shiftName(s))}</b><br><span class="muted">${esc(storeName(s.storeId))}${role?'・'+esc(role):''}</span></span></label>`}).join('');
   const current=workLabels(last);
   app.innerHTML=`<div class="card"><h2>定位打卡</h2><div class="big ${on?'ok':''}">${on?'上班中':'尚未上班'}</div>${on?`<div class="policy" style="margin-top:10px"><b>本次工作</b><br>${current.map(esc).join('<br>')||'工作項目待管理員確認'}</div>`:`<p><b>請先確認這次要執行的工作（可複選連續場次）</b></p>${choices||'<p class="notice">今天沒有你的排定班次，請以下方「臨時支援」選擇實際工作。</p>'}<label>臨時支援／未列入班表的工作</label><select id="manualWork"><option value="">非臨時支援，或請先選上方場次</option><option value="grandma">外婆</option><option value="haunted_shop">詭店</option><option value="haunted_prison">詭獄</option><option value="shit_power">屎力全開</option><option value="haunted_toilet">詭廁</option><option value="escapee">越獄者</option><option value="orphan">孤兒怨</option><option value="mr_mystery_counter">謎先生櫃台</option><option value="burgundy_counter">桌遊大忠店櫃台</option><option value="weekly_cleaning">每週大清潔</option><option value="practice">練習場</option></select>`}<div class="reminder" style="margin-top:12px">上班與下班都必須人在「謎先生」或「勃根地大忠店」允許範圍內並開啟手機精確定位。下班不必重選項目，會沿用上班紀錄。</div><div class="grid" style="margin-top:12px"><button ${on||punchBusy?'disabled':''} onclick="doPunch('in')">確認項目並上班打卡</button><button class="danger" ${!on||punchBusy?'disabled':''} onclick="doPunch('out')">工作結束・下班打卡</button></div>${day?`<p class="muted" style="margin-top:10px">今日原始工時：${Math.floor(day.actual_minutes/60)}小時${day.actual_minutes%60}分・<b class="${day.status==='anomaly'?'anomaly':'verified'}">${day.status==='approved'?'已核准計薪':day.status==='anomaly'?'有異常待處理':'待管理員確認'}</b></p>`:''}</div><div class="card"><h2>最近打卡紀錄</h2>${(D.punches||[]).slice(0,16).map(p=>`<div class="record ${p.voided_at?'voided':''}"><div class="row"><span class="grow">${esc(p.ts.replace('T',' '))}</span><b>${p.type==='in'?'上班':'下班'}</b></div><span class="muted">${esc(D.worksites.find(w=>w.id===p.worksite_id)?.name||'管理員補登')}・${p.voided_at?'已作廢':p.review_state==='anomaly'?'異常待確認':'已記錄'}${workLabels(p).length?'<br>'+workLabels(p).map(esc).join('、'):''}</span></div>`).join('')||'<p class="muted">尚無紀錄</p>'}<button class="secondary" style="margin-top:12px" onclick="toggleCorrection()">申請補卡／更正</button></div><div id="correctionBox" class="card hidden"><h2>補卡申請</h2><label>日期</label><input id="corDate" type="date" value="${today}"><label>申請類型</label><select id="corType" onchange="correctionFields()"><option value="missing_in">補上班卡</option><option value="missing_out">補下班卡</option><option value="correction">更正整日上下班時間</option></select><div id="corTimes"></div><label>原因</label><textarea id="corReason" placeholder="例如：到店後忘記按上班，實際已向店長報到"></textarea><button style="width:100%;margin-top:12px" onclick="submitCorrection()">送交管理員審核</button></div>`;
   correctionFields();
+  const recent=[...app.querySelectorAll('.card')].find(x=>x.querySelector('h2')?.textContent==='最近打卡紀錄');
+  if(recent)recent.innerHTML=`<h2>最近場次紀錄</h2><p class="muted">每個工作時段只顯示一筆，包含上下班時間與工作項目。</p>${recentSessionsHtml()}<button class="secondary" style="margin-top:12px" onclick="toggleCorrection()">申請補卡／更正</button>`;
 }
 function doPunch(type){
   if(punchBusy)return;
@@ -99,6 +111,17 @@ function doPunch(type){
   if(type==='in'&&shiftIds.length&&workItemCode)return alert('排定場次與臨時支援請擇一，不要同時選取。');
   if(!navigator.geolocation)return alert('此手機不支援定位打卡');
   punchBusy=true;render();navigator.geolocation.getCurrentPosition(async p=>{try{const x=await api({action:'punch',type,latitude:p.coords.latitude,longitude:p.coords.longitude,accuracy:p.coords.accuracy,shiftIds,workItemCode});const labels=x.workItem?.labels||[];alert(`${x.site} ${type==='in'?'上班':'下班'}打卡成功\n伺服器時間：${x.ts.replace('T',' ')}${labels.length?'\n工作項目：'+labels.join('、'):''}${x.warning?'\n\n提醒：'+x.warning:''}`);await load()}catch(e){alert(e.message)}finally{punchBusy=false;render()}},e=>{punchBusy=false;render();alert('無法取得定位：'+e.message)},{enableHighAccuracy:true,timeout:20000,maximumAge:0})
+}
+const correctionWorkOptions='<option value="">請選擇工作項目</option><option value="grandma">外婆</option><option value="haunted_shop">詭店</option><option value="haunted_prison">詭獄</option><option value="shit_power">屎力全開</option><option value="haunted_toilet">詭廁</option><option value="escapee">越獄者</option><option value="orphan">孤兒怨</option><option value="mr_mystery_counter">謎先生櫃台</option><option value="burgundy_counter">桌遊大忠店櫃台</option><option value="weekly_cleaning">每週大清潔</option><option value="practice">練習場</option>';
+function correctionFields(){
+  const box=document.getElementById('corTimes'),type=document.getElementById('corType')?.value;if(!box)return;
+  const times=type==='correction'?'<div class="grid"><div><label>上班時間</label><input id="corIn" type="time"></div><div><label>下班時間</label><input id="corOut" type="time"></div></div>':`<label>${type==='missing_in'?'上班':'下班'}時間</label><input id="corTime" type="time">`;
+  box.innerHTML=times+`<label>主題／工作項目</label><select id="corWork">${correctionWorkOptions}</select>`;
+}
+async function submitCorrection(){
+  const type=document.getElementById('corType').value,workItemCode=document.getElementById('corWork')?.value||'',requested=type==='correction'?{inTime:document.getElementById('corIn').value,outTime:document.getElementById('corOut').value,workItemCode}:{time:document.getElementById('corTime').value,workItemCode};
+  if(!workItemCode)return alert('請選擇補卡的主題或工作項目。');
+  try{await api({action:'attendance-request',requestType:type,punchDate:document.getElementById('corDate').value,reason:document.getElementById('corReason').value,requested});alert('已送交管理員審核；申請包含工作項目與時間。');await load();show('punch')}catch(e){alert(e.message)}
 }
 start();
 </script></body></html>

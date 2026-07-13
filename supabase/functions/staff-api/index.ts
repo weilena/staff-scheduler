@@ -190,6 +190,10 @@ Deno.serve(async (req) => {
       const punchDate = String(input.punchDate ?? "");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(punchDate)) return json({ error: "補卡日期格式錯誤" }, 400);
       const requested = input.requested ?? {};
+      const workItemCode = String(requested.workItemCode ?? "");
+      if (!MANUAL_WORK_ITEMS[workItemCode]) return json({ error: "請選擇補卡的主題或工作項目" }, 400);
+      requested.workItem = { code: workItemCode, labels: [MANUAL_WORK_ITEMS[workItemCode]], source: "attendance_request" };
+      delete requested.workItemCode;
       const timeOk = (v: unknown) => /^([01]\d|2[0-3]):[0-5]\d$/.test(String(v ?? ""));
       if (["missing_in", "missing_out"].includes(requestType) && !timeOk(requested.time)) return json({ error: "請填寫正確的補卡時間" }, 400);
       if (requestType === "correction" && (!timeOk(requested.inTime) || !timeOk(requested.outTime) || requested.inTime >= requested.outTime))
