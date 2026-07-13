@@ -135,6 +135,21 @@ Deno.serve(async (req) => {
       }
       const employee = cfg.employees.find((item: any) => item.name === providerName || (item.aliases ?? []).includes(providerName));
       const role = (selectedTheme.payNPC ?? 0) > 0 ? "NPC" : "場控";
+      // 客人與付款資訊(僅存私人雲端,受 RLS 保護,登入管理者才看得到)
+      const customer = {
+        name: String(pick(booking, ["client", "text", "client_name"])),
+        phone: String(pick(booking, ["client_phone"])),
+        email: String(pick(booking, ["client_email"])),
+        comment: String(pick(booking, ["comment"])),
+      };
+      const depAmt = pick(booking, ["deposit_invoice_amount"]);
+      const payment = {
+        depositAmount: depAmt ? Math.round(Number(depAmt)) : null,
+        depositStatus: String(pick(booking, ["deposit_payment_status"])),
+        system: String(pick(booking, ["deposit_payment_system", "payment_system"])),
+        currency: String(pick(booking, ["deposit_invoice_currency"])),
+        invoiceNo: String(pick(booking, ["deposit_invoice_number"])),
+      };
       const shift = {
         id,
         date: startRaw.slice(0, 10),
@@ -144,10 +159,13 @@ Deno.serve(async (req) => {
         start: startRaw.slice(11, 16),
         end: endRaw ? endRaw.slice(11, 16) : startRaw.slice(11, 16),
         note: `SimplyBook 預約 ${code}`,
-        status: "active",
+        customer,
+        payment,
+        status: previous?.status === "cancelled" ? "active" : (previous?.status ?? "active"),
         sourceUpdatedAt: new Date().toISOString(),
         assignments: previous?.manualEdit ? previous.assignments : [{ role, empId: employee?.id ?? "" }],
         ...(previous?.manualEdit ? { manualEdit: true } : {}),
+        ...(previous?.rebook ? { rebook: previous.rebook } : {}),
       };
       upserts.push({ id, date: shift.date, source: "simplybook", data: shift });
     }

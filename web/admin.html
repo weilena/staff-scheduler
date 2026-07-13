@@ -131,6 +131,29 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
       <div><button class="btn gray sm" onclick="addSlot()">＋ 新增人員欄位</button></div>
     </div>
     <div class="field"><label>備註</label><input id="sfNote" placeholder="選填"></div>
+    <div id="sfCustomer" style="display:none;background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px;line-height:1.7"></div>
+    <div class="field" style="border-top:1px dashed var(--line);padding-top:10px">
+      <label>場次狀態</label>
+      <select id="sfStatus" onchange="onStatusChange()">
+        <option value="active">正常</option>
+        <option value="cancelled_typhoon">🌀 颱風天取消(給客人一個月內改期/退費)</option>
+        <option value="cancelled_customer">客人取消</option>
+        <option value="cancelled_other">其他原因取消</option>
+      </select>
+    </div>
+    <div class="field" id="sfCancelBox" style="display:none">
+      <div class="row">
+        <div class="field grow"><label>改期期限(颱風天預設一個月)</label><input type="date" id="sfRebookDue"></div>
+        <div class="field grow"><label>處理狀態</label>
+          <select id="sfRebookState">
+            <option value="pending">待客人改期</option>
+            <option value="rebooked">已改期</option>
+            <option value="refunded">已退費</option>
+          </select>
+        </div>
+      </div>
+      <label>取消/處理備註</label><input id="sfCancelNote" placeholder="例:已致電通知,客人考慮中">
+    </div>
   </div>
   <div class="dlg-f">
     <button class="btn red" id="sfDelete" onclick="deleteShift()">刪除</button>
@@ -153,6 +176,10 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
       <div class="field grow"><label>月薪(元)</label><input type="number" id="efSalary" min="0" placeholder="正職用"></div>
     </div>
     <div class="field"><label>打卡 PIN(4–6 位數字;店員手機 QR 打卡用,留空=不開放)</label><input id="efPin" maxlength="6" inputmode="numeric" placeholder="例:1234"></div>
+    <div class="row" id="efOtRow" style="display:none">
+      <div class="field grow"><label>月標準時數(正職;超過才算加班)</label><input type="number" id="efStdHours" min="0" step="0.5" placeholder="例:176(月休8天×8h)"></div>
+      <div class="field grow"><label>加班時薪(元/時)</label><input type="number" id="efOtRate" min="0" placeholder="留空=用左邊時薪"></div>
+    </div>
     <div class="row">
       <div class="field grow"><label>到職日</label><input type="date" id="efStartDate"></div>
       <div class="field grow"><label>離職日(最後工作日)</label><input type="date" id="efEndDate"></div>
@@ -399,11 +426,38 @@ function renderNav(){
     `<button class="${tab===k?'on':''}" onclick="go('${k}')">${n}</button>`).join('');
 }
 function go(k){tab=k;renderNav();render()}
+/* 颱風天/取消 → 待客人改期的提醒(期限一週內或已逾期)*/
+function rebookAlerts(){
+  const today=todayStr();
+  const soon=new Date();soon.setDate(soon.getDate()+7);
+  const soonStr=fmtDate(soon);
+  return S.shifts.filter(sh=>isCx(sh)&&sh.rebook&&sh.rebook.state==='pending'&&sh.rebook.due)
+    .filter(sh=>sh.rebook.due<=soonStr)
+    .sort((a,b)=>a.rebook.due.localeCompare(b.rebook.due))
+    .map(sh=>({sh,overdue:sh.rebook.due<today}));
+}
+function renderAlertBanner(){
+  const al=rebookAlerts();
+  if(!al.length)return '';
+  return `<div class="card" style="border-color:#f59e0b;background:#fffbeb">
+    <b style="color:#b45309">🌀 改期提醒(期限一週內/已逾期,共 ${al.length} 筆)</b>
+    <table style="margin-top:8px"><tr><th>原場次</th><th>客人</th><th>電話</th><th>訂金</th><th>改期期限</th><th></th></tr>
+    ${al.map(({sh,overdue})=>{const c=sh.customer||{},p=sh.payment||{};return `<tr>
+      <td>${sh.date} ${sh.start} ${esc(shiftLabel(sh))}</td>
+      <td>${esc(c.name||'—')}</td>
+      <td>${c.phone?`<a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>`:'—'}</td>
+      <td>${p.depositAmount?('$'+p.depositAmount+(p.depositStatus==='paid'?' 已付':'')):'—'}</td>
+      <td style="${overdue?'color:#dc2626;font-weight:600':''}">${sh.rebook.due}${overdue?'(已逾期)':''}</td>
+      <td><button class="btn gray sm" onclick="openShift('${sh.id}')">處理</button></td></tr>`;}).join('')}</table>
+    <p class="muted" style="margin-top:6px">逾期未改期可退費。點「處理」→ 場次狀態的處理狀態改「已改期/已退費」即從此清單移除。</p>
+  </div>`;
+}
 function render(){
   const v=document.getElementById('view');
-  if(tab==='sched')v.innerHTML=vSched();
+  const banner=(tab==='sched'||tab==='pay')?renderAlertBanner():'';
+  if(tab==='sched')v.innerHTML=banner+vSched();
   else if(tab==='punch')v.innerHTML=vPunch();
-  else if(tab==='pay')v.innerHTML=vPay();
+  else if(tab==='pay')v.innerHTML=banner+vPay();
   else if(tab==='emps')v.innerHTML=vEmps();
   else if(tab==='themes')v.innerHTML=vThemes();
   else if(tab==='skills')v.innerHTML=vSkills();
@@ -421,6 +475,14 @@ function shiftLabel(sh){
   if(sh.kind==='theme'){const t=theme(sh.themeId);return t?t.name:'(主題已刪)'}
   if(sh.kind==='floor')return '駐店場控';
   return '櫃台班';
+}
+/* 是否已取消(涵蓋 cancelled / cancelled_typhoon / cancelled_customer / cancelled_other)*/
+function isCx(sh){return sh.status&&String(sh.status).indexOf('cancelled')===0}
+function cxLabel(sh){
+  if(sh.status==='cancelled_typhoon')return '🌀颱風取消';
+  if(sh.status==='cancelled_customer')return '已取消(客人)';
+  if(isCx(sh))return '已取消';
+  return '';
 }
 function vSched(){
   const segBar=`<div class="row" style="margin-bottom:12px">
@@ -471,8 +533,8 @@ function vMonth(){
       ${shifts.map(sh=>{
         const st=store(sh.storeId);
         const staffed=sh.assignments.some(a=>a.empId);
-        return `<div class="chip ${sh.status==='cancelled'?'cancelled':staffed?'':'unstaffed'}" style="background:${sh.status==='cancelled'?'#64748b':st?st.color:'#64748b'}"
-          onclick="event.stopPropagation();openShift('${sh.id}')">${sh.start} ${esc(shiftLabel(sh))}${sh.status==='cancelled'?' 已取消':staffed?'':' ⚠未排'}</div>`;
+        return `<div class="chip ${isCx(sh)?'cancelled':staffed?'':'unstaffed'}" style="background:${isCx(sh)?'#64748b':st?st.color:'#64748b'}"
+          onclick="event.stopPropagation();openShift('${sh.id}')">${sh.start} ${esc(shiftLabel(sh))}${isCx(sh)?' '+cxLabel(sh):staffed?'':' ⚠未排'}</div>`;
       }).join('')}
     </div>`;
   }).join('')}</div>`;
@@ -516,7 +578,7 @@ function vDaySessions(){
         const sh=findSlotShift(ds,t.id,slot);
         if(sh){
           const names=sh.assignments.filter(a=>a.empId).map(a=>{const e=emp(a.empId);return e?`${esc(e.name)}(${a.role})`:''}).filter(Boolean).join('、');
-          return `<div class="slotbox ${sh.status==='cancelled'?'cancelled':names?'staffed':'unstaffed'}" onclick="openShift('${sh.id}')"><b>${slot}</b><br>${sh.status==='cancelled'?'已取消':names||'⚠ 未排人'}</div>`;
+          return `<div class="slotbox ${isCx(sh)?'cancelled':names?'staffed':'unstaffed'}" onclick="openShift('${sh.id}')"><b>${slot}</b><br>${isCx(sh)?cxLabel(sh):names||'⚠ 未排人'}</div>`;
         }
         return `<div class="slotbox" onclick="createSlotShift('${t.id}','${slot}')"><b>${slot}</b><br>＋開場</div>`;
       }).join('')}</div></td></tr>`).join('')}
@@ -524,7 +586,7 @@ function vDaySessions(){
   }).join('')}
   ${others.length?`<h3 style="margin:14px 0 8px">其他班次(櫃台/自訂時間)</h3>
     <table><tr><th>時間</th><th>店別</th><th>內容</th><th>人員</th></tr>
-    ${others.map(sh=>`<tr class="${sh.status==='cancelled'?'cancelled':''}" onclick="openShift('${sh.id}')" style="cursor:pointer">
+    ${others.map(sh=>`<tr class="${isCx(sh)?'cancelled':''}" onclick="openShift('${sh.id}')" style="cursor:pointer">
       <td>${sh.start}–${sh.end}</td><td>${esc(store(sh.storeId)?.name||'')}</td><td>${esc(shiftLabel(sh))}</td>
       <td>${sh.assignments.filter(a=>a.empId).map(a=>`${esc(emp(a.empId)?.name||'?')}(${a.role})`).join('、')||'<i class="muted">未排人</i>'}</td></tr>`).join('')}</table>`:''}
   `;
@@ -561,8 +623,8 @@ function vWeek(){
         ${shifts.map(sh=>{
           const st=store(sh.storeId);
           const who=sh.assignments.filter(a=>a.empId).map(a=>{const e=emp(a.empId);return e?`${esc(e.name)}(${a.role})`:''}).filter(Boolean).join('、')||'<i>未排人</i>';
-          return `<div class="shift ${sh.status==='cancelled'?'cancelled':''}" style="background:${sh.status==='cancelled'?'#64748b':st?st.color:'#64748b'}" onclick="openShift('${sh.id}')">
-            <b>${sh.start||''}–${sh.end||''}</b> ${esc(shiftLabel(sh))}${sh.status==='cancelled'?' (已取消)':''}<br><span class="who">${who}</span></div>`;
+          return `<div class="shift ${isCx(sh)?'cancelled':''}" style="background:${isCx(sh)?'#64748b':st?st.color:'#64748b'}" onclick="openShift('${sh.id}')">
+            <b>${sh.start||''}–${sh.end||''}</b> ${esc(shiftLabel(sh))}${isCx(sh)?' ('+cxLabel(sh)+')':''}<br><span class="who">${who}</span></div>`;
         }).join('')||'<span class="muted" style="font-size:12px">—</span>'}
       </div>`;
     }).join('')}</div>`;
@@ -599,7 +661,36 @@ function openShift(id,presetDate,preset){
   }
   renderSlotTimeBtns();
   renderSlots();
+  // 客人與付款資訊(SimplyBook 同步來的才有)
+  const cbox=document.getElementById('sfCustomer');
+  if(sh&&sh.customer&&(sh.customer.name||sh.customer.phone)){
+    const c=sh.customer,p=sh.payment||{};
+    cbox.style.display='';
+    cbox.innerHTML=`<b>👤 客人資訊</b>　${esc(c.name||'')}`
+      +(c.phone?`　📞 <a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>`:'')
+      +(c.email?`　✉ ${esc(c.email)}`:'')
+      +(c.comment?`<br>💬 ${esc(c.comment)}`:'')
+      +(p.depositAmount?`<br>💰 訂金 ${p.depositCurrency||p.currency||''} ${p.depositAmount}（${p.depositStatus==='paid'?'已付':esc(p.depositStatus||'')}${p.system?'・'+esc(p.system):''}）`:'');
+  }else cbox.style.display='none';
+  // 場次狀態(取消/颱風天/改期)
+  const st=sh?(sh.status||'active'):'active';
+  document.getElementById('sfStatus').value=st.indexOf('cancelled')===0?st:'active';
+  const rb=sh&&sh.rebook||{};
+  document.getElementById('sfRebookDue').value=rb.due||'';
+  document.getElementById('sfRebookState').value=rb.state||'pending';
+  document.getElementById('sfCancelNote').value=rb.note||'';
+  onStatusChange(true);
   dlgShift.showModal();
+}
+function onStatusChange(keep){
+  const v=document.getElementById('sfStatus').value;
+  const box=document.getElementById('sfCancelBox');
+  box.style.display=v.indexOf('cancelled')===0?'':'none';
+  if(v==='cancelled_typhoon'&&!keep&&!document.getElementById('sfRebookDue').value){
+    const d=new Date(document.getElementById('sfDate').value+'T00:00:00');
+    d.setMonth(d.getMonth()+1);
+    document.getElementById('sfRebookDue').value=fmtDate(d);
+  }
 }
 function rebuildThemeSelect(val){
   const storeId=document.getElementById('sfStore').value;
@@ -700,7 +791,7 @@ function empWarnings(e,date,start,end,storeId,role){
   else if(s!=null&&en!=null&&(toMin(av.start)>s||toMin(av.end)<en))w.push(`超出可上班時段${av.start}–${av.end}(開場前${prep}分要到)`);
   if(s==null||en==null)return w;
   for(const sh of S.shifts){
-    if(sh.id===editShiftId||sh.date!==date||sh.status==='cancelled')continue;
+    if(sh.id===editShiftId||sh.date!==date||isCx(sh))continue;
     if(!sh.assignments.some(a=>a.empId===e.id))continue;
     const s2=toMin(sh.start)-prep, e2=toMin(sh.end);
     const sameStore=sh.storeId===storeId;
@@ -756,12 +847,27 @@ function saveShift(){
   if(toMin(end)<=toMin(start))return alert('結束時間需晚於開始時間');
   if(S.closedDates.includes(date)&&!confirm('該日為店休日,仍要建立班次?'))return;
   const kind=document.getElementById('sfKind').value;
+  const prev=editShiftId?byId(S.shifts,editShiftId):null;
+  const statusVal=document.getElementById('sfStatus').value;
+  const isCancel=statusVal.indexOf('cancelled')===0;
   const obj={
     id:editShiftId||uid(),date,storeId:document.getElementById('sfStore').value,kind,
     themeId:kind==='theme'?document.getElementById('sfTheme').value:null,
     start,end,note:document.getElementById('sfNote').value.trim(),
-    assignments:dlgSlotsArr.map(s=>({role:s.role,empId:s.empId}))
+    assignments:dlgSlotsArr.map(s=>({role:s.role,empId:s.empId})),
+    status:isCancel?statusVal:'active'
   };
+  // 保留 SimplyBook 同步來的客人/付款資訊
+  if(prev){if(prev.customer)obj.customer=prev.customer;if(prev.payment)obj.payment=prev.payment;if(prev.sourceUpdatedAt)obj.sourceUpdatedAt=prev.sourceUpdatedAt;}
+  // 取消/改期資訊
+  if(isCancel){
+    obj.rebook={
+      reason:statusVal,
+      due:document.getElementById('sfRebookDue').value||'',
+      state:document.getElementById('sfRebookState').value,
+      note:document.getElementById('sfCancelNote').value.trim()
+    };
+  }
   // 自由選人:被指派者若尚未勾技能/櫃台,自動同步到技能表
   for(const s of obj.assignments){
     if(!s.empId)continue;
@@ -914,7 +1020,7 @@ let payMonth=monthStr();
 function schedMinutes(empId,month){
   let m=0;
   for(const sh of S.shifts){
-    if(sh.status==='cancelled'||sh.date.slice(0,7)!==month)continue;
+    if(isCx(sh)||sh.date.slice(0,7)!==month)continue;
     if(!sh.assignments.some(a=>a.empId===empId))continue;
     m+=Math.max(0,toMin(sh.end)-toMin(sh.start));
   }
@@ -927,7 +1033,7 @@ function actualMinutes(empId,month){
 function sessionStats(empId,month){
   let pay=0,gm=0,npc=0;const detail={};
   for(const sh of S.shifts){
-    if(sh.status==='cancelled'||sh.date.slice(0,7)!==month||sh.kind!=='theme')continue;
+    if(isCx(sh)||sh.date.slice(0,7)!==month||sh.kind!=='theme')continue;
     const t=theme(sh.themeId);if(!t)continue;
     for(const a of sh.assignments){
       if(a.empId!==empId)continue;
@@ -944,7 +1050,7 @@ function sessionStats(empId,month){
 function hourlyMinutes(empId,month){
   let m=0;
   for(const sh of S.shifts){
-    if(sh.status==='cancelled'||sh.date.slice(0,7)!==month||sh.kind==='theme')continue;
+    if(isCx(sh)||sh.date.slice(0,7)!==month||sh.kind==='theme')continue;
     if(!sh.assignments.some(a=>a.empId===empId))continue;
     m+=Math.max(0,toMin(sh.end)-toMin(sh.start));
   }
@@ -958,7 +1064,13 @@ function vPay(){
     const hp=Math.round(hm/60*(e.hourlyRate||0));
     const base=e.type==='full'?(e.monthlySalary||0):0;
     const am=actualMinutes(e.id,payMonth);
-    return{e,ss,hm,hp,base,am,total:ss.pay+hp+base};
+    // 正職加班:實際打卡時數超過月標準時數的部分 × 加班時薪
+    let otHr=0,otPay=0;
+    if(e.type==='full'&&e.stdHours>0){
+      otHr=Math.max(0,am/60-e.stdHours);
+      otPay=Math.round(otHr*(e.otRate||e.hourlyRate||0));
+    }
+    return{e,ss,hm,hp,base,am,otHr,otPay,total:ss.pay+hp+base+otPay};
   });
   const total=rows.reduce((s,r)=>s+r.total,0);
   return `<div class="card">
@@ -969,8 +1081,8 @@ function vPay(){
       <button class="btn gray sm" onclick="exportPayCSV()">匯出 CSV(含場次明細)</button>
     </div>
     <table>
-      <tr><th>員工</th><th>身分</th><th class="num">場控場次</th><th class="num">NPC場次</th><th class="num">場次費</th><th class="num">櫃台/駐店時數</th><th class="num">時薪費</th><th class="num">月薪</th><th class="num">打卡時數</th><th class="num">合計</th></tr>
-      ${rows.map(({e,ss,hm,hp,base,am,total})=>`<tr>
+      <tr><th>員工</th><th>身分</th><th class="num">場控場次</th><th class="num">NPC場次</th><th class="num">場次費</th><th class="num">櫃台/駐店時數</th><th class="num">時薪費</th><th class="num">月薪</th><th class="num">打卡時數</th><th class="num">加班時數</th><th class="num">加班費</th><th class="num">合計</th></tr>
+      ${rows.map(({e,ss,hm,hp,base,am,otHr,otPay,total})=>`<tr>
         <td title="${esc(Object.entries(ss.detail).map(([k,n])=>k+'×'+n).join('、'))}">${esc(e.name)}</td>
         <td>${e.type==='part'?'兼職':'正職'}</td>
         <td class="num">${ss.gm||'—'}</td><td class="num">${ss.npc||'—'}</td>
@@ -979,10 +1091,12 @@ function vPay(){
         <td class="num">${hp?hp.toLocaleString():'—'}</td>
         <td class="num">${base?base.toLocaleString():'—'}</td>
         <td class="num">${am?fmtHr(am):'—'}</td>
+        <td class="num">${otHr>0?otHr.toFixed(1):'—'}</td>
+        <td class="num">${otPay?otPay.toLocaleString():'—'}</td>
         <td class="num"><b>${total.toLocaleString()}</b></td></tr>`).join('')}
-      <tr><td colspan="9" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
+      <tr><td colspan="11" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
     </table>
-    <p class="muted" style="margin-top:8px">場次費=每場依主題費率(「主題」頁可調:場控$300、詭廁/詭獄NPC$450、詭店NPC$550);時薪費=櫃台/駐店班時數×時薪;正職另加月薪。滑鼠停在姓名上可看場次明細。「打卡時數」依 6 月班表模擬(首場開演前10分上班、末場結束下班),供比對用。</p>
+    <p class="muted" style="margin-top:8px">場次費=每場依主題費率(「主題」頁可調);時薪費=櫃台/駐店班時數×時薪;正職=月薪+加班費。加班費=(實際打卡時數 − 員工設定的月標準時數)×加班時薪,超過才計;在「員工」頁編輯正職可設月標準時數與加班時薪。已取消/颱風天場次不列入。</p>
   </div>`;
 }
 function exportPayCSV(){
@@ -1034,7 +1148,12 @@ function openEmp(id){
   document.getElementById('efPin').value=e?(e.pin||''):'';
   document.getElementById('efStartDate').value=e?(e.startDate||''):'';
   document.getElementById('efEndDate').value=e?(e.endDate||''):'';
+  document.getElementById('efStdHours').value=e?(e.stdHours||''):'';
+  document.getElementById('efOtRate').value=e?(e.otRate||''):'';
   document.getElementById('efActive').checked=e?e.active:true;
+  const tsel=document.getElementById('efType');
+  tsel.onchange=()=>{document.getElementById('efOtRow').style.display=tsel.value==='full'?'':'none'};
+  document.getElementById('efOtRow').style.display=(e?e.type:'part')==='full'?'':'none';
   dlgEmp.showModal();
 }
 function saveEmp(){
@@ -1047,6 +1166,8 @@ function saveEmp(){
     pin:document.getElementById('efPin').value.trim(),
     startDate:document.getElementById('efStartDate').value,
     endDate:document.getElementById('efEndDate').value,
+    stdHours:Number(document.getElementById('efStdHours').value)||0,
+    otRate:Number(document.getElementById('efOtRate').value)||0,
     active:document.getElementById('efActive').checked
   };
   if(data.startDate&&data.endDate&&data.endDate<data.startDate)return alert('離職日不可早於到職日');
@@ -1228,7 +1349,39 @@ function vAvail(){
         <td>${a.on?a.start+'–'+a.end:'—'}</td>
         <td><button class="btn gray sm" onclick="delAvailX('${d}')">刪除</button></td></tr>`).join('')}</table>`
     :'<p class="muted">尚無特定日期回報</p>'}
+  </div>
+  <div class="card"><h2>📅 Google 行事曆核對</h2>
+    <p class="muted" style="margin-bottom:8px">把「謎先生＆大忠店排班表」日曆的<b>私人 iCal 網址</b>貼進來(Google 日曆 → 該日曆設定 → 整合日曆 → 「密鑰格式的私人網址」,.ics 結尾)。系統會唯讀抓取,和上方回報並排核對,不會更動你的日曆。</p>
+    <div class="row" style="margin-bottom:8px">
+      <input id="icalUrl" class="grow" placeholder="https://calendar.google.com/calendar/ical/.../private-xxxx/basic.ics" value="${esc(S.icalUrl||'')}">
+      <button class="btn gray sm" onclick="saveIcalUrl()">儲存網址</button>
+      <input type="month" id="icalMonth" value="${monthStr()}">
+      <button class="btn sm" onclick="loadIcal()">抓取核對</button>
+    </div>
+    <div id="icalResult"><p class="muted">按「抓取核對」載入該月行事曆事件。</p></div>
   </div>`;
+}
+function saveIcalUrl(){S.icalUrl=document.getElementById('icalUrl').value.trim();save();alert('已儲存 iCal 網址')}
+async function loadIcal(){
+  const url=document.getElementById('icalUrl').value.trim();
+  const m=document.getElementById('icalMonth').value;
+  const box=document.getElementById('icalResult');
+  if(!url){box.innerHTML='<p class="warn">請先貼上 iCal 網址</p>';return}
+  if(isDemo()){box.innerHTML='<p class="muted">試玩模式不連雲端,無法抓取。</p>';return}
+  S.icalUrl=url;save();
+  box.innerHTML='<p class="muted">抓取中…</p>';
+  const from=m+'-01', to=fmtDate(new Date(Number(m.slice(0,4)),Number(m.slice(5,7)),0));
+  try{
+    const r=await sbc.functions.invoke('ical-fetch',{body:{url,from,to}});
+    if(r.error)throw new Error(r.error.message||JSON.stringify(r.error));
+    if(r.data&&r.data.error)throw new Error(r.data.error);
+    const evs=(r.data&&r.data.events)||[];
+    if(!evs.length){box.innerHTML='<p class="muted">該月沒有事件。</p>';return}
+    const byDate={};for(const ev of evs){(byDate[ev.date]=byDate[ev.date]||[]).push(ev.summary)}
+    box.innerHTML=`<table><tr><th>日期</th><th>Google 行事曆(員工回報/休假)</th></tr>`+
+      Object.keys(byDate).sort().map(d=>`<tr><td>${d}(週${WD[dateWD(d)]})</td><td>${byDate[d].map(s=>`<span class="tag">${esc(s)}</span>`).join(' ')}</td></tr>`).join('')+
+      `</table><p class="muted" style="margin-top:6px">共 ${evs.length} 筆。這是唯讀核對用;要納入排班判斷,請在上方「特定日期回報」登記對應時段。</p>`;
+  }catch(e){box.innerHTML='<p class="warn">抓取失敗:'+esc(e.message)+'</p>'}
 }
 function setAvail(empId,d,k,v){
   const e=emp(empId);e.avail=e.avail||defaultAvail();
