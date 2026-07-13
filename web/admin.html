@@ -114,6 +114,7 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
           <option value="theme">主題場次</option>
           <option value="counter">櫃台班</option>
           <option value="floor">駐店場控班</option>
+          <option value="practice">練習場(時數依打卡之星)</option>
         </select>
       </div>
     </div>
@@ -218,6 +219,16 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
     <span class="grow"></span>
     <button class="btn gray" onclick="dlgTheme.close()">取消</button>
     <button class="btn" onclick="saveTheme()">儲存</button>
+  </div>
+</dialog>
+
+<dialog id="dlgDetail">
+  <div class="dlg-h"><span id="dlgDetailTitle">場次明細</span><button onclick="dlgDetail.close()">✕</button></div>
+  <div class="dlg-b" id="dlgDetailBody"></div>
+  <div class="dlg-f">
+    <button class="btn gray sm" onclick="exportEmpDetailCSV()">匯出 CSV</button>
+    <span class="grow"></span>
+    <button class="btn gray" onclick="dlgDetail.close()">關閉</button>
   </div>
 </dialog>
 
@@ -474,6 +485,7 @@ let weekAnchor=todayStr();
 function shiftLabel(sh){
   if(sh.kind==='theme'){const t=theme(sh.themeId);return t?t.name:'(主題已刪)'}
   if(sh.kind==='floor')return '駐店場控';
+  if(sh.kind==='practice')return '練習場';
   return '櫃台班';
 }
 /* 是否已取消(涵蓋 cancelled / cancelled_typhoon / cancelled_customer / cancelled_other)*/
@@ -746,7 +758,7 @@ function defaultSlots(){
     const t=theme(document.getElementById('sfTheme').value);
     for(let i=0;i<(t?t.needGM:1);i++)dlgSlotsArr.push({role:'場控',empId:''});
     for(let i=0;i<(t?t.needNPC:0);i++)dlgSlotsArr.push({role:'NPC',empId:''});
-  }else if(kind==='floor')dlgSlotsArr.push({role:'場控',empId:''});
+  }else if(kind==='floor'||kind==='practice')dlgSlotsArr.push({role:'場控',empId:''});
   else dlgSlotsArr.push({role:'櫃台',empId:''});
 }
 function addSlot(){
@@ -1046,15 +1058,74 @@ function sessionStats(empId,month){
   }
   return{pay,gm,npc,detail};
 }
-/* 櫃台/駐店班時數(時薪計) */
+/* 櫃台/駐店班時數(時薪計;不含練習場)*/
 function hourlyMinutes(empId,month){
   let m=0;
   for(const sh of S.shifts){
-    if(isCx(sh)||sh.date.slice(0,7)!==month||sh.kind==='theme')continue;
+    if(isCx(sh)||sh.date.slice(0,7)!==month||sh.kind==='theme'||sh.kind==='practice')continue;
     if(!sh.assignments.some(a=>a.empId===empId))continue;
     m+=Math.max(0,toMin(sh.end)-toMin(sh.start));
   }
   return m;
+}
+/* 練習場時數(單獨統計,不自動計薪)*/
+function practiceMinutes(empId,month){
+  let m=0;
+  for(const sh of S.shifts){
+    if(isCx(sh)||sh.date.slice(0,7)!==month||sh.kind!=='practice')continue;
+    if(!sh.assignments.some(a=>a.empId===empId))continue;
+    m+=Math.max(0,toMin(sh.end)-toMin(sh.start));
+  }
+  return m;
+}
+/* 某員工當月所有場次明細(供逐筆檢視)*/
+function empSessions(empId,month){
+  const rows=[];
+  for(const sh of S.shifts){
+    if(sh.date.slice(0,7)!==month)continue;
+    const a=sh.assignments.find(x=>x.empId===empId);
+    if(!a)continue;
+    const t=sh.kind==='theme'?theme(sh.themeId):null;
+    let fee=0;
+    if(!isCx(sh)&&t){fee=a.role==='NPC'?(t.payNPC||0):(t.payGM||0);}
+    rows.push({date:sh.date,start:sh.start,end:sh.end,
+      kind:sh.kind,label:shiftLabel(sh),role:a.role,
+      store:store(sh.storeId)?.name||'',fee,cancelled:isCx(sh),cx:cxLabel(sh)});
+  }
+  return rows.sort((x,y)=>(x.date+x.start).localeCompare(y.date+y.start));
+}
+let detailEmpId=null;
+function showEmpDetail(empId){
+  detailEmpId=empId;
+  const e=emp(empId);if(!e)return;
+  const rows=empSessions(empId,payMonth);
+  const gm=rows.filter(r=>r.kind==='theme'&&r.role==='場控'&&!r.cancelled);
+  const npc=rows.filter(r=>r.kind==='theme'&&r.role==='NPC'&&!r.cancelled);
+  const other=rows.filter(r=>r.kind!=='theme');
+  const cx=rows.filter(r=>r.cancelled);
+  document.getElementById('dlgDetailTitle').textContent=e.name+'|'+payMonth+' 場次明細';
+  const tbl=(title,list,showFee)=>list.length?`<h3 style="margin:10px 0 6px">${title}(${list.length})</h3>
+    <table><tr><th>日期</th><th>時間</th><th>主題/類型</th><th>店</th><th>角色</th>${showFee?'<th class="num">場次費</th>':'<th class="num">時數</th>'}</tr>
+    ${list.map(r=>`<tr><td>${r.date}(週${WD[dateWD(r.date)]})</td><td>${r.start}–${r.end}</td>
+      <td>${esc(r.label)}${r.cancelled?' <span class="warn">'+esc(r.cx)+'</span>':''}</td><td>${esc(r.store)}</td><td>${r.role}</td>
+      ${showFee?`<td class="num">${r.fee?'$'+r.fee:'—'}</td>`:`<td class="num">${fmtHr(toMin(r.end)-toMin(r.start))}h</td>`}</tr>`).join('')}</table>`:'';
+  const npcFee=npc.reduce((s,r)=>s+r.fee,0),gmFee=gm.reduce((s,r)=>s+r.fee,0);
+  document.getElementById('dlgDetailBody').innerHTML=
+    `<div class="row" style="gap:16px;flex-wrap:wrap">
+       <b>場控 ${gm.length} 場 = $${gmFee.toLocaleString()}</b>
+       <b>NPC ${npc.length} 場 = $${npcFee.toLocaleString()}</b>
+       <b>櫃台/駐店/練習 ${other.length} 筆</b>
+       ${cx.length?`<span class="warn">取消 ${cx.length} 筆(不計費)</span>`:''}
+     </div>`
+    +tbl('場控場次',gm,true)+tbl('NPC 場次',npc,true)+tbl('櫃台/駐店/練習場',other,false)+tbl('已取消',cx,true);
+  dlgDetail.showModal();
+}
+function exportEmpDetailCSV(){
+  if(!detailEmpId)return;
+  const e=emp(detailEmpId),rows=empSessions(detailEmpId,payMonth);
+  let csv='﻿日期,星期,開始,結束,主題/類型,店別,角色,場次費,狀態\n';
+  for(const r of rows)csv+=`${r.date},${WD[dateWD(r.date)]},${r.start},${r.end},${r.label},${r.store},${r.role},${r.fee||''},${r.cancelled?r.cx:'正常'}\n`;
+  dl(csv,`${e.name}_${payMonth}_場次明細.csv`,'text/csv');
 }
 function vPay(){
   const actives=S.employees.filter(e=>employedInMonth(e,payMonth));
@@ -1083,7 +1154,7 @@ function vPay(){
     <table>
       <tr><th>員工</th><th>身分</th><th class="num">場控場次</th><th class="num">NPC場次</th><th class="num">場次費</th><th class="num">櫃台/駐店時數</th><th class="num">時薪費</th><th class="num">月薪</th><th class="num">打卡時數</th><th class="num">加班時數</th><th class="num">加班費</th><th class="num">合計</th></tr>
       ${rows.map(({e,ss,hm,hp,base,am,otHr,otPay,total})=>`<tr>
-        <td title="${esc(Object.entries(ss.detail).map(([k,n])=>k+'×'+n).join('、'))}">${esc(e.name)}</td>
+        <td><a href="#" onclick="showEmpDetail('${e.id}');return false" style="color:var(--accent);text-decoration:none;font-weight:600">${esc(e.name)}</a> <span class="muted" style="font-size:11px">明細▸</span></td>
         <td>${e.type==='part'?'兼職':'正職'}</td>
         <td class="num">${ss.gm||'—'}</td><td class="num">${ss.npc||'—'}</td>
         <td class="num">${ss.pay?ss.pay.toLocaleString():'—'}</td>
