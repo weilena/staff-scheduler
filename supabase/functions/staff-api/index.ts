@@ -2,6 +2,11 @@ import { cors, distanceMeters, eligibilityErrors, getContext, json, queueNotific
 
 const DAY = 86_400_000;
 const dateText = (d: Date) => d.toISOString().slice(0, 10);
+const MANUAL_WORK_ITEMS: Record<string, string> = {
+  grandma: "外婆", haunted_shop: "詭店", haunted_prison: "詭獄", shit_power: "屎力全開",
+  haunted_toilet: "詭廁", escapee: "越獄者", orphan: "孤兒怨", mr_mystery_counter: "謎先生櫃台",
+  burgundy_counter: "桌遊大忠店櫃台", weekly_cleaning: "每週大清潔", practice: "練習場",
+};
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
@@ -36,7 +41,7 @@ Deno.serve(async (req) => {
       const now = new Date(), from = dateText(new Date(now.getTime() - 7 * DAY)), to = dateText(new Date(now.getTime() + 60 * DAY));
       const [{ data: worksites }, { data: punches }, { data: requests }, { data: responses }, { data: attendanceDays }, { data: attendanceRequests }] = await Promise.all([
         sb.from("worksites").select("id,name,radius_m,enabled").eq("enabled", true),
-        sb.from("punches").select("id,ts,type,worksite_id,verification,review_state,voided_at,void_reason,shift_ids").eq("emp_id", employee.id).gte("ts", from).order("ts", { ascending: false }).limit(60),
+        sb.from("punches").select("id,ts,type,worksite_id,verification,review_state,voided_at,void_reason,shift_ids,raw").eq("emp_id", employee.id).gte("ts", from).order("ts", { ascending: false }).limit(60),
         sb.from("shift_requests").select("*").or(`requester_emp_id.eq.${employee.id},target_emp_id.eq.${employee.id},target_emp_id.is.null`).order("created_at", { ascending: false }).limit(100),
         sb.from("shift_request_responses").select("*").eq("emp_id", employee.id),
         sb.from("attendance_daily").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: false }).limit(70),
@@ -47,8 +52,13 @@ Deno.serve(async (req) => {
         id: s.id, date: s.date, storeId: s.storeId, kind: s.kind, themeId: s.themeId, start: s.start, end: s.end,
         status: s.status ?? "active", assignments: s.assignments ?? [],
       }));
+      const publicPunches = (punches ?? []).map((p: any) => ({
+        id: p.id, ts: p.ts, type: p.type, worksite_id: p.worksite_id, verification: p.verification,
+        review_state: p.review_state, voided_at: p.voided_at, void_reason: p.void_reason, shift_ids: p.shift_ids ?? [],
+        work_item: p.raw?.work_item ?? null,
+      }));
       return json({ me: { id: employee.id, name: employee.name, role: account.role }, stores: cfg.stores, themes: cfg.themes,
-        employees: publicEmployees, shifts: publicShifts, worksites, punches, requests, responses,
+        employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches, requests, responses,
         attendanceDays, attendanceRequests, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
 
@@ -62,14 +72,44 @@ Deno.serve(async (req) => {
       const site = ranked[0];
       if (!site || site.distance > site.radius_m + Math.min(accuracy, 50)) return json({ error: "目前不在允許的打卡地點範圍內" }, 403);
       const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-      const assigned = shifts.filter((s: any) => s.date === today && s.storeId === site.id && s.status !== "cancelled" &&
-        (s.assignments ?? []).some((a: any) => a.empId === employee.id));
-      const verification = assigned.length ? "line_location" : "line_location_unassigned";
+      let selectedShifts: any[] = [];
+      let workItem: any = null;
+      let verification = "line_location";
+      if (type === "in") {
+        const requestedIds = Array.isArray(input.shiftIds) ? [...new Set(input.shiftIds.map(String))] : [];
+        selectedShifts = shifts.filter((s: any) => requestedIds.includes(String(s.id)));
+        const invalidSelection = selectedShifts.some((s: any) => s.date !== today || s.storeId !== site.id || s.status === "cancelled" ||
+          !(s.assignments ?? []).some((a: any) => a.empId === employee.id));
+        if (invalidSelection || selectedShifts.length !== requestedIds.length) return json({ error: "選取的場次不屬於你今天在這間店的班表，請重新整理後再試。" }, 409);
+        if (selectedShifts.length) {
+          workItem = { source: "scheduled", labels: selectedShifts.map((s: any) => {
+            const theme = (cfg.themes ?? []).find((t: any) => t.id === s.themeId)?.name;
+            const label = s.kind === "theme" ? theme : s.kind === "counter" ? (s.storeId === "ms" ? "謎先生櫃台" : "桌遊大忠店櫃台") :
+              s.kind === "cleaning" ? "每週大清潔" : s.kind === "practice" ? "練習場" : s.kind === "floor" ? "場控／現場支援" : "其他工作";
+            const role = (s.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "";
+            return `${s.start}–${s.end} ${label}${role ? `（${role}）` : ""}`;
+          }) };
+        } else {
+          const code = String(input.workItemCode ?? "");
+          if (!MANUAL_WORK_ITEMS[code]) return json({ error: "請先選擇今天要執行的主題、櫃台或練習場。" }, 400);
+          workItem = { source: "temporary_support", code, labels: [MANUAL_WORK_ITEMS[code]] };
+          verification = "line_location_unassigned";
+        }
+      } else {
+        const { data: latest } = await sb.from("punches").select("type,worksite_id,shift_ids,raw").eq("emp_id", employee.id)
+          .is("voided_at", null).order("ts", { ascending: false }).limit(1).maybeSingle();
+        if (!latest || latest.type !== "in") return json({ error: "目前沒有尚未下班的上班卡。" }, 409);
+        selectedShifts = shifts.filter((s: any) => (latest.shift_ids ?? []).includes(s.id));
+        workItem = latest.raw?.work_item ?? null;
+        if (latest.raw?.verification === "line_location_unassigned") verification = "line_location_unassigned";
+        else if (latest.worksite_id !== site.id) verification = "line_location_cross_site";
+      }
       const { data, error } = await sb.rpc("record_line_punch", { p_emp: employee.id, p_type: type, p_worksite: site.id,
-        p_lat: lat, p_lng: lng, p_accuracy: accuracy, p_verification: verification, p_shift_ids: assigned.map((s: any) => s.id),
-        p_raw: { distance_m: Math.round(site.distance), line_user_id: profile.userId, user_agent: req.headers.get("user-agent") ?? "" } });
+        p_lat: lat, p_lng: lng, p_accuracy: accuracy, p_verification: verification, p_shift_ids: selectedShifts.map((s: any) => s.id),
+        p_raw: { distance_m: Math.round(site.distance), line_user_id: profile.userId, user_agent: req.headers.get("user-agent") ?? "", work_item: workItem, verification } });
       if (error) return json({ error: error.message }, error.message.includes("目前已") ? 409 : 500);
-      return json({ ...data, site: site.name, distance: Math.round(site.distance), warning: assigned.length ? null : "今天在此店沒有找到已排班班次，本次打卡已標記給管理員確認" });
+      return json({ ...data, site: site.name, distance: Math.round(site.distance), workItem,
+        warning: verification === "line_location" ? null : "本次打卡屬於臨時支援或跨店下班，已記錄並交由管理員確認。" });
     }
 
     if (action === "create-request") {
