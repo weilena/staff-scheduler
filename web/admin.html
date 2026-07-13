@@ -47,6 +47,9 @@ th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 .mday:hover{border-color:var(--accent)}
 .mday.dim{background:#f8fafc;opacity:.55}
 .mday.today{border-color:var(--accent);box-shadow:0 0 0 2px #bfdbfe}
+.mday.hasunstaffed{background:#fef3c7;border-color:#f59e0b}
+.mday.avon{background:#ecfdf5;border-color:#6ee7b7}
+.mday.avoff{background:#f1f5f9}
 .mnum{font-size:12.5px;color:var(--muted);font-weight:600}
 .chip{border-radius:5px;padding:1px 5px;font-size:11px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
 .chip.unstaffed{outline:2px dashed #fca5a5;outline-offset:-2px}
@@ -267,7 +270,7 @@ let S=null,sbc=null;
 function isDemo(){return (window.CFG&&CFG.DEMO)||/[?&]demo=1/.test(location.search)}
 function seedConfig(){
   return {
-    stores:[{id:'dz',name:'大忠店',color:'#2563eb'},{id:'ms',name:'謎先生',color:'#7c3aed'}],
+    stores:[{id:'dz',name:'大忠店',color:'#111827'},{id:'ms',name:'謎先生',color:'#e5e7eb'}],
     themes:seedThemes(),
     settings:{prepMin:10,travelMin:12,npcMaxChain:2,npcRestMin:30},
     closedDates:[],
@@ -316,6 +319,11 @@ async function afterLogin(){
   if(!Array.isArray(S.closedDates))S.closedDates=[];
   S.themes.forEach(function(t){if(!Array.isArray(t.slots))t.slots=[];if(t.payGM==null)t.payGM=300;if(t.payNPC==null)t.payNPC=0});
   S.employees.forEach(function(e){if(!e.availX)e.availX={};if(e.startDate==null)e.startDate='';if(e.endDate==null)e.endDate=''});
+  // 店別黑白對比色(舊藍/紫自動換成黑/白;若使用者自訂過非舊色則保留)
+  {let changed=false;S.stores.forEach(function(s){
+    if(s.id==='dz'&&(s.color==='#2563eb'||!s.color)){s.color='#111827';changed=true;}
+    if(s.id==='ms'&&(s.color==='#7c3aed'||!s.color)){s.color='#e5e7eb';changed=true;}
+  });if(changed)save();}
   renderNav();render();
 }
 let saveTimer=null;
@@ -481,6 +489,22 @@ let viewMode='month';
 let monthAnchor='2026-06';        // 依需求先帶入 2026 年 6 月
 let dayAnchor='2026-06-01';
 let weekAnchor=todayStr();
+let filterTheme='';               // 主題篩選
+let filterEmp='';                 // 人員篩選
+function setFilterTheme(v){filterTheme=v;render()}
+function setFilterEmp(v){filterEmp=v;render()}
+function shiftMatch(sh){
+  if(filterTheme&&sh.themeId!==filterTheme)return false;
+  if(filterEmp&&!sh.assignments.some(a=>a.empId===filterEmp))return false;
+  return true;
+}
+/* 顏色亮度 → 決定文字黑/白,做大忠(深)/謎先生(淺)黑白對比 */
+function lum(hex){hex=String(hex||'#64748b').replace('#','');if(hex.length<6)return .5;const r=parseInt(hex.slice(0,2),16),g=parseInt(hex.slice(2,4),16),b=parseInt(hex.slice(4,6),16);return (0.299*r+0.587*g+0.114*b)/255;}
+function textOn(bg){return lum(bg)>0.6?'#111827':'#ffffff';}
+function chipStyle(sh){
+  const st=store(sh.storeId);const bg=isCx(sh)?'#94a3b8':(st?st.color:'#64748b');
+  return `background:${bg};color:${textOn(bg)};border:1px solid ${lum(bg)>0.82?'#cbd5e1':'transparent'}`;
+}
 
 function shiftLabel(sh){
   if(sh.kind==='theme'){const t=theme(sh.themeId);return t?t.name:'(主題已刪)'}
@@ -497,15 +521,24 @@ function cxLabel(sh){
   return '';
 }
 function vSched(){
-  const segBar=`<div class="row" style="margin-bottom:12px">
+  const themeOpts='<option value="">全部主題</option>'+S.themes.map(t=>`<option value="${t.id}" ${filterTheme===t.id?'selected':''}>${esc(store(t.storeId)?.name||'')}·${esc(t.name)}</option>`).join('');
+  const empOpts='<option value="">全部人員</option>'+S.employees.filter(e=>e.active).map(e=>`<option value="${e.id}" ${filterEmp===e.id?'selected':''}>${esc(e.name)}</option>`).join('');
+  const segBar=`<div class="row" style="margin-bottom:10px">
     <div class="seg">
       <button class="${viewMode==='month'?'on':''}" onclick="viewMode='month';render()">月曆</button>
       <button class="${viewMode==='day'?'on':''}" onclick="viewMode='day';render()">日場次</button>
       <button class="${viewMode==='week'?'on':''}" onclick="viewMode='week';render()">週表</button>
     </div>
     <span class="grow"></span>
-    ${S.stores.map(s=>`<span class="badge" style="background:${s.color}">${esc(s.name)}</span>`).join(' ')}
     <button class="btn" onclick="openShift(null)">＋ 新增班次</button>
+  </div>
+  <div class="row" style="margin-bottom:12px;gap:8px">
+    <span class="muted">篩選</span>
+    <select onchange="setFilterTheme(this.value)">${themeOpts}</select>
+    <select onchange="setFilterEmp(this.value)">${empOpts}</select>
+    ${(filterTheme||filterEmp)?`<button class="btn gray sm" onclick="filterTheme='';filterEmp='';render()">清除篩選</button>`:''}
+    <span class="grow"></span>
+    ${S.stores.map(s=>`<span class="badge" style="background:${s.color};color:${textOn(s.color)};border:1px solid ${lum(s.color)>0.82?'#cbd5e1':'transparent'}">${esc(s.name)}</span>`).join(' ')}
   </div>`;
   let body='';
   if(viewMode==='month')body=vMonth();
@@ -533,21 +566,26 @@ function vMonth(){
     <b style="font-size:16px">${y} 年 ${m} 月</b>
     <button class="btn gray sm" onclick="moveMonth(1)">→</button>
     <button class="btn gray sm" onclick="monthAnchor=monthStr();render()">回本月</button>
-    <span class="muted">點日期進入該日場次表;點色塊編輯班次(虛線紅框=未排人)</span>
+    <span class="muted">點日期進入該日場次表;<span style="background:#fde68a;padding:0 4px;border-radius:3px">黃底=有未排人場次</span>${filterEmp?';綠/灰=該員工當天可上班/休':''}</span>
   </div>
   <div class="mhead">${['一','二','三','四','五','六','日'].map(d=>`<div>週${d}</div>`).join('')}</div>
   <div class="mgrid">${days.map(ds=>{
     const inMonth=ds.slice(0,7)===monthAnchor;
-    const shifts=S.shifts.filter(x=>x.date===ds).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
-    return `<div class="mday ${inMonth?'':'dim'} ${ds===td?'today':''}" onclick="dayAnchor='${ds}';viewMode='day';render()">
-      <div class="mnum">${Number(ds.slice(8))}</div>
-      ${S.closedDates.includes(ds)?'<div class="chip" style="background:#dc2626">店休</div>':''}
+    const shifts=S.shifts.filter(x=>x.date===ds&&shiftMatch(x)).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
+    const hasUnstaffed=shifts.some(sh=>!isCx(sh)&&!sh.assignments.some(a=>a.empId));
+    // 選了人員時,格子底色顯示他當天可上班/休
+    let av='';
+    if(filterEmp){const e=emp(filterEmp);const a=e&&effectiveAvail(e,ds);av=a&&a.on?'avon':'avoff';}
+    const cls=`mday ${inMonth?'':'dim'} ${ds===td?'today':''} ${hasUnstaffed&&!filterEmp?'hasunstaffed':''} ${av}`;
+    return `<div class="${cls}" onclick="dayAnchor='${ds}';viewMode='day';render()">
+      <div class="mnum">${Number(ds.slice(8))}${filterEmp&&av==='avon'?' <span style="color:#059669;font-size:11px">可</span>':filterEmp&&av==='avoff'?' <span style="color:#94a3b8;font-size:11px">休</span>':''}</div>
+      ${S.closedDates.includes(ds)?'<div class="chip" style="background:#dc2626;color:#fff">店休</div>':''}
       ${shifts.map(sh=>{
-        const st=store(sh.storeId);
         const staffed=sh.assignments.some(a=>a.empId);
-        return `<div class="chip ${isCx(sh)?'cancelled':staffed?'':'unstaffed'}" style="background:${isCx(sh)?'#64748b':st?st.color:'#64748b'}"
-          onclick="event.stopPropagation();openShift('${sh.id}')">${sh.start} ${esc(shiftLabel(sh))}${isCx(sh)?' '+cxLabel(sh):staffed?'':' ⚠未排'}</div>`;
-      }).join('')}
+        const who=filterEmp?'':(staffed?'':' ⚠未排');
+        return `<div class="chip ${isCx(sh)?'cancelled':staffed?'':'unstaffed'}" style="${chipStyle(sh)}"
+          onclick="event.stopPropagation();openShift('${sh.id}')">${sh.start} ${esc(shiftLabel(sh))}${isCx(sh)?' '+cxLabel(sh):who}</div>`;
+      }).join('')||(filterTheme||filterEmp?'<span class="muted" style="font-size:11px">—</span>':'')}
     </div>`;
   }).join('')}</div>`;
 }
@@ -584,7 +622,7 @@ function vDaySessions(){
   ${S.stores.map(s=>{
     const ts=S.themes.filter(t=>t.storeId===s.id&&t.active);
     if(!ts.length)return '';
-    return `<h3 style="margin:14px 0 8px"><span class="badge" style="background:${s.color}">${esc(s.name)}</span></h3>
+    return `<h3 style="margin:14px 0 8px"><span class="badge" style="background:${s.color};color:${textOn(s.color)};border:1px solid ${lum(s.color)>0.82?'#cbd5e1':'transparent'}">${esc(s.name)}</span></h3>
     <table>${ts.map(t=>`<tr><th style="width:110px">${esc(t.name)}<br><span class="muted" style="font-weight:400">${t.dur}分</span></th>
       <td><div class="slotrow">${(t.slots||[]).map(slot=>{
         const sh=findSlotShift(ds,t.id,slot);
@@ -629,13 +667,13 @@ function vWeek(){
       <button class="btn gray sm" onclick="weekAnchor=todayStr();render()">本週</button>
     </div>
     <div class="week">${days.map(ds=>{
-      const shifts=S.shifts.filter(x=>x.date===ds).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
-      return `<div class="day ${ds===td?'today':''}">
+      const shifts=S.shifts.filter(x=>x.date===ds&&shiftMatch(x)).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
+      const hasUnstaffed=shifts.some(sh=>!isCx(sh)&&!sh.assignments.some(a=>a.empId));
+      return `<div class="day ${ds===td?'today':''}" style="${hasUnstaffed?'background:#fef3c7;border-color:#f59e0b':''}">
         <h4><span>${ds.slice(5)}(${WD[dateWD(ds)]})</span><a href="#" onclick="openShift(null,'${ds}');return false" style="text-decoration:none;color:var(--accent)">＋</a></h4>
         ${shifts.map(sh=>{
-          const st=store(sh.storeId);
           const who=sh.assignments.filter(a=>a.empId).map(a=>{const e=emp(a.empId);return e?`${esc(e.name)}(${a.role})`:''}).filter(Boolean).join('、')||'<i>未排人</i>';
-          return `<div class="shift ${isCx(sh)?'cancelled':''}" style="background:${isCx(sh)?'#64748b':st?st.color:'#64748b'}" onclick="openShift('${sh.id}')">
+          return `<div class="shift ${isCx(sh)?'cancelled':''}" style="${chipStyle(sh)}" onclick="openShift('${sh.id}')">
             <b>${sh.start||''}–${sh.end||''}</b> ${esc(shiftLabel(sh))}${isCx(sh)?' ('+cxLabel(sh)+')':''}<br><span class="who">${who}</span></div>`;
         }).join('')||'<span class="muted" style="font-size:12px">—</span>'}
       </div>`;
@@ -1289,7 +1327,7 @@ function vThemes(){
   <div class="card">
     <div class="row" style="margin-bottom:10px"><h2 class="grow">主題管理</h2>
     <button class="btn" onclick="openTheme(null)">＋ 新增主題</button></div>
-    ${S.stores.map(s=>`<h3 style="margin:12px 0 8px"><span class="badge" style="background:${s.color}">${esc(s.name)}</span></h3>
+    ${S.stores.map(s=>`<h3 style="margin:12px 0 8px"><span class="badge" style="background:${s.color};color:${textOn(s.color)};border:1px solid ${lum(s.color)>0.82?'#cbd5e1':'transparent'}">${esc(s.name)}</span></h3>
     <table><tr><th>主題</th><th class="num">場次長度</th><th>場次時刻</th><th class="num">需場控</th><th class="num">需NPC</th><th class="num">場控/場</th><th class="num">NPC/場</th><th>狀態</th><th></th></tr>
     ${S.themes.filter(t=>t.storeId===s.id).map(t=>`<tr style="${t.active?'':'opacity:.5'}">
       <td><b>${esc(t.name)}</b></td><td class="num">${t.dur} 分</td>
@@ -1354,7 +1392,7 @@ function vSkills(){
   return `<div class="card"><h2>技能表:誰會帶哪個主題</h2>
     <p class="muted" style="margin-bottom:10px">勾選代表該員工可以擔任該主題的場控/NPC。排班時的下拉選單以此過濾。</p>
     <div class="skmat"><table>
-      <tr><th>員工</th>${themes.map(t=>`<th><span class="badge" style="background:${store(t.storeId)?.color}">${esc(store(t.storeId)?.name)}</span><br>${esc(t.name)}</th>`).join('')}</tr>
+      <tr><th>員工</th>${themes.map(t=>`<th><span class="badge" style="background:${store(t.storeId)?.color};color:${textOn(store(t.storeId)?.color)}">${esc(store(t.storeId)?.name)}</span><br>${esc(t.name)}</th>`).join('')}</tr>
       ${actives.map(e=>`<tr><td><b>${esc(e.name)}</b></td>${themes.map(t=>{
         const has=r=>(e.skills?.[t.id]||[]).includes(r);
         return `<td>
