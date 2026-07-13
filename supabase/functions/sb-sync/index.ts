@@ -151,6 +151,13 @@ Deno.serve(async (req) => {
       };
       upserts.push({ id, date: shift.date, source: "simplybook", data: shift });
     }
+    // 去重:同一預約 code 只保留最後一筆,避免批次 upsert 撞 id(ON CONFLICT 重複)
+    {
+      const uniq = new Map<string, any>();
+      for (const r of upserts) uniq.set(r.id, r);
+      upserts.length = 0;
+      upserts.push(...uniq.values());
+    }
 
     const cancelledUpdates: any[] = [];
     for (const booking of cancelled) {
