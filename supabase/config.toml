@@ -1,0 +1,13 @@
+project_id = "xrkdwdcsyzivkjankfsg"
+
+[functions.sb-sync]
+verify_jwt = false
+
+[functions.staff-api]
+verify_jwt = false
+
+[functions.line-webhook]
+verify_jwt = false
+
+[functions.line-dispatch]
+verify_jwt = false

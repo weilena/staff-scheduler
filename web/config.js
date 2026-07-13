@@ -5,5 +5,7 @@
 window.CFG = {
   SUPABASE_URL: 'https://xrkdwdcsyzivkjankfsg.supabase.co',
   SUPABASE_ANON_KEY: 'sb_publishable_5F4vyMSDMFtJBVgShrLHwg_CwZFnu5T',
+  // 建立 LINE Login / LIFF 後填入；這是公開識別碼，不是密碼。
+  LINE_LIFF_ID: '2010690079-ysvO02nW',
   DEMO: false // 改 true(或網址加 ?demo=1)= 不連雲端,用瀏覽器暫存試玩介面
 };
