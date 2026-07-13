@@ -1,4 +1,11 @@
-import { eligibilityErrors, getContext, json, queueNotification, serviceClient } from "../_shared/common.ts";
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
+function json(body: unknown, status = 200) {
+  return Response.json(body, { status, headers: cors });
+}
 
 async function validSignature(raw: string, signature: string) {
   const secret = Deno.env.get("LINE_CHANNEL_SECRET") ?? "";
@@ -24,8 +31,13 @@ Deno.serve(async (req) => {
   const raw = await req.text();
   if (!await validSignature(raw, req.headers.get("x-line-signature") ?? "")) return json({ error: "INVALID_SIGNATURE" }, 401);
   const body = JSON.parse(raw || "{}");
+  const events = body.events ?? [];
+  // LINE's Verify request contains no events. Return immediately so cold-starting
+  // the database client cannot make the verification request time out.
+  if (!events.length) return json({ ok: true });
+  const { eligibilityErrors, getContext, queueNotification, serviceClient } = await import("../_shared/common.ts");
   const sb = serviceClient();
-  for (const event of body.events ?? []) {
+  for (const event of events) {
     const eventId = String(event.webhookEventId ?? "");
     if (eventId) {
       const { error } = await sb.from("line_events").insert({ event_id: eventId, event_type: event.type });
