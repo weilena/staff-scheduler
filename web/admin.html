@@ -324,10 +324,12 @@ async function afterLogin(){
   const shRes=await sbc.from('shifts').select('id,data');
   const puRes=await sbc.from('punches').select('*');
   const ciRes=await sbc.from('session_checkins').select('*');
+  const cfRes=await sbc.from('shift_confirmations').select('*');
   S=Object.assign({},cfg.data,{
     shifts:(shRes.data||[]).map(function(r){return r.data}),
     punches:(puRes.data||[]).map(function(p){return{id:p.id,empId:p.emp_id,type:p.type,ts:p.ts,source:p.source,worksiteId:p.worksite_id,verification:p.verification,reviewState:p.review_state,voidedAt:p.voided_at,voidReason:p.void_reason,shiftIds:p.shift_ids||[],raw:p.raw||{},workItem:p.raw?.work_item||null}}),
-    sessionCheckins:(ciRes.data||[]).map(function(x){return{id:x.id,empId:x.emp_id,shiftId:x.shift_id,checkedInAt:x.checked_in_at,worksiteId:x.worksite_id,verification:x.verification,source:x.source,note:x.note||''}})
+    sessionCheckins:(ciRes.data||[]).map(function(x){return{id:x.id,empId:x.emp_id,shiftId:x.shift_id,checkedInAt:x.checked_in_at,worksiteId:x.worksite_id,verification:x.verification,source:x.source,note:x.note||''}}),
+    shiftConfirmations:(cfRes.data||[]).map(function(x){return{shiftId:x.shift_id,empId:x.emp_id,status:x.status,confirmedAt:x.confirmed_at}})
   });
   if(!S.settings)S.settings={prepMin:10,travelMin:12};
   if(S.settings.npcMaxChain==null)S.settings.npcMaxChain=2;
@@ -353,7 +355,7 @@ async function loadLineAdmin(){
 let saveTimer=null;
 function save(){
   if(!S)return;
-  const cfg=Object.assign({},S);delete cfg.shifts;delete cfg.punches;
+  const cfg=Object.assign({},S);delete cfg.shifts;delete cfg.punches;delete cfg.sessionCheckins;delete cfg.shiftConfirmations;
   clearTimeout(saveTimer);
   saveTimer=setTimeout(function(){
     sbc.from('config').upsert({id:1,data:cfg,updated_at:new Date().toISOString()})
@@ -1103,7 +1105,7 @@ function vPunch(){
   <div class="card"><h2>今日班表(${td})</h2>
     ${todayShifts.length?`<table><tr><th>時間</th><th>店別</th><th>內容</th><th>人員</th></tr>${todayShifts.map(sh=>
       `<tr><td>${sh.start}–${sh.end}</td><td>${esc(store(sh.storeId)?.name||'')}</td><td>${esc(shiftLabel(sh))}</td>
-      <td>${sh.assignments.filter(a=>a.empId).map(a=>`${esc(emp(a.empId)?.name||'?')}(${a.role})`).join('、')||'<i class="muted">未排人</i>'}</td></tr>`).join('')}</table>`
+      <td>${sh.assignments.filter(a=>a.empId).map(a=>{const ok=(S.shiftConfirmations||[]).some(x=>x.shiftId===sh.id&&x.empId===a.empId);return `${esc(emp(a.empId)?.name||'?')}(${a.role}) ${ok?'✅已確認':'⏳待確認'}`}).join('、')||'<i class="muted">未排人</i>'}</td></tr>`).join('')}</table>`
     :'<p class="muted">今日沒有班次</p>'}
   </div>
   <div class="card"><h2>今日打卡紀錄</h2>

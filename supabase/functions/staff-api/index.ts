@@ -39,10 +39,11 @@ Deno.serve(async (req) => {
 
     if (action === "bootstrap") {
       const now = new Date(), from = dateText(new Date(now.getTime() - 7 * DAY)), to = dateText(new Date(now.getTime() + 60 * DAY));
-      const [{ data: worksites }, { data: punches }, { data: sessionCheckins }, { data: requests }, { data: responses }, { data: attendanceDays }, { data: attendanceRequests }] = await Promise.all([
+      const [{ data: worksites }, { data: punches }, { data: sessionCheckins }, { data: shiftConfirmations }, { data: requests }, { data: responses }, { data: attendanceDays }, { data: attendanceRequests }] = await Promise.all([
         sb.from("worksites").select("id,name,radius_m,enabled").eq("enabled", true),
         sb.from("punches").select("id,ts,type,worksite_id,verification,review_state,voided_at,void_reason,shift_ids,raw").eq("emp_id", employee.id).gte("ts", from).order("ts", { ascending: false }).limit(60),
         sb.from("session_checkins").select("id,shift_id,checked_in_at,worksite_id,verification,source,note").eq("emp_id", employee.id).gte("checked_in_at", from).order("checked_in_at", { ascending: false }).limit(100),
+        sb.from("shift_confirmations").select("shift_id,status,confirmed_at").eq("emp_id", employee.id),
         sb.from("shift_requests").select("*").or(`requester_emp_id.eq.${employee.id},target_emp_id.eq.${employee.id},target_emp_id.is.null`).order("created_at", { ascending: false }).limit(100),
         sb.from("shift_request_responses").select("*").eq("emp_id", employee.id),
         sb.from("attendance_daily").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: false }).limit(70),
@@ -60,7 +61,18 @@ Deno.serve(async (req) => {
       }));
       return json({ me: { id: employee.id, name: employee.name, role: account.role }, stores: cfg.stores, themes: cfg.themes,
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches, requests, responses,
-        attendanceDays, attendanceRequests, sessionCheckins, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
+        attendanceDays, attendanceRequests, sessionCheckins, shiftConfirmations, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
+    }
+
+    if (action === "confirm-shift") {
+      const shiftId = String(input.shiftId ?? "");
+      const shift = shifts.find((s: any) => String(s.id) === shiftId && s.status !== "cancelled");
+      if (!shift || !(shift.assignments ?? []).some((a: any) => a.empId === employee.id)) return json({ error: "這個班次未指派給你，或已經取消。" }, 403);
+      const { error } = await sb.from("shift_confirmations").upsert({ shift_id: shiftId, emp_id: employee.id, status: "confirmed", source: "line", confirmed_at: new Date().toISOString() });
+      if (error) throw error;
+      await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: "confirm_shift", target_type: "shift", target_id: shiftId,
+        details: { date: shift.date, start: shift.start, end: shift.end, kind: shift.kind } });
+      return json({ ok: true, message: "已確認收到這個班次" });
     }
 
     if (action === "punch") {

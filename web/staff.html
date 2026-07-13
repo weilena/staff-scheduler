@@ -59,9 +59,15 @@ function attendanceState(s){
   return {key:'done',text:'上下班打卡已完成'};
 }
 function shiftCard(s,all=true){
-  const mine=(s.assignments||[]).some(a=>a.empId===D.me.id),role=(s.assignments||[]).find(a=>a.empId===D.me.id)?.role||'',npc=role.toUpperCase()==='NPC',state=mine&&s.date===taipeiDate()?attendanceState(s):null;
+  const mine=(s.assignments||[]).some(a=>a.empId===D.me.id),role=(s.assignments||[]).find(a=>a.empId===D.me.id)?.role||'',npc=role.toUpperCase()==='NPC',state=mine&&s.date===taipeiDate()?attendanceState(s):null,confirmed=(D.shiftConfirmations||[]).some(x=>x.shift_id===s.id&&x.status==='confirmed');
   const direct=state?.key==='need-in'?`<button style="margin-top:9px" onclick="directShiftPunch('in','${esc(s.id)}')">${npc?'NPC 場次報到':'這一場上班打卡'}</button>`:state?.key==='working'?`<button class="danger" style="margin-top:9px" onclick="directShiftPunch('out','${esc(s.id)}')">這一場下班打卡</button>`:'';
-  return `<div class="shift ${dateClass(s.date)} ${s.status==='cancelled'?'cancelled':''}"><b>${esc(s.date)}　${esc(s.start)}–${esc(s.end)}</b><br>${esc(storeName(s.storeId))}・${esc(shiftName(s))}<br>${all?`<span class="muted">${(s.assignments||[]).map(a=>esc(empName(a.empId))+' ('+esc(a.role)+')').join('、')}</span>`:''}${state?`<br><span class="status ${state.key}">${state.text}</span><br>${direct}`:''}</div>`
+  const receipt=mine&&s.date>=taipeiDate()?(confirmed?'<span class="status done">已確認收到</span>':`<button class="secondary" style="margin-top:9px" onclick="confirmShift('${esc(s.id)}')">確認收到這個班</button>`):'';
+  return `<div class="shift ${dateClass(s.date)} ${s.status==='cancelled'?'cancelled':''}"><b>${esc(s.date)}　${esc(s.start)}–${esc(s.end)}</b><br>${esc(storeName(s.storeId))}・${esc(shiftName(s))}<br>${all?`<span class="muted">${(s.assignments||[]).map(a=>esc(empName(a.empId))+' ('+esc(a.role)+')').join('、')}</span>`:''}${mine?`<br>${receipt}`:''}${state?`<br><span class="status ${state.key}">${state.text}</span><br>${direct}`:''}</div>`
+}
+async function confirmShift(id){
+  const s=D.shifts.find(x=>x.id===id);if(!s)return alert('找不到這個班次，請重新整理後再試。');
+  if(!confirm(`確認已收到這個工作安排？\n\n${s.date} ${s.start}–${s.end}\n${storeName(s.storeId)}・${shiftName(s)}`))return;
+  try{const x=await api({action:'confirm-shift',shiftId:id});alert(x.message||'已確認');await load()}catch(e){alert(e.message)}
 }
 function directShiftPunch(type,id){
   if(punchBusy)return;
