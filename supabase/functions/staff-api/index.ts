@@ -34,11 +34,13 @@ Deno.serve(async (req) => {
 
     if (action === "bootstrap") {
       const now = new Date(), from = dateText(new Date(now.getTime() - 7 * DAY)), to = dateText(new Date(now.getTime() + 60 * DAY));
-      const [{ data: worksites }, { data: punches }, { data: requests }, { data: responses }] = await Promise.all([
+      const [{ data: worksites }, { data: punches }, { data: requests }, { data: responses }, { data: attendanceDays }, { data: attendanceRequests }] = await Promise.all([
         sb.from("worksites").select("id,name,radius_m,enabled").eq("enabled", true),
-        sb.from("punches").select("id,ts,type,worksite_id,verification").eq("emp_id", employee.id).gte("ts", from).order("ts", { ascending: false }).limit(60),
+        sb.from("punches").select("id,ts,type,worksite_id,verification,review_state,voided_at,void_reason,shift_ids").eq("emp_id", employee.id).gte("ts", from).order("ts", { ascending: false }).limit(60),
         sb.from("shift_requests").select("*").or(`requester_emp_id.eq.${employee.id},target_emp_id.eq.${employee.id},target_emp_id.is.null`).order("created_at", { ascending: false }).limit(100),
         sb.from("shift_request_responses").select("*").eq("emp_id", employee.id),
+        sb.from("attendance_daily").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: false }).limit(70),
+        sb.from("attendance_requests").select("*").eq("emp_id", employee.id).order("created_at", { ascending: false }).limit(30),
       ]);
       const publicEmployees = (cfg.employees ?? []).filter((e: any) => e.active).map((e: any) => ({ id: e.id, name: e.name }));
       const publicShifts = shifts.filter((s: any) => s.date >= from && s.date <= to).map((s: any) => ({
@@ -46,27 +48,28 @@ Deno.serve(async (req) => {
         status: s.status ?? "active", assignments: s.assignments ?? [],
       }));
       return json({ me: { id: employee.id, name: employee.name, role: account.role }, stores: cfg.stores, themes: cfg.themes,
-        employees: publicEmployees, shifts: publicShifts, worksites, punches, requests, responses, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
+        employees: publicEmployees, shifts: publicShifts, worksites, punches, requests, responses,
+        attendanceDays, attendanceRequests, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
 
     if (action === "punch") {
       const type = String(input.type), lat = Number(input.latitude), lng = Number(input.longitude), accuracy = Number(input.accuracy ?? 9999);
       if (!["in", "out"].includes(type) || !Number.isFinite(lat) || !Number.isFinite(lng)) return json({ error: "打卡資料不完整" }, 400);
+      if (!Number.isFinite(accuracy) || accuracy <= 0 || accuracy > 250) return json({ error: "定位精確度不足，請開啟精確定位並到室外或窗邊重試" }, 403);
       const { data: sites } = await sb.from("worksites").select("*").eq("enabled", true).not("latitude", "is", null);
       const ranked = (sites ?? []).map((s: any) => ({ ...s, distance: distanceMeters(lat, lng, Number(s.latitude), Number(s.longitude)) }))
         .sort((a: any, b: any) => a.distance - b.distance);
       const site = ranked[0];
-      if (!site || site.distance > site.radius_m + Math.min(accuracy, 100)) return json({ error: "目前不在允許的打卡地點範圍內" }, 403);
-      const { data: last } = await sb.from("punches").select("type,ts").eq("emp_id", employee.id).order("ts", { ascending: false }).limit(1).maybeSingle();
-      if (last?.type === type) return json({ error: type === "in" ? "目前已是上班狀態" : "目前已是下班狀態" }, 409);
-      const taipei = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date()).replace(" ", "T");
-      const { error } = await sb.from("punches").insert({ id: crypto.randomUUID(), emp_id: employee.id, ts: taipei, type,
-        source: "line", worksite_id: site.id, latitude: lat, longitude: lng, accuracy_m: accuracy, verification: "line_location",
-        raw: { distance_m: Math.round(site.distance), line_user_id: profile.userId } });
-      if (error) throw error;
-      await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: `punch_${type}`, target_type: "worksite", target_id: site.id,
-        details: { distance_m: Math.round(site.distance), accuracy_m: accuracy } });
-      return json({ ok: true, ts: taipei, site: site.name });
+      if (!site || site.distance > site.radius_m + Math.min(accuracy, 50)) return json({ error: "目前不在允許的打卡地點範圍內" }, 403);
+      const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+      const assigned = shifts.filter((s: any) => s.date === today && s.storeId === site.id && s.status !== "cancelled" &&
+        (s.assignments ?? []).some((a: any) => a.empId === employee.id));
+      const verification = assigned.length ? "line_location" : "line_location_unassigned";
+      const { data, error } = await sb.rpc("record_line_punch", { p_emp: employee.id, p_type: type, p_worksite: site.id,
+        p_lat: lat, p_lng: lng, p_accuracy: accuracy, p_verification: verification, p_shift_ids: assigned.map((s: any) => s.id),
+        p_raw: { distance_m: Math.round(site.distance), line_user_id: profile.userId, user_agent: req.headers.get("user-agent") ?? "" } });
+      if (error) return json({ error: error.message }, error.message.includes("目前已") ? 409 : 500);
+      return json({ ...data, site: site.name, distance: Math.round(site.distance), warning: assigned.length ? null : "今天在此店沒有找到已排班班次，本次打卡已標記給管理員確認" });
     }
 
     if (action === "create-request") {
@@ -103,6 +106,11 @@ Deno.serve(async (req) => {
         title: type === "swap" ? "換班邀請" : "讓班邀請", requestId: request.id, shift: { date: shift.date, start: shift.start, end: shift.end },
         text: `${employee.name}提出${type === "swap" ? "換班" : "讓班"}申請`, actions: true,
       }, false, `shift-request:${request.id}:${candidate.id}`);
+      const { data: managers } = await sb.from("line_accounts").select("emp_id").eq("role", "manager").eq("active", true);
+      for (const manager of managers ?? []) await queueNotification(sb, manager.emp_id, "shift_change_requested", {
+        title: type === "swap" ? "員工提出換班" : "員工提出讓班",
+        text: `${employee.name}提出 ${shift.date} ${shift.start}–${shift.end} ${type === "swap" ? "換班" : "讓班"}申請，系統已通知合適人選。`,
+      }, false, `shift-change-manager:${request.id}:${manager.emp_id}`);
       return json({ ok: true, requestId: request.id, candidates: candidates.length });
     }
 
@@ -137,8 +145,19 @@ Deno.serve(async (req) => {
     if (action === "attendance-request") {
       const reason = String(input.reason ?? "").trim();
       if (!reason) return json({ error: "請填寫補卡原因" }, 400);
-      const { error } = await sb.from("attendance_requests").insert({ emp_id: employee.id, punch_date: input.punchDate,
-        request_type: input.requestType ?? "correction", requested: input.requested ?? {}, reason });
+      const requestType = String(input.requestType ?? "");
+      if (!["missing_in", "missing_out", "correction"].includes(requestType)) return json({ error: "請選擇補上班卡、補下班卡或更正整日時間" }, 400);
+      const punchDate = String(input.punchDate ?? "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(punchDate)) return json({ error: "補卡日期格式錯誤" }, 400);
+      const requested = input.requested ?? {};
+      const timeOk = (v: unknown) => /^([01]\d|2[0-3]):[0-5]\d$/.test(String(v ?? ""));
+      if (["missing_in", "missing_out"].includes(requestType) && !timeOk(requested.time)) return json({ error: "請填寫正確的補卡時間" }, 400);
+      if (requestType === "correction" && (!timeOk(requested.inTime) || !timeOk(requested.outTime) || requested.inTime >= requested.outTime))
+        return json({ error: "請填寫正確且先後順序一致的上下班時間" }, 400);
+      const { data: duplicate } = await sb.from("attendance_requests").select("id").eq("emp_id", employee.id).eq("punch_date", punchDate).eq("status", "pending").maybeSingle();
+      if (duplicate) return json({ error: "這一天已有待審核的補卡申請" }, 409);
+      const { error } = await sb.from("attendance_requests").insert({ emp_id: employee.id, punch_date: punchDate,
+        request_type: requestType, requested, reason });
       if (error) throw error;
       return json({ ok: true });
     }

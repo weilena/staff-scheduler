@@ -1,7 +1,12 @@
-import { json, queueNotification, serviceClient } from "../_shared/common.ts";
+import { getContext, json, queueNotification, serviceClient } from "../_shared/common.ts";
 
 async function push(to: string, payload: any) {
-  const actions = payload.actions && payload.requestId ? [{
+  const actions = Array.isArray(payload.links) && payload.links.length ? [{
+    type: "template", altText: payload.title ?? "排班提醒", template: {
+      type: "buttons", title: String(payload.title ?? "排班提醒").slice(0, 40), text: String(payload.text ?? "請查看班表").slice(0, 160),
+      actions: payload.links.slice(0, 4).map((x: any) => ({ type: "uri", label: String(x.label).slice(0, 20), uri: String(x.uri) })),
+    },
+  }] : payload.actions && payload.requestId ? [{
     type: "template", altText: payload.title ?? "排班通知", template: {
       type: "buttons", title: String(payload.title ?? "排班通知").slice(0, 40), text: String(payload.text ?? "請回覆").slice(0, 160),
       actions: [
@@ -21,10 +26,44 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "METHOD_NOT_ALLOWED" }, 405);
   const key = req.headers.get("x-dispatch-secret") ?? new URL(req.url).searchParams.get("key");
   if (!key || key !== Deno.env.get("DISPATCH_SECRET")) return json({ error: "UNAUTHORIZED" }, 401);
-  const sb = serviceClient(), now = new Date(), month = now.toISOString().slice(0, 7);
+  const sb = serviceClient(), now = new Date();
 
   await sb.from("shift_requests").update({ status: "expired", updated_at: now.toISOString() })
     .in("request_type", ["give", "swap"]).eq("status", "open").lte("deadline", now.toISOString());
+
+  // 每位員工每天最多一則「隔日班表」提醒，多班次合併；以 idempotency key 防止 Cron 重複發送。
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" })
+    .formatToParts(now).filter((p) => p.type !== "literal").map((p) => [p.type, p.value]));
+  const localHour = Number(parts.hour), localDate = `${parts.year}-${parts.month}-${parts.day}`;
+  const usageMonth = localDate.slice(0, 7);
+  const tomorrow = new Date(new Date(`${localDate}T00:00:00+08:00`).getTime() + 86_400_000);
+  const tomorrowDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(tomorrow);
+  const { cfg, shifts } = await getContext(sb);
+  const reminderHour = Math.min(22, Math.max(0, Number(cfg.settings?.reminderHour ?? 20)));
+  if (localHour >= reminderHour && localHour <= 22) {
+    const grouped = new Map<string, any[]>();
+    for (const shift of shifts.filter((s: any) => s.date === tomorrowDate && s.status !== "cancelled")) {
+      for (const assignment of shift.assignments ?? []) {
+        if (!assignment.empId) continue;
+        grouped.set(String(assignment.empId), [...(grouped.get(String(assignment.empId)) ?? []), { ...shift, role: assignment.role }]);
+      }
+    }
+    const portal = Deno.env.get("LINE_LIFF_URL") ?? (Deno.env.get("LINE_LIFF_ID") ? `https://liff.line.me/${Deno.env.get("LINE_LIFF_ID")}` : "");
+    const link = (tab: string) => `${portal}${portal.includes("?") ? "&" : "?"}tab=${tab}`;
+    for (const [empId, jobs] of grouped) {
+      jobs.sort((a, b) => String(a.start).localeCompare(String(b.start)));
+      const lines = jobs.map((s) => {
+        const store = (cfg.stores ?? []).find((x: any) => x.id === s.storeId)?.name ?? "";
+        const theme = s.kind === "theme" ? (cfg.themes ?? []).find((x: any) => x.id === s.themeId)?.name :
+          s.kind === "counter" ? "櫃台" : s.kind === "practice" ? "練習場" : s.kind === "cleaning" ? "每週大清潔" : "駐店";
+        return `${s.start}–${s.end} ${store} ${theme ?? ""} ${s.role ?? ""}`.trim();
+      });
+      await queueNotification(sb, empId, "shift_reminder", {
+        title: `明日 ${tomorrowDate} 上班提醒`, text: lines.join("\n"),
+        links: portal ? [{ label: "查看我的班表", uri: link("home") }, { label: "需要換班／讓班", uri: link("requests") }] : [],
+      }, false, `shift-reminder:${tomorrowDate}:${empId}`);
+    }
+  }
 
   // 截止時只建立一則管理員摘要，利用 idempotency key 防止重複。
   const { data: due } = await sb.from("shift_requests").select("id,shift_id,status").eq("request_type", "extra").in("status", ["open", "pending_manager"]).lte("deadline", now.toISOString());
@@ -38,7 +77,7 @@ Deno.serve(async (req) => {
     await sb.from("shift_requests").update({ status: accepted ? "pending_manager" : "expired", updated_at: now.toISOString() }).eq("id", request.id);
   }
 
-  const { data: usageRow } = await sb.from("message_usage").select("chargeable_count").eq("month", month).maybeSingle();
+  const { data: usageRow } = await sb.from("message_usage").select("chargeable_count").eq("month", usageMonth).maybeSingle();
   let usage = Number(usageRow?.chargeable_count ?? 0), sent = 0, skipped = 0, failed = 0;
   const { data: jobs } = await sb.from("notification_outbox").select("*").eq("status", "pending").order("critical", { ascending: false }).order("created_at").limit(100);
   for (const job of jobs ?? []) {
@@ -62,6 +101,6 @@ Deno.serve(async (req) => {
       await sb.from("notification_outbox").update({ status: "failed", error: error instanceof Error ? error.message : String(error) }).eq("id", job.id); failed++;
     }
   }
-  await sb.from("message_usage").upsert({ month, chargeable_count: usage, updated_at: new Date().toISOString() });
+  await sb.from("message_usage").upsert({ month: usageMonth, chargeable_count: usage, updated_at: new Date().toISOString() });
   return json({ ok: true, sent, skipped, failed, usage });
 });

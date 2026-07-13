@@ -325,11 +325,12 @@ async function afterLogin(){
   const puRes=await sbc.from('punches').select('*');
   S=Object.assign({},cfg.data,{
     shifts:(shRes.data||[]).map(function(r){return r.data}),
-    punches:(puRes.data||[]).map(function(p){return{id:p.id,empId:p.emp_id,type:p.type,ts:p.ts}})
+    punches:(puRes.data||[]).map(function(p){return{id:p.id,empId:p.emp_id,type:p.type,ts:p.ts,source:p.source,worksiteId:p.worksite_id,verification:p.verification,reviewState:p.review_state,voidedAt:p.voided_at,voidReason:p.void_reason,shiftIds:p.shift_ids||[]}})
   });
   if(!S.settings)S.settings={prepMin:10,travelMin:12};
   if(S.settings.npcMaxChain==null)S.settings.npcMaxChain=2;
   if(S.settings.npcRestMin==null)S.settings.npcRestMin=30;
+  if(S.settings.reminderHour==null)S.settings.reminderHour=20;
   if(!Array.isArray(S.closedDates))S.closedDates=[];
   S.themes.forEach(function(t){if(!Array.isArray(t.slots))t.slots=[];if(t.payGM==null)t.payGM=300;if(t.payNPC==null)t.payNPC=0});
   S.employees.forEach(function(e){if(!e.availX)e.availX={};if(e.startDate==null)e.startDate='';if(e.endDate==null)e.endDate=''});
@@ -342,10 +343,10 @@ async function afterLogin(){
   renderNav();render();
 }
 async function loadLineAdmin(){
-  if(isDemo()){LINE={accounts:[],worksites:S.stores.map(s=>({id:s.id,name:s.name,radius_m:200,enabled:true})),requests:[],responses:[],attendance:[],overtime:[],usage:[],outbox:[]};return}
-  const names=['line_accounts','worksites','shift_requests','shift_request_responses','attendance_requests','overtime_reviews','message_usage','notification_outbox'];
+  if(isDemo()){LINE={accounts:[],worksites:S.stores.map(s=>({id:s.id,name:s.name,radius_m:200,enabled:true})),requests:[],responses:[],attendance:[],daily:[],overtime:[],usage:[],outbox:[]};return}
+  const names=['line_accounts','worksites','shift_requests','shift_request_responses','attendance_requests','attendance_daily','overtime_reviews','message_usage','notification_outbox'];
   const rs=await Promise.all(names.map(n=>sbc.from(n).select('*')));
-  LINE={accounts:rs[0].data||[],worksites:rs[1].data||[],requests:rs[2].data||[],responses:rs[3].data||[],attendance:rs[4].data||[],overtime:rs[5].data||[],usage:rs[6].data||[],outbox:rs[7].data||[]};
+  LINE={accounts:rs[0].data||[],worksites:rs[1].data||[],requests:rs[2].data||[],responses:rs[3].data||[],attendance:rs[4].data||[],daily:rs[5].data||[],overtime:rs[6].data||[],usage:rs[7].data||[],outbox:rs[8].data||[]};
 }
 let saveTimer=null;
 function save(){
@@ -1071,7 +1072,7 @@ async function writebackShift(){
 /* ============ 打卡 ============ */
 let punchEmp='',punchMonth=monthStr();
 function lastPunch(empId){
-  const p=S.punches.filter(x=>x.empId===empId).sort((a,b)=>a.ts.localeCompare(b.ts));
+  const p=S.punches.filter(x=>x.empId===empId&&!x.voidedAt).sort((a,b)=>a.ts.localeCompare(b.ts));
   return p[p.length-1]||null;
 }
 function vPunch(){
@@ -1104,10 +1105,11 @@ function vPunch(){
     :'<p class="muted">今日沒有班次</p>'}
   </div>
   <div class="card"><h2>今日打卡紀錄</h2>
-    ${todays.length?`<table><tr><th>時間</th><th>員工</th><th>類型</th><th></th></tr>${todays.map(p=>
+    ${todays.length?`<table><tr><th>時間</th><th>員工</th><th>類型</th><th>來源／驗證</th><th></th></tr>${todays.map(p=>
       `<tr><td>${p.ts.slice(11,16)}</td><td>${esc(emp(p.empId)?.name||'?')}</td>
       <td><span class="pill ${p.type==='in'?'in':'out'}">${p.type==='in'?'上班':'下班'}</span></td>
-      <td><button class="btn gray sm" onclick="delPunch('${p.id}')">刪除</button></td></tr>`).join('')}</table>`
+      <td>${p.voidedAt?`<span class="warn">已作廢：${esc(p.voidReason||'')}</span>`:`${esc(p.source||'舊資料')}・${esc(p.verification||'未標示')}`}</td>
+      <td>${p.voidedAt?'—':`<button class="btn red sm" onclick="voidPunch('${p.id}')">作廢</button>`}</td></tr>`).join('')}</table>`
     :'<p class="muted">今日尚無打卡</p>'}
   </div>
   <div class="card"><h2>出勤紀錄與補登</h2>
@@ -1119,7 +1121,8 @@ function vPunch(){
       <input type="date" id="mpDate" value="${td}">
       <input type="time" id="mpTime">
       <select id="mpType"><option value="in">上班</option><option value="out">下班</option></select>
-      <button class="btn sm" onclick="manualPunch()">補登</button>
+      <input id="mpReason" placeholder="補登原因（必填）" style="min-width:180px">
+      <button class="btn sm" onclick="manualPunch()">管理員補登</button>
     </div>
     ${attendTable(punchMonth)}
     <p class="muted" style="margin-top:8px">之後可改成匯入「打卡之星」匯出的檔案;目前先用此頁打卡或補登。</p>
@@ -1129,22 +1132,30 @@ function localISO(){
   const d=new Date();
   return todayStr()+'T'+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')+':'+String(d.getSeconds()).padStart(2,'0');
 }
-function doPunch(type){
-  const p={id:uid(),empId:punchEmp,type,ts:localISO()};
-  S.punches.push(p);dbInsertPunch(p,'admin');render();
+async function doPunch(type){
+  const reason=prompt(`管理員代為${type==='in'?'上班':'下班'}打卡，請填寫原因：`);if(!reason||reason.trim().length<3)return;
+  const p={id:uid(),empId:punchEmp,type,ts:localISO(),source:'admin_correction',verification:'manager_entered',reviewState:'corrected'};
+  const r=await sbc.from('punches').insert({id:p.id,emp_id:p.empId,ts:p.ts,type:p.type,source:p.source,verification:p.verification,review_state:p.reviewState,raw:{reason:reason.trim()}});
+  if(r.error)return alert(r.error.message);
+  await sbc.from('audit_log').insert({actor_type:'supabase_admin',action:'manager_punch',target_type:'punch',target_id:p.id,details:{reason:reason.trim()}});
+  await sbc.rpc('recalculate_attendance_day',{p_emp:p.empId,p_date:p.ts.slice(0,10)});await afterLogin();tab='punch';renderNav();render();
 }
 function manualPunch(){
-  const e=document.getElementById('mpEmp').value,d=document.getElementById('mpDate').value,t=document.getElementById('mpTime').value;
-  if(!e||!d||!t)return alert('請填員工、日期、時間');
-  const p={id:uid(),empId:e,type:document.getElementById('mpType').value,ts:d+'T'+t+':00'};
-  S.punches.push(p);dbInsertPunch(p,'admin');render();
+  const e=document.getElementById('mpEmp').value,d=document.getElementById('mpDate').value,t=document.getElementById('mpTime').value,reason=document.getElementById('mpReason').value.trim();
+  if(!e||!d||!t||reason.length<3)return alert('請填員工、日期、時間及補登原因');
+  const p={id:uid(),empId:e,type:document.getElementById('mpType').value,ts:d+'T'+t+':00',source:'admin_correction',verification:'manager_entered',reviewState:'corrected'};
+  sbc.from('punches').insert({id:p.id,emp_id:e,type:p.type,ts:p.ts,source:p.source,verification:p.verification,review_state:p.reviewState,raw:{reason}}).then(async r=>{
+    if(r.error)return alert(r.error.message);await sbc.from('audit_log').insert({actor_type:'supabase_admin',action:'manual_punch',target_type:'punch',target_id:p.id,details:{reason}});await sbc.rpc('recalculate_attendance_day',{p_emp:e,p_date:d});await afterLogin();tab='punch';renderNav();render();
+  });
 }
-function delPunch(id){
-  if(!confirm('刪除這筆打卡?'))return;
-  S.punches=S.punches.filter(p=>p.id!==id);dbDeletePunch(id);render();
+async function voidPunch(id){
+  const reason=prompt('原始打卡不能刪除。請填寫作廢原因：');if(!reason)return;
+  const r=await sbc.rpc('void_punch',{p_id:id,p_reason:reason});
+  if(r.error||!r.data?.ok)return alert(r.error?.message||r.data?.msg||'作廢失敗');
+  await afterLogin();tab='punch';renderNav();render();
 }
 function pairPunches(empId,month){
-  const ps=S.punches.filter(p=>p.empId===empId&&p.ts.slice(0,7)===month).sort((a,b)=>a.ts.localeCompare(b.ts));
+  const ps=S.punches.filter(p=>p.empId===empId&&!p.voidedAt&&p.ts.slice(0,7)===month).sort((a,b)=>a.ts.localeCompare(b.ts));
   const rows=[];let open=null;
   for(const p of ps){
     if(p.type==='in'){if(open)rows.push({date:open.ts.slice(0,10),in:open.ts.slice(11,16),out:null,min:0});open=p}
@@ -1211,6 +1222,15 @@ function hourlyMinutes(empId,month){
   }
   return m;
 }
+/* 時薪薪資只採用管理員逐日核准的計薪分鐘；原始打卡與排班時數僅供核對。 */
+function approvedHourlyMinutes(empId,month){
+  return (LINE.daily||[]).filter(x=>x.emp_id===empId&&String(x.work_date).slice(0,7)===month&&x.status==='approved')
+    .reduce((n,x)=>n+Math.max(0,Number(x.payable_minutes)||0),0);
+}
+function approvedOvertimeMinutes(empId,month){
+  return (LINE.overtime||[]).filter(x=>x.emp_id===empId&&String(x.work_date).slice(0,7)===month&&x.status==='approved')
+    .reduce((n,x)=>n+Math.max(0,Number(x.approved_minutes)||0),0);
+}
 /* 練習場時數(單獨統計,不自動計薪)*/
 function practiceMinutes(empId,month){
   let m=0;
@@ -1274,16 +1294,13 @@ function vPay(){
   const actives=S.employees.filter(e=>employedInMonth(e,payMonth));
   const rows=actives.map(e=>{
     const ss=sessionStats(e.id,payMonth);
-    const hm=hourlyMinutes(e.id,payMonth);
+    const hm=approvedHourlyMinutes(e.id,payMonth);
     const hp=Math.round(hm/60*(e.hourlyRate||0));
     const base=e.type==='full'?(e.monthlySalary||0):0;
     const am=actualMinutes(e.id,payMonth);
-    // 正職加班:實際打卡時數超過月標準時數的部分 × 加班時薪
-    let otHr=0,otPay=0;
-    if(e.type==='full'&&e.stdHours>0){
-      otHr=Math.max(0,am/60-e.stdHours);
-      otPay=Math.round(otHr*(e.otRate||e.hourlyRate||0));
-    }
+    // 正職加班只採管理員核准分鐘，不讓缺卡或異常長工時自動進薪資。
+    const otMin=e.type==='full'?approvedOvertimeMinutes(e.id,payMonth):0;
+    let otHr=otMin/60,otPay=Math.round(otHr*(e.otRate||e.hourlyRate||0));
     return{e,ss,hm,hp,base,am,otHr,otPay,total:ss.pay+hp+base+otPay};
   });
   const total=rows.reduce((s,r)=>s+r.total,0);
@@ -1310,7 +1327,7 @@ function vPay(){
         <td class="num"><b>${total.toLocaleString()}</b></td></tr>`).join('')}
       <tr><td colspan="11" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
     </table>
-    <p class="muted" style="margin-top:8px">場次費=每場依主題費率(「主題」頁可調);時薪費=櫃台/駐店班時數×時薪;正職=月薪+加班費。加班費=(實際打卡時數 − 員工設定的月標準時數)×加班時薪,超過才計;在「員工」頁編輯正職可設月標準時數與加班時薪。已取消/颱風天場次不列入。</p>
+    <p class="muted" style="margin-top:8px">場次費=每場依主題費率（「主題」頁可調）；時薪費=管理員逐日核准的打卡計薪分鐘×時薪；正職=月薪+已核准加班費。原始打卡、缺卡與異常長工時不會直接進薪資。已取消／颱風天場次不列入。</p>
   </div>`;
 }
 function exportPayCSV(){
@@ -1318,7 +1335,7 @@ function exportPayCSV(){
   let csv='﻿員工,身分,場控場次,NPC場次,場次費,櫃台駐店時數,時薪費,月薪,打卡時數,合計,場次明細\n';
   for(const e of actives){
     const ss=sessionStats(e.id,payMonth);
-    const hm=hourlyMinutes(e.id,payMonth);
+    const hm=approvedHourlyMinutes(e.id,payMonth);
     const hp=Math.round(hm/60*(e.hourlyRate||0));
     const base=e.type==='full'?(e.monthlySalary||0):0;
     const am=actualMinutes(e.id,payMonth);
@@ -1355,6 +1372,7 @@ function openEmp(id){
   editEmpId=id;const e=id?emp(id):null;
   document.getElementById('dlgEmpTitle').textContent=e?'編輯員工':'新增員工';
   document.getElementById('efDelete').style.display=e?'':'none';
+  document.getElementById('efDelete').textContent='停用並保留紀錄';
   document.getElementById('efName').value=e?e.name:'';
   document.getElementById('efType').value=e?e.type:'part';
   document.getElementById('efRate').value=e?(e.hourlyRate||''):'';
@@ -1390,13 +1408,9 @@ function saveEmp(){
   save();dlgEmp.close();render();
 }
 function deleteEmp(){
-  if(!confirm('確定刪除?將一併移除其排班與打卡紀錄。若只是離職,建議改用「停用」。'))return;
-  const touched=S.shifts.filter(sh=>sh.assignments.some(a=>a.empId===editEmpId));
-  S.shifts.forEach(sh=>sh.assignments=sh.assignments.filter(a=>a.empId!==editEmpId));
-  touched.forEach(sh=>dbUpsertShift(sh));
-  sbc.from('punches').delete().eq('emp_id',editEmpId);
-  S.punches=S.punches.filter(p=>p.empId!==editEmpId);
-  S.employees=S.employees.filter(e=>e.id!==editEmpId);
+  if(!confirm('確定停用此員工？歷史班表、打卡與薪資紀錄會完整保留；未來已排班次仍會顯示，請管理員逐一調整。'))return;
+  const e=emp(editEmpId);if(!e)return;e.active=false;if(!e.endDate)e.endDate=todayStr();
+  sbc.from('line_accounts').update({active:false,updated_at:new Date().toISOString()}).eq('emp_id',editEmpId);
   save();dlgEmp.close();render();
 }
 
@@ -1669,9 +1683,11 @@ function vLineAdmin(){
   const pendingReq=LINE.requests.filter(r=>r.status==='pending_manager');
   const completedTrades=LINE.requests.filter(r=>r.status==='completed'&&(r.request_type==='give'||r.request_type==='swap'));
   const pendingAtt=LINE.attendance.filter(r=>r.status==='pending');
+  const pendingDaily=(LINE.daily||[]).filter(r=>r.status==='pending'||r.status==='anomaly').sort((a,b)=>b.work_date.localeCompare(a.work_date));
   const pendingOt=LINE.overtime.filter(r=>r.status==='pending'||r.status==='anomaly');
   return `<div class="card"><div class="row"><h2 class="grow">LINE 員工系統</h2><button class="btn gray sm" onclick="refreshLineAdmin()">重新整理</button></div>
     <div class="row" style="margin-top:10px"><span class="pill ${usage>=160?'out':'in'}">本月主動訊息 ${usage}/200</span><span class="muted">160則後只發緊急通知，保留40則。</span></div>
+    <div class="row" style="margin-top:10px"><label style="margin:0">前一日上班提醒時間 <select id="reminderHour" style="width:auto">${Array.from({length:10},(_,i)=>i+13).map(h=>`<option value="${h}" ${Number(S.settings.reminderHour)===h?'selected':''}>${String(h).padStart(2,'0')}:00</option>`).join('')}</select></label><button class="btn sm" onclick="saveReminderHour()">儲存</button><span class="muted">同一員工隔日多個班次合併成一則通知。</span></div>
     <p class="muted" style="margin-top:10px">員工入口：<a href="staff.html" target="_blank">staff.html</a>。正式使用前需完成 LINE Login／LIFF 與 Edge Functions 部署。</p></div>
   <div class="card"><h2>LINE 身分綁定</h2><p class="muted">為員工產生一次性驗證碼，有效24小時。員工在 LINE 入口輸入後即綁定本人。</p>
     <table><tr><th>員工</th><th>LINE狀態</th><th>權限</th><th></th></tr>${S.employees.map(e=>{const a=LINE.accounts.find(x=>x.emp_id===e.id);return `<tr><td>${esc(e.name)}</td><td>${a?`✅ ${esc(a.display_name||'已綁定')}`:'尚未綁定'}</td><td>${a?.role==='manager'?'管理員':'員工'}</td><td>${a?`<button class="btn gray sm" onclick="unbindLine('${e.id}')">解除</button>`:`<button class="btn sm" onclick="makeBindCode('${e.id}','employee')">產生員工碼</button> <button class="btn gray sm" onclick="makeBindCode('${e.id}','manager')">管理員碼</button>`}</td></tr>`}).join('')}</table></div>
@@ -1679,11 +1695,13 @@ function vLineAdmin(){
     <table><tr><th>店別</th><th>緯度</th><th>經度</th><th>允許半徑</th><th></th></tr>${LINE.worksites.map(w=>`<tr><td>${esc(w.name)}</td><td><input id="lat_${w.id}" value="${w.latitude??''}" placeholder="25.xxxxxx"></td><td><input id="lng_${w.id}" value="${w.longitude??''}" placeholder="121.xxxxxx"></td><td><input id="rad_${w.id}" type="number" value="${w.radius_m||200}" min="20" max="2000" style="width:90px"> 公尺</td><td><button class="btn sm" onclick="saveWorksite('${w.id}')">儲存</button></td></tr>`).join('')}</table></div>
   <div class="card"><h2>加場候選（${pendingReq.length}）</h2>${pendingReq.map(r=>{const sh=byId(S.shifts,r.shift_id);const accepted=LINE.responses.filter(x=>x.request_id===r.id&&x.response==='accept');return `<div style="padding:10px 0;border-bottom:1px solid #e5e7eb"><b>${sh?`${sh.date} ${sh.start} ${esc(shiftLabel(sh))}`:esc(r.shift_id)}</b><br><span class="muted">願意接班：</span>${accepted.map(x=>`<button class="btn sm" style="margin:5px" onclick="selectExtra('${r.id}','${x.emp_id}')">選 ${esc(emp(x.emp_id)?.name||x.emp_id)}</button>`).join('')||'<span class="warn">目前無人</span>'}</div>`}).join('')||'<p class="muted">目前沒有待選加場</p>'}</div>
   <div class="card"><h2>近期自動換班／讓班</h2>${completedTrades.slice(0,20).map(r=>`<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${r.request_type==='swap'?'互換':'讓班'}・${esc(emp(r.requester_emp_id)?.name||r.requester_emp_id)} → ${esc(emp(r.selected_emp_id)?.name||r.selected_emp_id)}</b><br><span class="muted">${esc(byId(S.shifts,r.shift_id)?.date||'')} ${esc(byId(S.shifts,r.shift_id)?.start||'')}</span></span><button class="btn red sm" onclick="revertTrade('${r.id}')">撤銷並還原</button></div>`).join('')||'<p class="muted">尚無已完成換班</p>'}</div>
-  <div class="card"><h2>補卡申請（${pendingAtt.length}）</h2>${pendingAtt.map(r=>`<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${esc(emp(r.emp_id)?.name||r.emp_id)}・${r.punch_date}</b><br><span class="muted">${esc(r.reason)}</span></span><button class="btn sm" onclick="reviewAttendance('${r.id}','approved')">核准</button><button class="btn red sm" onclick="reviewAttendance('${r.id}','rejected')">拒絕</button></div>`).join('')||'<p class="muted">目前沒有待審補卡</p>'}</div>
+  <div class="card"><h2>補卡申請（${pendingAtt.length}）</h2>${pendingAtt.map(r=>{const label=r.request_type==='missing_in'?'補上班卡':r.request_type==='missing_out'?'補下班卡':'更正整日',times=r.request_type==='correction'?`${r.requested?.inTime||'?'}–${r.requested?.outTime||'?'}`:(r.requested?.time||'?');return `<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${esc(emp(r.emp_id)?.name||r.emp_id)}・${r.punch_date}・${label} ${times}</b><br><span class="muted">${esc(r.reason)}</span></span><button class="btn sm" onclick="reviewAttendance('${r.id}','approved')">核准並補登</button><button class="btn red sm" onclick="reviewAttendance('${r.id}','rejected')">拒絕</button></div>`}).join('')||'<p class="muted">目前沒有待審補卡</p>'}</div>
+  <div class="card"><h2>每日工時與時薪計薪審核（${pendingDaily.length}）</h2><p class="muted">原始打卡只計算候選工時；管理員核准「計薪分鐘」後才會進入時薪薪資。</p>${pendingDaily.slice(0,80).map(r=>{const id=`pay_${r.emp_id}_${r.work_date}`;return `<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${esc(emp(r.emp_id)?.name||r.emp_id)}・${r.work_date}</b><br><span class="muted">排班 ${r.scheduled_minutes}分／打卡 ${r.actual_minutes}分${r.anomalies?.length?`／<span class="warn">${esc(r.anomalies.join('、'))}</span>`:''}</span></span><label style="margin:0">計薪 <input id="${id}" type="number" min="0" max="1440" value="${r.payable_minutes??r.actual_minutes}" style="width:82px"> 分</label><button class="btn sm" onclick="reviewDaily('${r.emp_id}','${r.work_date}','approved','${id}')">核准</button><button class="btn red sm" onclick="reviewDaily('${r.emp_id}','${r.work_date}','rejected','${id}')">不計薪</button></div>`}).join('')||'<p class="muted">目前沒有待審工時</p>'}</div>
   <div class="card"><div class="row"><h2 class="grow">加班候選（${pendingOt.length}）</h2><button class="btn gray sm" onclick="calculateOvertime()">重新計算本月</button></div>${pendingOt.map(r=>`<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${esc(emp(r.emp_id)?.name||r.emp_id)}・${r.work_date}</b><br><span class="muted">排班 ${r.scheduled_minutes}分／實際 ${r.actual_minutes}分／候選 ${r.candidate_minutes}分・${fmtStatus(r.status)}</span></span><input id="ot_${r.id}" type="number" min="0" value="${r.candidate_minutes}" style="width:80px"><button class="btn sm" onclick="reviewOvertime('${r.id}','approved')">核准</button><button class="btn red sm" onclick="reviewOvertime('${r.id}','rejected')">拒絕</button></div>`).join('')||'<p class="muted">目前沒有待審加班</p>'}</div>
   <div class="card"><h2>通知紀錄</h2><table><tr><th>時間</th><th>類型</th><th>員工</th><th>狀態</th></tr>${LINE.outbox.slice().sort((a,b)=>b.created_at.localeCompare(a.created_at)).slice(0,30).map(n=>`<tr><td>${n.created_at.slice(0,16).replace('T',' ')}</td><td>${esc(n.category)}</td><td>${esc(emp(n.recipient_emp_id)?.name||n.recipient_emp_id||'')}</td><td>${esc(n.status)}${n.error?`<br><span class="warn">${esc(n.error)}</span>`:''}</td></tr>`).join('')||'<tr><td colspan="4" class="muted">尚無紀錄</td></tr>'}</table></div>`;
 }
 async function refreshLineAdmin(){await loadLineAdmin();render()}
+function saveReminderHour(){S.settings.reminderHour=Number(document.getElementById('reminderHour').value)||20;save();alert('提醒時間已儲存')}
 async function makeBindCode(empId,role){
   const code=Math.random().toString(36).slice(2,10).toUpperCase();
   const expires=new Date(Date.now()+24*3600*1000).toISOString();
@@ -1699,7 +1717,8 @@ async function selectExtra(requestId,empId){
   const [a,b,c]=await Promise.all([sbc.from('shifts').upsert({id:sh.id,date:sh.date,source:String(sh.id).startsWith('sb_')?'simplybook':'manual',data:sh}),sbc.from('shift_requests').update({status:'completed',selected_emp_id:empId,completed_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq('id',requestId),sbc.from('notification_outbox').upsert({recipient_emp_id:empId,category:'extra_selected',critical:true,payload:{title:'加場安排確認',text:`你已被安排 ${sh.date} ${sh.start} ${shiftLabel(sh)}`},idempotency_key:`extra-selected:${requestId}:${empId}`},{onConflict:'idempotency_key',ignoreDuplicates:true})]);
   if(a.error||b.error||c.error)return alert('安排失敗：'+(a.error||b.error||c.error).message);await refreshLineAdmin();
 }
-async function reviewAttendance(id,status){const u=await sbc.auth.getUser(),reviewed_by=u.data?.user?.id||null;const r=await sbc.from('attendance_requests').update({status,reviewed_by,reviewed_at:new Date().toISOString()}).eq('id',id);if(r.error)alert(r.error.message);else await refreshLineAdmin()}
+async function reviewAttendance(id,status){const r=await sbc.rpc('review_attendance_request',{p_request:id,p_status:status});if(r.error||!r.data?.ok)alert(r.error?.message||r.data?.msg||'審核失敗');else{await afterLogin();tab='line';renderNav();render()}}
+async function reviewDaily(empId,date,status,inputId){const payable=status==='approved'?Math.max(0,Number(document.getElementById(inputId).value)||0):0,note=prompt(status==='approved'?'核准備註（可留空）':'不計薪原因（建議填寫）','')||'';const r=await sbc.rpc('review_attendance_day',{p_emp:empId,p_date:date,p_status:status,p_payable:payable,p_note:note});if(r.error||!r.data?.ok)alert(r.error?.message||r.data?.msg||'審核失敗');else{await refreshLineAdmin();render()}}
 async function revertTrade(id){if(!confirm('確定撤銷這次換班並恢復原班表？兩位員工都會收到通知。'))return;const r=await sbc.rpc('revert_shift_request',{p_request:id});if(r.error||!r.data?.ok)alert(r.error?.message||r.data?.msg||'撤銷失敗');else{await afterLogin();tab='line';renderNav();render()}}
 async function reviewOvertime(id,status){const approved=status==='approved'?Math.max(0,Number(document.getElementById('ot_'+id).value)||0):0,u=await sbc.auth.getUser(),reviewed_by=u.data?.user?.id||null;const r=await sbc.from('overtime_reviews').update({status,approved_minutes:approved,reviewed_by,reviewed_at:new Date().toISOString()}).eq('id',id);if(r.error)alert(r.error.message);else await refreshLineAdmin()}
 async function calculateOvertime(){
