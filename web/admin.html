@@ -1570,13 +1570,42 @@ function vAvail(){
       <input id="icalUrl" class="grow" placeholder="https://calendar.google.com/calendar/ical/.../private-xxxx/basic.ics" value="${esc(S.icalUrl||'')}">
       <button class="btn gray sm" onclick="saveIcalUrl()">儲存網址</button>
       <input type="month" id="icalMonth" value="${monthStr()}">
-      <button class="btn sm" onclick="loadIcal()">抓取核對</button>
+      <button class="btn gray sm" onclick="loadIcal(false)">抓取核對</button>
+      <button class="btn sm" onclick="loadIcal(true)">解析並匯入為可上班時間</button>
     </div>
-    <div id="icalResult"><p class="muted">按「抓取核對」載入該月行事曆事件。</p></div>
+    <div id="icalResult"><p class="muted">「抓取核對」只顯示;「解析並匯入」會自動把日曆的回報(如「1830後可以」「❌」「1700前」)轉成該月各員工可上班時段。</p></div>
   </div>`;
 }
 function saveIcalUrl(){S.icalUrl=document.getElementById('icalUrl').value.trim();save();alert('已儲存 iCal 網址')}
-async function loadIcal(){
+/* 解析 Google 日曆自由格式回報 → {on,start,end} 或 null */
+function parseGCalAvail(raw){
+  const s=String(raw).replace(/[🍐👌🏻😻👍✅️\s]/g,'');
+  const norm=(h,m=0)=>{h=+h;m=+m;if(h>=1&&h<=8)h+=12;return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')};
+  const norm4=t=>{t=String(t).padStart(4,'0');return t.slice(0,2)+':'+t.slice(2)};
+  if(/其餘皆可/.test(s))return {on:true,start:'09:00',end:'22:30'};
+  const rng=s.match(/(\d{1,2})\s*[-~～至]\s*(\d{1,2})\s*可以/);
+  if(rng)return {on:true,start:norm(rng[1]),end:norm(rng[2])};
+  let dir=null;
+  if(/前/.test(s))dir='before';else if(/後/.test(s))dir='after';else if(/離/.test(s))dir='before';
+  if(dir){let t=null,m;
+    if(m=s.match(/(\d{1,2})[:：](\d{2})/))t=m[1].padStart(2,'0')+':'+m[2];
+    else if(m=s.match(/(\d{3,4})/))t=norm4(m[1]);
+    else if(m=s.match(/(\d{1,2})點/))t=norm(m[1]);
+    if(t)return dir==='before'?{on:true,start:'09:00',end:t}:{on:true,start:t,end:'22:30'};
+  }
+  if(/(❌|❎|不行|休|特休)/.test(s))return {on:false,start:'09:00',end:'22:30'};
+  if(/(allday|全天|整天|全台可以|可以|全部)/i.test(s))return {on:true,start:'09:00',end:'22:30'};
+  return null;
+}
+/* 從事件文字找出開頭的員工姓名(比對現有員工) */
+function matchEmpByText(text){
+  const t=String(text).replace(/\s/g,'');
+  for(const e of S.employees){
+    if(t.startsWith(e.name)||t.includes(e.name)||(e.aliases||[]).some(a=>t.includes(a)))return e;
+  }
+  return null;
+}
+async function loadIcal(doImport){
   const url=document.getElementById('icalUrl').value.trim();
   const m=document.getElementById('icalMonth').value;
   const box=document.getElementById('icalResult');
@@ -1591,10 +1620,26 @@ async function loadIcal(){
     if(r.data&&r.data.error)throw new Error(r.data.error);
     const evs=(r.data&&r.data.events)||[];
     if(!evs.length){box.innerHTML='<p class="muted">該月沒有事件。</p>';return}
+    if(doImport){
+      if(!confirm('將把 '+m+' 的 Google 日曆回報解析後,寫入各員工的「特定日期回報」(會覆蓋該月同日的既有回報),確定?'))return;
+      let applied=0;const unmatched=new Set(),unparsed=[];
+      for(const ev of evs){
+        const e=matchEmpByText(ev.summary);
+        if(!e){continue}
+        const av=parseGCalAvail(ev.summary);
+        if(!av){unparsed.push(ev.summary);continue}
+        e.availX=e.availX||{};e.availX[ev.date]=av;applied++;
+      }
+      save();
+      box.innerHTML=`<p class="ok" style="color:#059669">✅ 已匯入 ${applied} 筆到 ${m} 可上班時間。`
+        +(unparsed.length?` 有 ${unparsed.length} 筆無法辨識(維持原樣):${unparsed.slice(0,8).map(esc).join('、')}`:'')
+        +`</p><p class="muted">切到「排班表」即可看到更新後的每日人力。無法辨識的可在上方「特定日期回報」手動補。</p>`;
+      return;
+    }
     const byDate={};for(const ev of evs){(byDate[ev.date]=byDate[ev.date]||[]).push(ev.summary)}
     box.innerHTML=`<table><tr><th>日期</th><th>Google 行事曆(員工回報/休假)</th></tr>`+
       Object.keys(byDate).sort().map(d=>`<tr><td>${d}(週${WD[dateWD(d)]})</td><td>${byDate[d].map(s=>`<span class="tag">${esc(s)}</span>`).join(' ')}</td></tr>`).join('')+
-      `</table><p class="muted" style="margin-top:6px">共 ${evs.length} 筆。這是唯讀核對用;要納入排班判斷,請在上方「特定日期回報」登記對應時段。</p>`;
+      `</table><p class="muted" style="margin-top:6px">共 ${evs.length} 筆。按「解析並匯入為可上班時間」可自動轉入排班判斷。</p>`;
   }catch(e){box.innerHTML='<p class="warn">抓取失敗:'+esc(e.message)+'</p>'}
 }
 function setAvail(empId,d,k,v){
