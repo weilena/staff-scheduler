@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>排班打卡系統(雲端版)|大忠店・謎先生</title>
-<meta name="build-version" content="2026-07-14-bulk-colors">
+<meta name="build-version" content="2026-07-14-mobile-scheduling">
 <style>
 :root{
   --accent:#2563eb; --accent2:#7c3aed; --bg:#f4f6fa; --card:#fff;
@@ -54,6 +54,11 @@ th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 .schedwrap{display:flex;gap:14px;align-items:flex-start}
 .schedmain{flex:1;min-width:0}
 .loadpanel{width:210px;flex-shrink:0;position:sticky;top:64px;max-height:calc(100vh - 80px);overflow-y:auto;background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px}
+.loadpanel>summary{cursor:pointer;font-weight:700;list-style:none}
+.loadpanel>summary::-webkit-details-marker{display:none}
+.loadpanel>summary::after{content:'收合';float:right;color:var(--muted);font-size:11px;font-weight:400}
+.loadpanel:not([open])>summary::after{content:'展開'}
+.loadpanel-body{margin-top:7px}
 .loadrow{padding:5px 6px;border-radius:7px;cursor:pointer;margin-bottom:3px}
 .loadrow:hover{background:#f1f5f9}
 .loadrow.heavy{background:#fff7ed}
@@ -84,7 +89,7 @@ th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 .slotbox b{font-size:12.5px}
 .day-toolbar{position:sticky;top:54px;z-index:20;background:#fff;padding:8px 0;border-bottom:1px solid var(--line)}
 .day-manpower{position:sticky;top:105px;z-index:19;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:10px;box-shadow:0 3px 10px rgba(15,23,42,.06)}
-.day-manpower-list{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
+.day-manpower-list{display:flex;gap:5px;flex-wrap:nowrap;margin-top:7px;overflow-x:auto;padding:1px 2px 5px;scrollbar-width:thin}
 .person-day{padding:5px 8px;border-radius:8px;font-size:12px;border:1px solid #cbd5e1;line-height:1.35}
 .emp-tag{display:inline-block;padding:1px 6px;border-radius:6px;font-size:11.5px;margin:1px;border:1px solid rgba(15,23,42,.12);white-space:nowrap}
 .bulkbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#eff6ff;border:1px solid #93c5fd;border-radius:10px;padding:9px 10px;margin-bottom:10px}
@@ -92,10 +97,24 @@ th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 .bulk-check{font-weight:800;margin-right:4px}
 .day-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:10px}
 .day-canvas{min-width:900px}
+.day-canvas .slotrow{flex-wrap:nowrap}
+.day-canvas table th:first-child{position:sticky;left:0;z-index:4;box-shadow:2px 0 3px rgba(15,23,42,.08)}
 .counter-lane{display:grid;grid-template-columns:150px 1fr;border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-bottom:8px;background:#fff}
 .counter-lane>strong{padding:10px;background:#f1f5f9}
 .counter-lane .slotrow{padding:7px}
-@media(max-width:640px){main{padding:0 8px 56px;margin-top:8px}.card{padding:10px}.day-toolbar{top:48px}.day-manpower{top:100px}.sync-health{display:block}.day-canvas{min-width:780px}}
+@media(max-width:640px){
+  header{padding:8px 10px;gap:7px}header h1{font-size:15px}nav{flex-wrap:nowrap;overflow-x:auto;width:100%}nav button{white-space:nowrap;padding:6px 9px}
+  main{padding:0 5px 70px;margin-top:6px}.card{padding:8px;border-radius:8px}.row{gap:6px}
+  .seg{width:100%}.seg button{flex:1;padding:8px 6px}
+  .schedwrap{display:block}.loadpanel{width:100%;position:static;max-height:none;order:0;margin-top:12px;padding:9px}.loadpanel:not([open]){display:block}
+  .bulkbar{overflow-x:auto;flex-wrap:nowrap;padding:7px}.bulkbar>*{flex:0 0 auto}.bulkbar .muted{display:none}
+  .day-toolbar{top:45px;flex-wrap:nowrap;overflow-x:auto;padding:7px 2px;white-space:nowrap}.day-toolbar input{width:136px}
+  .day-manpower{top:96px;padding:7px 8px;margin-bottom:7px}.day-manpower-list{margin-top:5px}
+  .person-day{min-width:118px;flex:0 0 118px;padding:5px 7px}
+  .sync-health{display:block}.sync-health+.muted{display:none}.day-canvas{min-width:880px}
+  .counter-lane{grid-template-columns:128px 1fr}.counter-lane>strong{position:sticky;left:0;z-index:5}
+  .slotbox{min-width:92px}.mgrid{gap:2px}.mday{padding:3px}.chip{font-size:10.5px}
+}
 dialog{border:none;border-radius:14px;padding:0;max-width:560px;width:94vw;box-shadow:0 20px 60px rgba(0,0,0,.3)}
 dialog::backdrop{background:rgba(15,23,42,.45)}
 .dlg-h{background:#0f172a;color:#fff;padding:12px 18px;font-size:15px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
@@ -646,8 +665,9 @@ function staffLoadPanel(){
   const ym=panelMonth();const[y,m]=ym.split('-').map(Number);
   const from=ym+'-01', to=fmtDate(new Date(y,m,0));
   const {arr,avg,maxT}=staffLoad(from,to);
-  return `<div class="loadpanel">
-    <h3 style="font-size:14px;margin-bottom:2px">👥 ${y}年${m}月 累積場數</h3>
+  const open=window.innerWidth>640?' open':'';
+  return `<details class="loadpanel"${open}>
+    <summary>👥 ${y}年${m}月 累積場數</summary><div class="loadpanel-body">
     <p class="muted" style="font-size:11.5px;margin-bottom:8px">正職顯示總場次；兼職只顯示 NPC 場次</p>
     ${arr.map(x=>{
       const heavy=x.displayTotal>0&&avg>0&&x.displayTotal>=avg*1.4&&x.displayTotal>=3;
@@ -659,7 +679,7 @@ function staffLoadPanel(){
       </div>`;
     }).join('')}
     ${arr.some(x=>x.total>=avg*1.4&&x.total>=3)?'<p class="muted" style="font-size:11px;margin-top:6px;color:#b45309">🔴 標示者場數偏多,可考慮改排他人平衡人力。</p>':''}
-  </div>`;
+    </div></details>`;
 }
 
 function shiftLabel(sh){
