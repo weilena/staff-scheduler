@@ -29,11 +29,24 @@ Deno.serve(async (req) => {
     const notificationType = String(payload.notification_type ?? "").toLowerCase();
     const bookingId = String(payload.booking_id ?? "");
     const bookingHash = String(payload.booking_hash ?? "");
+
+    // SimplyBook probes a callback URL while saving the API custom feature.
+    // A probe may be an empty POST, so acknowledge it without starting a sync.
+    if (!company && !notificationType && !bookingId && !bookingHash) {
+      return Response.json({ ok: true, probe: true }, { headers: corsHeaders() });
+    }
+
     if (!company || company !== Deno.env.get("SB_COMPANY")) {
-      return Response.json({ ok: false, error: "company mismatch" }, { status: 403 });
+      return Response.json(
+        { ok: true, ignored: true, reason: "company mismatch" },
+        { headers: corsHeaders() },
+      );
     }
     if (!ALLOWED_TYPES.has(notificationType) || (!bookingId && !bookingHash)) {
-      return Response.json({ ok: false, error: "invalid callback payload" }, { status: 400 });
+      return Response.json(
+        { ok: true, ignored: true, reason: "invalid callback payload" },
+        { headers: corsHeaders() },
+      );
     }
 
     const syncUrl = `${Deno.env.get("SUPABASE_URL")}/functions/v1/sb-sync?apply=1&source=webhook`;
@@ -54,4 +67,3 @@ Deno.serve(async (req) => {
     return Response.json({ ok: false, error: "callback could not be parsed" }, { headers: corsHeaders() });
   }
 });
-
