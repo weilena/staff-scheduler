@@ -181,6 +181,11 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
       <div id="sfSlots" style="display:flex;flex-direction:column;gap:6px"></div>
       <div><button class="btn gray sm" onclick="addSlot()">＋ 新增人員欄位</button></div>
     </div>
+    <div class="field" id="sfLinkedThemes" style="display:none;background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:10px 12px">
+      <label>對應主題場控場次</label>
+      <p class="muted" style="margin-bottom:8px">櫃台／駐店人員同時帶主題時，請勾選實際場次並指定場控人員；謎先生與大忠店場次都可選，薪資會計入場控場次。</p>
+      <div id="sfLinkedThemeList"></div>
+    </div>
     <div class="field"><label>備註</label><input id="sfNote" placeholder="選填"></div>
     <div id="sfCustomer" style="display:none;background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px;line-height:1.7"></div>
     <div class="field" style="border-top:1px dashed var(--line);padding-top:10px">
@@ -638,7 +643,9 @@ function employeeTag(e,label){
   return `<span class="emp-tag" style="background:${bg};color:${textOn(bg)}">${esc(label||e.name)}</span>`;
 }
 function assignedTags(sh,withRole=true){
-  return (sh.assignments||[]).filter(a=>a.empId).map(a=>{const e=emp(a.empId);return employeeTag(e,(e?.name||'?')+(withRole?`(${a.role})`:''));}).join(' ');
+  const direct=(sh.assignments||[]).filter(a=>a.empId).map(a=>({empId:a.empId,role:a.role}));
+  const linked=sh.kind==='theme'?S.shifts.flatMap(src=>(src.linkedThemeAssignments||[]).filter(x=>x.shiftId===sh.id&&x.empId).map(x=>({empId:x.empId,role:'場控'}))):[];
+  const seen=new Set();return [...direct,...linked].filter(a=>{const k=a.empId+'|'+a.role;if(seen.has(k))return false;seen.add(k);return true}).map(a=>{const e=emp(a.empId);return employeeTag(e,(e?.name||'?')+(withRole?`(${a.role})`:''));}).join(' ');
 }
 function bulkClass(sh){return bulkSelected.has(sh.id)?' bulk-picked':''}
 function shiftAction(sh){return bulkMode?`event.stopPropagation();toggleBulkShift('${sh.id}')`:`event.stopPropagation();openShift('${sh.id}')`}
@@ -993,7 +1000,7 @@ function vWeek(){
 }
 
 /* ---- 班次編輯 ---- */
-let editShiftId=null, dlgSlotsArr=[];
+let editShiftId=null, dlgSlotsArr=[],dlgLinkedThemeArr=[];
 const dlgShift=document.getElementById('dlgShift');
 function fillStoreSelect(sel,val){sel.innerHTML=S.stores.map(s=>`<option value="${s.id}" ${s.id===val?'selected':''}>${esc(s.name)}</option>`).join('')}
 function openShift(id,presetDate,preset){
@@ -1006,6 +1013,7 @@ function openShift(id,presetDate,preset){
   document.getElementById('sfDate').value=sh?sh.date:(presetDate||todayStr());
   document.getElementById('sfKind').value=sh?sh.kind:'theme';
   document.getElementById('sfNote').value=sh?(sh.note||''):'';
+  dlgLinkedThemeArr=sh&&Array.isArray(sh.linkedThemeAssignments)?sh.linkedThemeAssignments.map(x=>({shiftId:x.shiftId,empId:x.empId})):[];
   rebuildThemeSelect(sh?sh.themeId:(preset?preset.themeId:null));
   if(sh){
     document.getElementById('sfStart').value=sh.start;
@@ -1023,6 +1031,7 @@ function openShift(id,presetDate,preset){
   }
   renderSlotTimeBtns();
   renderSlots();
+  renderLinkedThemeOptions();
   // 客人與付款資訊(SimplyBook 同步來的才有)
   const cbox=document.getElementById('sfCustomer');
   if(sh&&sh.customer&&(sh.customer.name||sh.customer.phone)){
@@ -1090,7 +1099,7 @@ function deleteQuickPreset(id){if(!confirm('刪除這組常用時段？已建立
 function pickQuick(s,e){
   document.getElementById('sfStart').value=s;
   document.getElementById('sfEnd').value=e;
-  renderSlots();
+  renderSlots();renderLinkedThemeOptions();
 }
 function pickSlotTime(s){
   document.getElementById('sfStart').value=s;
@@ -1103,13 +1112,13 @@ function autoEnd(){
   const st=toMin(document.getElementById('sfStart').value);
   if(t&&st!=null)document.getElementById('sfEnd').value=fromMin(st+(t.dur||90));
 }
-function onShiftStoreKind(){rebuildThemeSelect(null);autoEnd();defaultSlots();renderSlotTimeBtns();renderSlots()}
+function onShiftStoreKind(){rebuildThemeSelect(null);autoEnd();defaultSlots();renderSlotTimeBtns();renderSlots();renderLinkedThemeOptions()}
 function onThemeChange(){
   const t=theme(document.getElementById('sfTheme').value);
   if(t&&t.slots&&t.slots.length)document.getElementById('sfStart').value=t.slots[0];
   autoEnd();defaultSlots();renderSlotTimeBtns();renderSlots();
 }
-function onStartChange(){autoEnd();renderSlotTimeBtns();renderSlots()}
+function onStartChange(){autoEnd();renderSlotTimeBtns();renderSlots();renderLinkedThemeOptions()}
 function defaultSlots(){
   const kind=document.getElementById('sfKind').value;
   dlgSlotsArr=[];
@@ -1124,11 +1133,41 @@ function defaultSlots(){
 function addSlot(){
   const kind=document.getElementById('sfKind').value;
   dlgSlotsArr.push({role:kind==='counter'?'櫃台':kind==='practice'?'訓練場':'場控',empId:''});
-  renderSlots();
+  renderSlots();renderLinkedThemeOptions();
 }
-function rmSlot(i){dlgSlotsArr.splice(i,1);renderSlots()}
-function slotRole(i,v){dlgSlotsArr[i].role=v;renderSlots()}
-function slotEmp(i,v){dlgSlotsArr[i].empId=v}
+function rmSlot(i){dlgSlotsArr.splice(i,1);renderSlots();renderLinkedThemeOptions()}
+function slotRole(i,v){dlgSlotsArr[i].role=v;renderSlots();renderLinkedThemeOptions()}
+function slotEmp(i,v){dlgSlotsArr[i].empId=v;renderLinkedThemeOptions()}
+function linkedThemeCandidates(){
+  const date=document.getElementById('sfDate').value;
+  return S.shifts.filter(sh=>sh.id!==editShiftId&&sh.date===date&&sh.kind==='theme'&&!isCx(sh)).sort((a,b)=>(a.start+a.storeId).localeCompare(b.start+b.storeId));
+}
+function toggleLinkedTheme(shiftId,on){
+  if(!on){dlgLinkedThemeArr=dlgLinkedThemeArr.filter(x=>x.shiftId!==shiftId);renderLinkedThemeOptions();return}
+  const people=[...new Set(dlgSlotsArr.map(x=>x.empId).filter(Boolean))];
+  if(!dlgLinkedThemeArr.some(x=>x.shiftId===shiftId))dlgLinkedThemeArr.push({shiftId,empId:people.length===1?people[0]:''});
+  renderLinkedThemeOptions();
+}
+function setLinkedThemeEmp(shiftId,empId){const row=dlgLinkedThemeArr.find(x=>x.shiftId===shiftId);if(row)row.empId=empId}
+function autoLinkThemeControllers(){
+  const people=[...new Set(dlgSlotsArr.map(x=>x.empId).filter(Boolean))];
+  if(people.length!==1)return alert(people.length?'有兩位以上人員，請逐場選擇實際場控。':'請先選擇櫃台／駐店人員。');
+  const storeId=document.getElementById('sfStore').value,start=toMin(document.getElementById('sfStart').value),end=toMin(document.getElementById('sfEnd').value);
+  let added=0;
+  for(const sh of linkedThemeCandidates()){
+    if(sh.storeId!==storeId||toMin(sh.start)<start||toMin(sh.end)>end)continue;
+    if((sh.assignments||[]).some(a=>a.empId&&a.role==='場控'))continue;
+    const row=dlgLinkedThemeArr.find(x=>x.shiftId===sh.id);if(row)row.empId=people[0];else{dlgLinkedThemeArr.push({shiftId:sh.id,empId:people[0]});added++}
+  }
+  renderLinkedThemeOptions();if(!added)alert('目前班內沒有尚未安排場控的同店主題場次。');
+}
+function renderLinkedThemeOptions(){
+  const wrap=document.getElementById('sfLinkedThemes'),box=document.getElementById('sfLinkedThemeList');if(!wrap||!box)return;
+  const kind=document.getElementById('sfKind').value,show=kind==='counter'||kind==='floor';wrap.style.display=show?'':'none';if(!show){box.innerHTML='';return}
+  const people=[...new Set(dlgSlotsArr.map(x=>x.empId).filter(Boolean))],candidates=linkedThemeCandidates(),start=toMin(document.getElementById('sfStart').value),end=toMin(document.getElementById('sfEnd').value),storeId=document.getElementById('sfStore').value;
+  dlgLinkedThemeArr=dlgLinkedThemeArr.filter(x=>candidates.some(sh=>sh.id===x.shiftId));
+  box.innerHTML=`<button type="button" class="btn gray sm" onclick="autoLinkThemeControllers()">自動對應未排場控</button>`+(candidates.length?candidates.map(sh=>{const row=dlgLinkedThemeArr.find(x=>x.shiftId===sh.id),checked=!!row,direct=(sh.assignments||[]).filter(a=>a.empId&&a.role==='場控'),inRange=sh.storeId===storeId&&toMin(sh.start)>=start&&toMin(sh.end)<=end;return `<div class="row" style="padding:7px 0;border-bottom:1px solid #fde68a;align-items:center"><label class="grow" style="margin:0"><input type="checkbox" ${checked?'checked':''} onchange="toggleLinkedTheme('${sh.id}',this.checked)"> ${sh.date} ${sh.start}–${sh.end}・${esc(store(sh.storeId)?.name||'')}・${esc(shiftLabel(sh))}${inRange?'':' <span class="warn">（跨店或超出班別時間）</span>'}${direct.length?`<br><span class="muted">目前場控：${direct.map(a=>esc(emp(a.empId)?.name||a.empId)).join('、')}</span>`:''}</label>${checked?`<select style="width:auto;min-width:130px" onchange="setLinkedThemeEmp('${sh.id}',this.value)"><option value="">指定場控人員</option>${people.map(id=>`<option value="${id}" ${row.empId===id?'selected':''}>${esc(emp(id)?.name||id)}</option>`).join('')}</select>`:''}</div>`}).join(''):'<p class="muted" style="margin-top:8px">當天尚無主題場次；請先同步或建立主題場次。</p>');
+}
 /* NPC 連場檢查:連續 npcMaxChain 場後必須休息(間隔 < npcRestMin 分視為連場);場控不受限 */
 function npcChainWarning(e,date,start,end){
   const max=S.settings.npcMaxChain??2, rest=S.settings.npcRestMin??30;
@@ -1211,7 +1250,7 @@ function renderSlots(){
     </div>`;
   }).join('')||'<span class="muted">尚無人員欄位</span>';
 }
-function refreshSlotOptions(){if(dlgShift.open)renderSlots()}
+function refreshSlotOptions(){if(dlgShift.open){renderSlots();renderLinkedThemeOptions()}}
 function notifyShiftAssignments(obj,prev){
   if(isDemo()||isCx(obj))return;
   const oldSig=prev?`${prev.date}|${prev.start}|${prev.end}|${prev.storeId}|${prev.kind}|${prev.themeId||''}`:'',newSig=`${obj.date}|${obj.start}|${obj.end}|${obj.storeId}|${obj.kind}|${obj.themeId||''}`;
@@ -1231,11 +1270,16 @@ function saveShift(){
   const prev=editShiftId?byId(S.shifts,editShiftId):null;
   const statusVal=document.getElementById('sfStatus').value;
   const isCancel=statusVal.indexOf('cancelled')===0;
+  const linkedThemeAssignments=(kind==='counter'||kind==='floor')?dlgLinkedThemeArr.filter(x=>x.shiftId&&x.empId).map(x=>({shiftId:x.shiftId,empId:x.empId})):[];
+  const incompleteLinked=(kind==='counter'||kind==='floor')&&dlgLinkedThemeArr.some(x=>!x.empId);
+  if(incompleteLinked)return alert('請替每個勾選的主題場次指定實際場控人員。');
+  const assignedPeople=new Set(dlgSlotsArr.map(x=>x.empId).filter(Boolean));
+  if(linkedThemeAssignments.some(x=>!assignedPeople.has(x.empId)))return alert('主題場控必須是這個櫃台／駐店班已安排的人員。');
   const obj={
     id:editShiftId||uid(),date,storeId:document.getElementById('sfStore').value,kind,
     themeId:kind==='theme'?document.getElementById('sfTheme').value:null,
     start,end,note:document.getElementById('sfNote').value.trim(),
-    assignments:dlgSlotsArr.map(s=>({role:s.role,empId:s.empId})),
+    assignments:dlgSlotsArr.map(s=>({role:s.role,empId:s.empId})),linkedThemeAssignments,
     status:isCancel?statusVal:'active'
   };
   // 保留 SimplyBook 同步來的客人/付款資訊
@@ -1261,6 +1305,11 @@ function saveShift(){
       const arr=e.skills[obj.themeId]||[];
       if(!arr.includes(s.role))e.skills[obj.themeId]=[...arr,s.role];
     }
+  }
+  // 櫃台／駐店人員兼任主題場控時，同步補上該主題的場控技能。
+  for(const link of linkedThemeAssignments){
+    const target=byId(S.shifts,link.shiftId),e=emp(link.empId);if(!target||!e||target.kind!=='theme')continue;
+    e.skills=e.skills||{};const arr=e.skills[target.themeId]||[];if(!arr.includes('場控'))e.skills[target.themeId]=[...arr,'場控'];
   }
   if(String(obj.id).indexOf('sb_')===0)obj.manualEdit=true; // SimplyBook 班次手動改過,同步時不覆蓋
   if(editShiftId){const i=S.shifts.findIndex(x=>x.id===editShiftId);S.shifts[i]=obj}
@@ -1473,17 +1522,21 @@ function actualMinutes(empId,month){
 }
 /* 場次統計：兼職 NPC 論場；兼職場控改按核准工時；正職計總場與超過40場加給。 */
 function sessionStats(empId,month){
-  const e=emp(empId);let pay=0,gm=0,npc=0;const detail={};
+  const e=emp(empId);let pay=0,gm=0,npc=0;const detail={},counted=new Set();
+  const addSession=(sh,t,role)=>{const key=sh.id+'|'+role;if(counted.has(key))return;counted.add(key);let r=0;if(role==='NPC'){npc++;r=e?.type==='part'?themeSessionRate(t,role,sh.date):0}else if(role==='場控'){gm++;r=0}else return;pay+=r;const k=`${t.name}${role}`;detail[k]=(detail[k]||0)+1};
   for(const sh of S.shifts){
     if(isCx(sh)||sh.date.slice(0,7)!==month||sh.kind!=='theme')continue;
     const t=theme(sh.themeId);if(!t)continue;
     for(const a of sh.assignments){
       if(a.empId!==empId)continue;
-      let r=0;
-      if(a.role==='NPC'){npc++;r=e?.type==='part'?themeSessionRate(t,a.role,sh.date):0}
-      else if(a.role==='場控'){gm++;r=0}
-      pay+=r;
-      const k=`${t.name}${a.role}`;detail[k]=(detail[k]||0)+1;
+      addSession(sh,t,a.role);
+    }
+  }
+  for(const source of S.shifts){
+    if(isCx(source)||source.date.slice(0,7)!==month)continue;
+    for(const link of source.linkedThemeAssignments||[]){
+      if(link.empId!==empId)continue;const target=byId(S.shifts,link.shiftId),t=target&&theme(target.themeId);
+      if(target&&!isCx(target)&&target.kind==='theme'&&t)addSession(target,t,'場控');
     }
   }
   const total=gm+npc,baseSessions=Number(S.settings.fullBaseSessions??40),extra=e?.type==='full'?Math.max(0,total-baseSessions):0;
@@ -1537,7 +1590,7 @@ function practiceMinutes(empId,month){
 }
 /* 某員工當月所有場次明細(供逐筆檢視)*/
 function empSessions(empId,month){
-  const rows=[];
+  const rows=[],e=emp(empId),themeKeys=new Set();
   for(const sh of S.shifts){
     if(sh.date.slice(0,7)!==month)continue;
     const a=sh.assignments.find(x=>x.empId===empId);
@@ -1548,6 +1601,14 @@ function empSessions(empId,month){
     rows.push({date:sh.date,start:sh.start,end:sh.end,
       kind:sh.kind,label:shiftLabel(sh),role:a.role,
       store:store(sh.storeId)?.name||'',fee,cancelled:isCx(sh),cx:cxLabel(sh)});
+    if(sh.kind==='theme')themeKeys.add(sh.id+'|'+a.role);
+  }
+  for(const source of S.shifts){
+    if(source.date.slice(0,7)!==month)continue;
+    for(const link of source.linkedThemeAssignments||[]){
+      if(link.empId!==empId)continue;const target=byId(S.shifts,link.shiftId),key=link.shiftId+'|場控';if(!target||themeKeys.has(key))continue;
+      rows.push({date:target.date,start:target.start,end:target.end,kind:'theme',label:shiftLabel(target),role:'場控',store:store(target.storeId)?.name||'',fee:0,cancelled:isCx(target),cx:cxLabel(target)});themeKeys.add(key);
+    }
   }
   return rows.sort((x,y)=>(x.date+x.start).localeCompare(y.date+y.start));
 }

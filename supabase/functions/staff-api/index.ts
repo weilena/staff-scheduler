@@ -59,6 +59,7 @@ Deno.serve(async (req) => {
         return {
           id: s.id, date: s.date, storeId: s.storeId, kind: s.kind, themeId: s.themeId, start: s.start, end: s.end,
           status: s.status ?? "active", assignments: s.assignments ?? [],
+          linkedThemeAssignments: s.linkedThemeAssignments ?? [],
           depositPaid: ["paid", "completed"].includes(String(s.payment?.depositStatus ?? "").toLowerCase()),
           candidateGroups: emptyRoles.length ? {
             onSite: onSite.map((candidate: any) => candidate.name),
