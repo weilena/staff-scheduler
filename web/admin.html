@@ -296,10 +296,10 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
 <script src="config.js"></script>
 <div id="loginOv" style="position:fixed;inset:0;background:#0f172a;z-index:999;display:none;align-items:center;justify-content:center">
   <div style="background:#fff;border-radius:14px;padding:28px;width:320px">
-    <h2 style="margin-bottom:4px">🗓️ 排班打卡系統</h2>
-    <p class="muted" style="margin-bottom:14px">雲端版・管理者登入</p>
-    <input id="liEmail" placeholder="Email" style="width:100%;margin-bottom:8px" autocomplete="username">
-    <input id="liPw" type="password" placeholder="密碼" style="width:100%;margin-bottom:12px" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+    <h2 style="margin-bottom:4px">管理者登入</h2>
+    <p class="muted" style="margin-bottom:14px">每位管理者請使用自己的登入信箱與密碼</p>
+    <input id="liEmail" type="email" placeholder="登入信箱" style="width:100%;margin-bottom:8px" autocomplete="username">
+    <input id="liPw" type="password" placeholder="登入密碼" style="width:100%;margin-bottom:12px" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
     <button class="btn" style="width:100%" onclick="doLogin()">登入</button>
     <p id="liMsg" class="warn" style="margin-top:8px"></p>
   </div>
@@ -315,7 +315,7 @@ function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2
 function defaultAvail(){const a={};for(let i=0;i<7;i++)a[i]={on:true,start:'09:00',end:'22:30'};return a}
 function seedThemes(){
   return [
-    {id:'gc', storeId:'dz',name:'詭廁',    dur:90, needGM:0,needNPC:1,payGM:300,payNPC:450,active:true,slots:['10:00','11:40','13:20','15:00','16:40','18:20','20:20']},
+    {id:'gc', storeId:'dz',name:'詭廁',    dur:90, needGM:0,needNPC:1,payGM:300,payNPC:450,active:true,slots:['10:00','11:40','13:20','15:00','16:40','18:20','20:00']},
     {id:'gy', storeId:'ms',name:'詭獄',    dur:110,needGM:0,needNPC:1,payGM:300,payNPC:450,active:true,slots:['10:00','12:00','14:00','16:00','18:00','20:00']},
     {id:'gyx',storeId:'ms',name:'詭獄加場',dur:110,needGM:0,needNPC:1,payGM:300,payNPC:450,active:true,slots:['11:00','13:00','15:00','17:00','19:00']},
     {id:'gd', storeId:'ms',name:'詭店',    dur:100,needGM:0,needNPC:1,payGM:300,payNPC:550,active:true,slots:['09:30','11:20','13:10','15:00','16:50','18:40','20:30']},
@@ -326,7 +326,7 @@ function seedThemes(){
   ];
 }
 /* ============ 雲端儲存層(Supabase)============ */
-let S=null,sbc=null;
+let S=null,sbc=null,currentAdminUser=null,ADMIN_USERS=[],adminUsersLoaded=false,adminUsersLoading=false;
 let LINE={accounts:[],worksites:[],requests:[],responses:[],guestReports:[],attendance:[],overtime:[],usage:[],outbox:[],syncRuns:[]};
 function isDemo(){return (window.CFG&&CFG.DEMO)||/[?&]demo=1/.test(location.search)}
 function seedConfig(){
@@ -365,6 +365,8 @@ async function doLogin(){
   await afterLogin();
 }
 async function afterLogin(){
+  const authUser=await sbc.auth.getUser();
+  currentAdminUser=authUser.data?.user||null;
   let cfgRes=await sbc.from('config').select('data').eq('id',1).maybeSingle();
   let cfg=cfgRes.data;
   if(!cfg||!cfg.data){const d=seedConfig();await sbc.from('config').upsert({id:1,data:d});cfg={data:d}}
@@ -398,6 +400,10 @@ async function afterLogin(){
   let payrollDefaultsChanged=false;
   S.themes.forEach(function(t){
     if(!Array.isArray(t.slots))t.slots=[];if(t.payGM==null)t.payGM=300;if(t.payNPC==null)t.payNPC=0;
+    if((t.id==='gc'||t.name==='詭廁')&&t.slots.includes('20:20')){
+      t.slots=[...new Set(t.slots.map(function(x){return x==='20:20'?'20:00':x}))].sort();
+      payrollDefaultsChanged=true;
+    }
     if(t.payGMHoliday==null){t.payGMHoliday=t.payGM;payrollDefaultsChanged=true}
     if(t.payNPCHoliday==null){t.payNPCHoliday=t.payNPC;payrollDefaultsChanged=true}
     const rates={
@@ -409,6 +415,15 @@ async function afterLogin(){
   if(S.settings.practiceHourlyRate==null){S.settings.practiceHourlyRate=196;payrollDefaultsChanged=true}
   if(S.settings.floorHourlyRate==null){S.settings.floorHourlyRate=200;payrollDefaultsChanged=true}
   if(payrollDefaultsChanged)setTimeout(save,0);
+  // 只修正排班系統手動建立的舊詭廁場次；SimplyBook 場次仍以來源資料為準。
+  const legacyToiletShifts=S.shifts.filter(function(sh){
+    const theme=S.themes.find(function(t){return t.id===sh.themeId});
+    return !String(sh.id).startsWith('sb_')&&theme&&(theme.id==='gc'||theme.name==='詭廁')&&sh.start==='20:20';
+  });
+  legacyToiletShifts.forEach(function(sh){sh.start='20:00';sh.end='21:30'});
+  if(legacyToiletShifts.length)setTimeout(function(){
+    sbc.from('shifts').upsert(legacyToiletShifts.map(function(sh){return{id:sh.id,date:sh.date,source:'manual',data:sh}}));
+  },0);
   S.employees.forEach(function(e){if(!e.availX)e.availX={};if(e.startDate==null)e.startDate='';if(e.endDate==null)e.endDate=''});
   // 店別黑白對比色(舊藍/紫自動換成黑/白;若使用者自訂過非舊色則保留)
   {let changed=false;S.stores.forEach(function(s){
@@ -543,7 +558,7 @@ function employedInMonth(e,month){
 }
 
 /* ============ 導覽 ============ */
-const TABS=[['sched','排班表'],['punch','打卡'],['pay','薪資'],['emps','員工'],['themes','主題'],['skills','技能表'],['avail','可上班時間'],['line','LINE員工系統'],['data','資料備份']];
+const TABS=[['sched','排班表'],['punch','打卡'],['pay','薪資'],['emps','員工'],['themes','主題'],['skills','技能表'],['avail','可上班時間'],['line','LINE員工系統'],['admins','管理者帳號'],['data','資料備份']];
 let tab='sched';
 function renderNav(){
   document.getElementById('nav').innerHTML=TABS.map(([k,n])=>
@@ -587,6 +602,7 @@ function render(){
   else if(tab==='skills')v.innerHTML=vSkills();
   else if(tab==='avail')v.innerHTML=vAvail();
   else if(tab==='line')v.innerHTML=vLineAdmin();
+  else if(tab==='admins')v.innerHTML=vAdmins();
   else if(tab==='data')v.innerHTML=vData();
 }
 
@@ -2098,6 +2114,54 @@ async function calculateOvertime(){
   }
   if(rows.length){const r=await sbc.from('overtime_reviews').upsert(rows,{onConflict:'emp_id,work_date'});if(r.error)return alert(r.error.message)}await refreshLineAdmin();
 }
+
+/* ============ 管理者帳號 ============ */
+function adminDate(v){if(!v)return '尚未登入';try{return new Date(v).toLocaleString('zh-TW',{timeZone:'Asia/Taipei',hour12:false})}catch(_){return v}}
+async function adminUsersApi(body){
+  const session=(await sbc.auth.getSession()).data?.session;
+  if(!session?.access_token)throw new Error('管理者登入已過期，請重新登入');
+  const r=await fetch(CFG.SUPABASE_URL+'/functions/v1/admin-users',{method:'POST',headers:{'content-type':'application/json','apikey':CFG.SUPABASE_ANON_KEY,'authorization':'Bearer '+session.access_token},body:JSON.stringify(body)});
+  const x=await r.json().catch(function(){return{error:'管理者帳號服務回應格式錯誤'}});
+  if(!r.ok)throw new Error(x.error||'管理者帳號服務連線失敗');return x;
+}
+function vAdmins(){
+  if(!adminUsersLoaded&&!adminUsersLoading)setTimeout(loadAdminUsers,0);
+  const isOwner=currentAdminUser?.app_metadata?.role==='owner';
+  const rows=ADMIN_USERS.map(function(u){return `<tr><td>${esc(u.email||'')}</td><td>${u.role==='owner'?'帳號擁有者':'管理者'}</td><td>${adminDate(u.created_at)}</td><td>${adminDate(u.last_sign_in_at)}</td><td>${isOwner?`<button class="btn gray sm" onclick="resetAdminPassword('${u.id}')">重設密碼</button>`:'—'}</td></tr>`}).join('');
+  return `<div class="grid2">
+    ${isOwner?`<div class="card"><h2>新增管理者帳號</h2><p class="muted">每位管理者使用自己的信箱與密碼。請勿共用帳號。</p>
+      <label>登入信箱</label><input id="newAdminEmail" type="email" placeholder="name@example.com" autocomplete="off">
+      <label>初始密碼（至少 8 碼）</label><input id="newAdminPw" type="password" autocomplete="new-password">
+      <label>再次輸入密碼</label><input id="newAdminPw2" type="password" autocomplete="new-password">
+      <button class="btn" style="margin-top:10px" onclick="createAdminUser()">建立管理者</button>
+    </div>`:'<div class="card"><h2>管理者帳號</h2><p>只有帳號擁有者能建立管理者或重設別人的密碼。</p></div>'}
+    <div class="card"><h2>我的登入設定</h2><p>目前登入：<b>${esc(currentAdminUser?.email||'')}</b></p>
+      <label>新密碼（至少 8 碼）</label><input id="ownAdminPw" type="password" autocomplete="new-password">
+      <label>再次輸入新密碼</label><input id="ownAdminPw2" type="password" autocomplete="new-password">
+      <div class="row" style="margin-top:10px"><button class="btn" onclick="changeOwnPassword()">修改我的密碼</button><button class="btn gray" onclick="logoutAdmin()">登出</button></div>
+      <p class="muted" style="margin-top:8px">基於安全性，系統不會顯示任何人的原密碼；忘記時只能重設。</p>
+    </div>
+  </div>
+  <div class="card"><h2>管理者清單</h2>${adminUsersLoading?'<p class="muted">載入中…</p>':`<table><tr><th>登入信箱</th><th>權限</th><th>建立時間</th><th>最後登入</th><th>操作</th></tr>${rows||'<tr><td colspan="5">尚無管理者帳號</td></tr>'}</table>`}</div>`;
+}
+async function loadAdminUsers(){adminUsersLoading=true;if(tab==='admins')render();try{const x=await adminUsersApi({action:'list'});ADMIN_USERS=x.users||[];adminUsersLoaded=true}catch(e){alert(e.message)}finally{adminUsersLoading=false;if(tab==='admins')render()}}
+async function createAdminUser(){
+  const email=document.getElementById('newAdminEmail').value.trim(),password=document.getElementById('newAdminPw').value,confirmPassword=document.getElementById('newAdminPw2').value;
+  if(!email||!email.includes('@'))return alert('請填寫正確的登入信箱');if(password.length<8)return alert('密碼至少需要 8 碼');if(password!==confirmPassword)return alert('兩次輸入的密碼不同');
+  try{await adminUsersApi({action:'create',email,password});alert('管理者帳號已建立');adminUsersLoaded=false;await loadAdminUsers()}catch(e){alert('建立失敗：'+e.message)}
+}
+async function changeOwnPassword(){
+  const password=document.getElementById('ownAdminPw').value,confirmPassword=document.getElementById('ownAdminPw2').value;
+  if(password.length<8)return alert('密碼至少需要 8 碼');if(password!==confirmPassword)return alert('兩次輸入的密碼不同');
+  const r=await sbc.auth.updateUser({password});if(r.error)return alert('修改失敗：'+r.error.message);document.getElementById('ownAdminPw').value='';document.getElementById('ownAdminPw2').value='';alert('密碼已修改完成');
+}
+async function resetAdminPassword(id){
+  const email=ADMIN_USERS.find(function(u){return u.id===id})?.email||'這位管理者';
+  const password=prompt('請輸入 '+email+' 的新密碼（至少 8 碼）');if(password==null)return;if(password.length<8)return alert('密碼至少需要 8 碼');
+  if(!confirm('確定要重設 '+email+' 的登入密碼？'))return;
+  try{await adminUsersApi({action:'reset-password',userId:id,password});alert('密碼已重設完成')}catch(e){alert('重設失敗：'+e.message)}
+}
+async function logoutAdmin(){await sbc.auth.signOut();location.reload()}
 
 /* ============ 資料備份 ============ */
 function vData(){
