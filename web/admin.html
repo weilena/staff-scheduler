@@ -266,11 +266,11 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
     </div>
     <div class="row">
       <div class="field grow"><label>場控平日／場</label><input type="number" id="tfPayGM" min="0" value="300"></div>
-      <div class="field grow"><label>場控假日／場</label><input type="number" id="tfPayGMHoliday" min="0" value="300"></div>
+      <div class="field grow"><label>場控國定／場</label><input type="number" id="tfPayGMHoliday" min="0" value="300"></div>
     </div>
     <div class="row">
       <div class="field grow"><label>NPC 平日／場</label><input type="number" id="tfPayNPC" min="0" value="0"></div>
-      <div class="field grow"><label>NPC 假日／場</label><input type="number" id="tfPayNPCHoliday" min="0" value="0"></div>
+      <div class="field grow"><label>NPC 國定／場</label><input type="number" id="tfPayNPCHoliday" min="0" value="0"></div>
     </div>
     <label class="cklab" style="margin:0"><input type="checkbox" id="tfActive" checked> 開放中(關閉後不出現在排班)</label>
   </div>
@@ -1596,10 +1596,18 @@ function vPay(){
     return{e,ss,hm,hp,base,am,otHr,otPay,total:ss.pay+hp+base+otPay};
   });
   const total=rows.reduce((s,r)=>s+r.total,0);
+  const pendingMonth=(LINE.daily||[]).filter(r=>String(r.work_date).slice(0,7)===payMonth&&(r.status==='pending'||r.status==='anomaly'));
   return `<div class="card">
-    <h2>薪資試算(論場計酬)</h2>
+    <div class="row" style="margin-bottom:10px"><div><h2 style="margin:0">每日排班／多段打卡</h2><p class="muted">依日期橫向核對管理員排班、實際上下班與計薪審核。</p></div>
+      <span class="grow"></span><label style="margin:0">薪資月份</label><input type="month" value="${payMonth}" onchange="payMonth=this.value;render()">
+      <button class="btn" ${pendingMonth.length?'':'disabled'} onclick="approveAllDaily('${payMonth}')">本月全部核准（${pendingMonth.length}）</button>
+    </div>
+    ${rows.map((r,i)=>payrollDayGrid(r.e,payMonth,i===0)).join('')||'<p class="muted">這個月份尚無在職員工</p>'}
+  </div>
+  <div class="card">
+    <h2>薪資試算</h2>
     <div class="row" style="margin-bottom:10px">
-      <input type="month" value="${payMonth}" onchange="payMonth=this.value;render()">
+      <span class="muted">${payMonth.slice(0,4)} 年 ${Number(payMonth.slice(5,7))} 月</span>
       <span class="grow"></span>
       <button class="btn gray sm" onclick="exportPayCSV()">匯出 CSV(含場次明細)</button>
     </div>
@@ -1621,7 +1629,6 @@ function vPay(){
       <tr><td colspan="12" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
     </table>
     <p class="muted" style="margin-top:8px">一般日包含平日與週六日；只有標示名稱的國定假日採固定日費率。兼職只有 NPC 論場，兼職場控／櫃台／清潔按個人時薪；訓練場時薪 $${S.settings.practiceHourlyRate||196}、駐店場控時薪 $${S.settings.floorHourlyRate||200}。正職以月薪含 ${S.settings.fullBaseSessions??40} 場，超過場次費率可依員工設定；加班僅採管理員核准分鐘，前2小時與後續時數分開計算。</p>
-    ${rows.map(r=>payrollDayGrid(r.e,payMonth)).join('')}
   </div>`;
 }
 function exportPayCSV(){
@@ -1754,7 +1761,7 @@ function vThemes(){
     <div class="row" style="margin-bottom:10px"><h2 class="grow">主題管理</h2>
     <button class="btn" onclick="openTheme(null)">＋ 新增主題</button></div>
     ${S.stores.map(s=>`<h3 style="margin:12px 0 8px"><span class="badge" style="background:${s.color};color:${textOn(s.color)};border:1px solid ${lum(s.color)>0.82?'#cbd5e1':'transparent'}">${esc(s.name)}</span></h3>
-    <table><tr><th>主題</th><th class="num">場次長度</th><th>場次時刻</th><th class="num">需場控</th><th class="num">需NPC</th><th class="num">場控平日</th><th class="num">場控假日</th><th class="num">NPC平日</th><th class="num">NPC假日</th><th>狀態</th><th></th></tr>
+    <table><tr><th>主題</th><th class="num">場次長度</th><th>場次時刻</th><th class="num">需場控</th><th class="num">需NPC</th><th class="num">場控平日</th><th class="num">場控國定</th><th class="num">NPC平日</th><th class="num">NPC國定</th><th>狀態</th><th></th></tr>
     ${S.themes.filter(t=>t.storeId===s.id).map(t=>`<tr style="${t.active?'':'opacity:.5'}">
       <td><b>${esc(t.name)}</b></td><td class="num">${t.dur} 分</td>
       <td style="font-size:13px">${(t.slots||[]).join('、')||'<span class="muted">未設定</span>'}</td>
@@ -1916,14 +1923,16 @@ function approvedOvertimePay(e,month){
   }
   return{minutes,pay:Math.round(pay),baseRate};
 }
-function payrollDayGrid(e,month){
+function payrollDayGrid(e,month,opened){
   const[y,m]=month.split('-').map(Number),days=new Date(y,m,0).getDate();
   const cols=Array.from({length:days},(_,i)=>month+'-'+String(i+1).padStart(2,'0'));
   const schedule=d=>S.shifts.filter(s=>s.date===d&&!isCx(s)&&(s.assignments||[]).some(a=>a.empId===e.id));
-  return `<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">${esc(e.name)}・每日排班／多段打卡</summary><div style="overflow:auto;margin-top:8px"><table style="min-width:${Math.max(900,days*105)}px"><tr><th>項目</th>${cols.map(d=>`<th style="text-align:center">${Number(d.slice(8))}<br>週${WD[dateWD(d)]}${holidayName(d)?`<br><span style="color:#b91c1c">${holidayName(d)}</span>`:'<br><span class="muted">一般日</span>'}</th>`).join('')}</tr>
-  <tr><th>管理員排班</th>${cols.map(d=>`<td>${schedule(d).map(s=>`${s.start}–${s.end} ${esc(shiftLabel(s))}`).join('<br>')||'—'}</td>`).join('')}</tr>
-  <tr><th>實際打卡</th>${cols.map(d=>{const rs=pairPunches(e.id,month).filter(r=>r.date===d);return `<td>${rs.map(r=>`${r.in||'缺卡'}–${r.out||'缺卡'}`).join('<br>')||'—'}</td>`}).join('')}</tr>
-  <tr><th>核准計薪</th>${cols.map(d=>{const r=(LINE.daily||[]).find(x=>x.emp_id===e.id&&x.work_date===d);return `<td>${r?.status==='approved'?fmtHr(Number(r.payable_minutes)||0):r?.status==='rejected'?'不計薪':'待核准'}</td>`}).join('')}</tr></table></div></details>`;
+  const head=cols.map(d=>{const holiday=holidayName(d);return `<th style="text-align:center;min-width:100px;position:sticky;top:0;z-index:1;${holiday?'background:#b91c1c;color:#fff':'background:#f8fafc'}">${holiday?'國定':'一般日'}<br>${Number(d.slice(8))}<br>週${WD[dateWD(d)]}${holiday?`<br><small>${holiday}</small>`:''}</th>`}).join('');
+  const reviewCell=d=>{const r=(LINE.daily||[]).find(x=>x.emp_id===e.id&&x.work_date===d);if(!r)return '<span class="muted">無工時</span>';if(r.status==='approved')return `<b style="color:#15803d">已核准<br>${fmtHr(Number(r.payable_minutes)||0)} 小時</b>`;if(r.status==='rejected')return '<b class="warn">不計薪</b>';const id=`paygrid_${e.id}_${d}`;return `<input id="${id}" type="number" min="0" max="1440" value="${r.payable_minutes??r.actual_minutes}" style="width:66px;padding:5px"> 分<br><button class="btn sm" style="margin-top:4px" onclick="reviewDaily('${e.id}','${d}','approved','${id}')">核准</button> <button class="btn red sm" style="margin-top:4px" onclick="reviewDaily('${e.id}','${d}','rejected','${id}')">不計薪</button>`};
+  return `<details ${opened?'open':''} style="margin-top:10px"><summary style="cursor:pointer;font-weight:700;padding:8px 4px">${esc(e.name)}・${e.type==='part'?'兼職':'正職'}</summary><div style="overflow:auto;max-width:100%;max-height:62vh;margin-top:4px;overscroll-behavior:contain"><table style="min-width:${Math.max(980,days*105)}px;border-collapse:collapse"><tr><th style="position:sticky;left:0;top:0;z-index:3;background:#fff3cd;min-width:125px">項目</th>${head}</tr>
+  <tr style="background:#fff8d8"><th style="position:sticky;left:0;background:#fff3cd;z-index:2">管理員排班</th>${cols.map(d=>`<td>${schedule(d).map(s=>`${s.start}–${s.end}<br>${esc(shiftLabel(s))}`).join('<hr style="border:0;border-top:1px dotted #cbd5e1">')||'—'}</td>`).join('')}</tr>
+  <tr style="background:#e0f2fe"><th style="position:sticky;left:0;background:#bae6fd;z-index:2">實際多段打卡</th>${cols.map(d=>{const rs=pairPunches(e.id,month).filter(r=>r.date===d);return `<td>${rs.map((r,i)=>`第${i+1}段<br>${r.in||'<span class="warn">缺卡</span>'}–${r.out||'<span class="warn">缺卡</span>'}`).join('<hr style="border:0;border-top:1px dotted #94a3b8">')||'—'}</td>`}).join('')}</tr>
+  <tr style="background:#dcfce7"><th style="position:sticky;left:0;background:#bbf7d0;z-index:2">計薪審核</th>${cols.map(d=>`<td>${reviewCell(d)}</td>`).join('')}</tr></table></div></details>`;
 }
 const DEFAULT_GOOGLE_CALENDAR_ID='3095e07580b7db24b39bcae4905b1c7bfe768cf937c8d5af30830dc941d0aa2b@group.calendar.google.com';
 function googleCalendarEmbedUrl(){
@@ -2038,7 +2047,6 @@ function vLineAdmin(){
   const pendingGuests=(LINE.guestReports||[]).filter(r=>r.status==='pending').sort((a,b)=>b.created_at.localeCompare(a.created_at));
   const completedTrades=LINE.requests.filter(r=>r.status==='completed'&&(r.request_type==='give'||r.request_type==='swap'));
   const pendingAtt=LINE.attendance.filter(r=>r.status==='pending');
-  const pendingDaily=(LINE.daily||[]).filter(r=>r.status==='pending'||r.status==='anomaly').sort((a,b)=>b.work_date.localeCompare(a.work_date));
   const pendingOt=LINE.overtime.filter(r=>(r.status==='pending'||r.status==='anomaly')&&emp(r.emp_id)?.type==='full');
   return `<div class="card"><div class="row"><h2 class="grow">LINE 員工系統</h2><button class="btn gray sm" onclick="refreshLineAdmin()">重新整理</button></div>
     <div class="row" style="margin-top:10px"><span class="pill ${usage>=160?'out':'in'}">本月主動訊息 ${usage}/200</span><span class="muted">160則後只發緊急通知，保留40則。</span></div>
@@ -2053,7 +2061,6 @@ function vLineAdmin(){
   <div class="card"><h2>客人回報待處理（${pendingGuests.length}）</h2><p class="muted">請先回到 SimplyBook 建立／確認預約與訂金，再確認帶場人員，最後在此回覆員工。</p>${pendingGuests.map(r=>{const sh=byId(S.shifts,r.shift_id);return `<div style="padding:10px 0;border-bottom:1px solid #e5e7eb"><b>${r.customer_type==='walk_in'?'現場客人':'預約客人'}・${esc(r.surname)}・${r.party_size}人</b><br><span class="muted">電話：${esc(r.phone)}<br>場次：${sh?`${sh.date} ${sh.start}–${sh.end} ${esc(shiftLabel(sh))}`:esc(r.shift_id)}<br>回報者：${esc(emp(r.emp_id)?.name||r.emp_id)}${r.note?`<br>補充：${esc(r.note)}`:''}</span><label>回覆內容</label><input id="guestReply_${r.id}" placeholder="例如：已建立 SimplyBook，訂金已確認，由庭瑋帶場"><div class="row" style="margin-top:8px"><button class="btn sm" onclick="reviewGuestReport('${r.id}','confirmed')">完成並回覆</button><button class="btn red sm" onclick="reviewGuestReport('${r.id}','rejected')">無法受理</button></div></div>`}).join('')||'<p class="muted">目前沒有待處理客人回報</p>'}</div>
   <div class="card"><h2>近期管理員換班紀錄</h2>${completedTrades.slice(0,20).map(r=>`<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>換人・${esc(emp(r.requester_emp_id)?.name||r.requester_emp_id)} → ${esc(emp(r.selected_emp_id)?.name||r.selected_emp_id)}</b><br><span class="muted">${esc(byId(S.shifts,r.shift_id)?.date||'')} ${esc(byId(S.shifts,r.shift_id)?.start||'')}</span></span><button class="btn red sm" onclick="revertTrade('${r.id}')">撤銷並還原</button></div>`).join('')||'<p class="muted">尚無已完成換班</p>'}</div>
   <div class="card"><h2>補卡申請（${pendingAtt.length}）</h2>${pendingAtt.map(r=>{const label=r.request_type==='missing_in'?'補上班卡':r.request_type==='missing_out'?'補下班卡':r.request_type==='npc_checkin'?'NPC 補場次報到':'補／更正完整場次',times=r.request_type==='correction'?`${r.requested?.inTime||'?'}–${r.requested?.outTime||'?'}`:(r.requested?.time||'?'),work=(r.requested?.workItem?.labels||[]).join('、')||'未填工作項目';return `<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${esc(emp(r.emp_id)?.name||r.emp_id)}・${r.punch_date}・${label} ${times}</b><br><span class="muted">工作：${esc(work)}<br>原因：${esc(r.reason)}</span></span><button class="btn sm" onclick="reviewAttendance('${r.id}','approved')">核准並補登</button><button class="btn red sm" onclick="reviewAttendance('${r.id}','rejected')">拒絕</button></div>`}).join('')||'<p class="muted">目前沒有待審補卡</p>'}</div>
-  <div class="card"><h2>每日工時與時薪計薪審核（${pendingDaily.length}）</h2><p class="muted">原始打卡只計算候選工時；管理員核准「計薪分鐘」後才會進入時薪薪資。</p>${pendingDaily.slice(0,80).map(r=>{const id=`pay_${r.emp_id}_${r.work_date}`;return `<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${esc(emp(r.emp_id)?.name||r.emp_id)}・${r.work_date}</b><br><span class="muted">排班 ${r.scheduled_minutes}分／打卡 ${r.actual_minutes}分${r.anomalies?.length?`／<span class="warn">${esc(r.anomalies.join('、'))}</span>`:''}</span></span><label style="margin:0">計薪 <input id="${id}" type="number" min="0" max="1440" value="${r.payable_minutes??r.actual_minutes}" style="width:82px"> 分</label><button class="btn sm" onclick="reviewDaily('${r.emp_id}','${r.work_date}','approved','${id}')">核准</button><button class="btn red sm" onclick="reviewDaily('${r.emp_id}','${r.work_date}','rejected','${id}')">不計薪</button></div>`}).join('')||'<p class="muted">目前沒有待審工時</p>'}</div>
   <div class="card"><div class="row"><h2 class="grow">加班候選（${pendingOt.length}）</h2><button class="btn gray sm" onclick="calculateOvertime()">重新計算本月</button></div>${pendingOt.map(r=>`<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${esc(emp(r.emp_id)?.name||r.emp_id)}・${r.work_date}</b><br><span class="muted">排班 ${r.scheduled_minutes}分／實際 ${r.actual_minutes}分／候選 ${r.candidate_minutes}分・${fmtStatus(r.status)}</span></span><input id="ot_${r.id}" type="number" min="0" value="${r.candidate_minutes}" style="width:80px"><button class="btn sm" onclick="reviewOvertime('${r.id}','approved')">核准</button><button class="btn red sm" onclick="reviewOvertime('${r.id}','rejected')">拒絕</button></div>`).join('')||'<p class="muted">目前沒有待審加班</p>'}</div>
   <div class="card"><h2>通知紀錄</h2><table><tr><th>時間</th><th>類型</th><th>員工</th><th>狀態</th></tr>${LINE.outbox.slice().sort((a,b)=>b.created_at.localeCompare(a.created_at)).slice(0,30).map(n=>`<tr><td>${n.created_at.slice(0,16).replace('T',' ')}</td><td>${esc(n.category)}</td><td>${esc(emp(n.recipient_emp_id)?.name||n.recipient_emp_id||'')}</td><td>${esc(n.status)}${n.error?`<br><span class="warn">${esc(n.error)}</span>`:''}</td></tr>`).join('')||'<tr><td colspan="4" class="muted">尚無紀錄</td></tr>'}</table></div>`;
 }
@@ -2100,6 +2107,18 @@ async function reviewGuestReport(id,status){
 }
 async function reviewAttendance(id,status){const r=await sbc.rpc('review_attendance_request',{p_request:id,p_status:status});if(r.error||!r.data?.ok)alert(r.error?.message||r.data?.msg||'審核失敗');else{await afterLogin();tab='line';renderNav();render()}}
 async function reviewDaily(empId,date,status,inputId){const payable=status==='approved'?Math.max(0,Number(document.getElementById(inputId).value)||0):0,note=prompt(status==='approved'?'核准備註（可留空）':'不計薪原因（建議填寫）','')||'';const r=await sbc.rpc('review_attendance_day',{p_emp:empId,p_date:date,p_status:status,p_payable:payable,p_note:note});if(r.error||!r.data?.ok)alert(r.error?.message||r.data?.msg||'審核失敗');else{await refreshLineAdmin();render()}}
+async function approveAllDaily(month){
+  const rows=(LINE.daily||[]).filter(r=>String(r.work_date).slice(0,7)===month&&(r.status==='pending'||r.status==='anomaly'));
+  if(!rows.length)return alert('本月沒有待核准工時');
+  const anomalies=rows.filter(r=>r.status==='anomaly'||r.anomalies?.length).length;
+  if(!confirm(`確定依目前候選分鐘核准 ${month} 的 ${rows.length} 筆工時？${anomalies?`\n其中 ${anomalies} 筆有異常標記，也會一併核准。`:''}`))return;
+  let completed=0;
+  for(let i=0;i<rows.length;i+=10){
+    const batch=rows.slice(i,i+10),results=await Promise.all(batch.map(r=>sbc.rpc('review_attendance_day',{p_emp:r.emp_id,p_date:r.work_date,p_status:'approved',p_payable:Math.max(0,Number(r.payable_minutes??r.actual_minutes)||0),p_note:'本月批次核准'})));
+    const failed=results.find(x=>x.error||!x.data?.ok);if(failed){await refreshLineAdmin();render();return alert(`已完成 ${completed} 筆，後續核准失敗：${failed.error?.message||failed.data?.msg||'未知錯誤'}`)}completed+=batch.length;
+  }
+  await refreshLineAdmin();render();alert(`已完成 ${completed} 筆工時核准`);
+}
 async function revertTrade(id){if(!confirm('確定撤銷這次換班並恢復原班表？兩位員工都會收到通知。'))return;const r=await sbc.rpc('revert_shift_request',{p_request:id});if(r.error||!r.data?.ok)alert(r.error?.message||r.data?.msg||'撤銷失敗');else{await afterLogin();tab='line';renderNav();render()}}
 async function reviewOvertime(id,status){const approved=status==='approved'?Math.max(0,Number(document.getElementById('ot_'+id).value)||0):0,u=await sbc.auth.getUser(),reviewed_by=u.data?.user?.id||null;const r=await sbc.from('overtime_reviews').update({status,approved_minutes:approved,reviewed_by,reviewed_at:new Date().toISOString()}).eq('id',id);if(r.error)alert(r.error.message);else await refreshLineAdmin()}
 function unionShiftMinutes(shifts){
