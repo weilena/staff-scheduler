@@ -541,6 +541,7 @@ const fmtHr=min=>(min/60).toFixed(1);
 function fmtDate(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 function todayStr(){return fmtDate(new Date())}
 function monthStr(){return todayStr().slice(0,7)}
+function previousMonthStr(){const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-1);return fmtDate(d).slice(0,7)}
 function dateWD(ds){return new Date(ds+'T00:00:00').getDay()}
 /* 當日有效可上班時間:特定日期回報 > 每週固定 */
 function effectiveAvail(e,ds){
@@ -608,8 +609,8 @@ function render(){
 
 /* ============ 排班表(月/日/週三種檢視) ============ */
 let viewMode='month';
-let monthAnchor='2026-06';        // 依需求先帶入 2026 年 6 月
-let dayAnchor='2026-06-01';
+let monthAnchor=monthStr();
+let dayAnchor=todayStr();
 let weekAnchor=todayStr();
 let filterTheme='';               // 主題篩選
 let filterEmp='';                 // 人員篩選
@@ -1443,7 +1444,7 @@ function attendTable(month){
 }
 
 /* ============ 薪資 ============ */
-let payMonth=monthStr();
+let payMonth=previousMonthStr();
 const TAIWAN_HOLIDAYS_2026={
   '2026-01-01':'元旦','2026-02-16':'除夕','2026-02-17':'春節初一','2026-02-18':'春節初二','2026-02-19':'春節初三',
   '2026-02-28':'和平紀念日','2026-04-04':'兒童節','2026-04-05':'清明節','2026-05-01':'勞動節',
