@@ -4,6 +4,10 @@ import { eligibilityErrors, queueNotification, rankCandidatesByWorkload } from "
 const LOGIN_URL = "https://user-api.simplybook.asia/login";
 const ADMIN_URL = "https://user-api.simplybook.asia/admin/";
 const DAY = 86_400_000;
+const DEFAULT_EMPLOYEE_COLORS: Record<string, string> = {
+  "庭瑋": "#2782e8",
+  "翊嘉": "#28c75f",
+};
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function dstr(d: Date) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
@@ -22,6 +26,16 @@ function pick(row: any, keys: string[]) {
 }
 function selectedThemeName(cfg: any, themeId: string) {
   return cfg.themes?.find((theme: any) => theme.id === themeId)?.name ?? "場次";
+}
+function providerColor(provider: any) {
+  const value = String(pick(provider, ["color", "hex_color", "hexColor", "colour", "unit_color", "color_code"])).trim();
+  const normalized = value && !value.startsWith("#") ? `#${value}` : value;
+  return /^#[0-9a-fA-F]{6}$/.test(normalized) ? normalized.toLowerCase() : "";
+}
+function matchedEmployee(employees: any[], providerName: string) {
+  const normalized = providerName.trim();
+  return employees.find((item: any) => item.name === normalized ||
+    (item.aliases ?? []).includes(normalized) || (normalized === "穆穆" && item.name === "宏穆"));
 }
 
 async function rpc(url: string, headers: Record<string, string>, method: string, params: unknown[]) {
@@ -102,12 +116,14 @@ Deno.serve(async (req) => {
     const token = await rpc(LOGIN_URL, {}, "getUserToken", [company, userLogin, userKey]);
     const headers = { "X-Company-Login": company, "X-User-Token": String(token) };
     const filters = { date_from: from, date_to: to, order: "date_start_asc" };
-    const [activeRaw, cancelledRaw] = await Promise.all([
+    const [activeRaw, cancelledRaw, providersRaw] = await Promise.all([
       rpc(ADMIN_URL, headers, "getBookings", [{ ...filters, booking_type: "non_cancelled" }]),
       rpc(ADMIN_URL, headers, "getBookings", [{ ...filters, booking_type: "cancelled" }]),
+      rpc(ADMIN_URL, headers, "getUnitList", [false, true]),
     ]);
     const active = list(activeRaw);
     const cancelled = list(cancelledRaw);
+    const providers = list(providersRaw);
 
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
@@ -120,6 +136,15 @@ Deno.serve(async (req) => {
     if (cfgError) throw cfgError;
     if (shiftsError) throw shiftsError;
     const cfg = cfgRow.data;
+    let employeeColorsUpdated = 0;
+    for (const employee of cfg.employees ?? []) {
+      const provider = providers.find((item: any) => matchedEmployee([employee], String(pick(item, ["name", "unit_name", "title"])))) ;
+      const color = providerColor(provider) || employee.simplybookColor || DEFAULT_EMPLOYEE_COLORS[employee.name] || "";
+      if (color && employee.simplybookColor !== color) {
+        employee.simplybookColor = color;
+        employeeColorsUpdated++;
+      }
+    }
     const existingRows = existing ?? [];
     const existingMap = new Map(existingRows.map((row: any) => [row.id, row.data]));
 
@@ -138,7 +163,7 @@ Deno.serve(async (req) => {
         ignored.push({ bookingId: code || "unknown", reason: !selectedTheme ? `找不到主題對應:${serviceName}` : "缺少日期或 ID" });
         continue;
       }
-      const employee = cfg.employees.find((item: any) => item.name === providerName || (item.aliases ?? []).includes(providerName));
+      const employee = matchedEmployee(cfg.employees ?? [], providerName);
       const role = (selectedTheme.payNPC ?? 0) > 0 ? "NPC" : "場控";
       // 客人與付款資訊(僅存私人雲端,受 RLS 保護,登入管理者才看得到)
       const customer = {
@@ -247,12 +272,16 @@ Deno.serve(async (req) => {
         }, true, `sb-cancel:${before.id}:${row.data.cancelledAt}:${assignment.empId}`);
       }
     }
+    if (apply && employeeColorsUpdated) {
+      const { error } = await supabase.from("config").update({ data: cfg, updated_at: new Date().toISOString() }).eq("id", 1);
+      if (error) throw error;
+    }
 
     return Response.json({
       mode: apply ? "applied" : "preview",
       range: { from, to },
-      fetched: { active: active.length, cancelled: cancelled.length },
-      changes: { upsert: upserts.length, markCancelled: cancelledUpdates.length, ignored: ignored.length },
+      fetched: { active: active.length, cancelled: cancelled.length, providers: providers.length },
+      changes: { upsert: upserts.length, markCancelled: cancelledUpdates.length, employeeColors: employeeColorsUpdated, ignored: ignored.length },
       conflicts: [...warnings.entries()].map(([shiftId, messages]) => ({ shiftId, messages })),
       ignored: ignored.slice(0, 50),
       hint: apply ? undefined : "確認預覽後，以相同日期加上 apply=1 套用",

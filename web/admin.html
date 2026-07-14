@@ -194,6 +194,10 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
       <div class="field grow"><label>月薪(元)</label><input type="number" id="efSalary" min="0" placeholder="正職用"></div>
     </div>
     <div class="field"><label>打卡 PIN(4–6 位數字;店員手機 QR 打卡用,留空=不開放)</label><input id="efPin" maxlength="6" inputmode="numeric" placeholder="例:1234"></div>
+    <div class="row">
+      <div class="field"><label>SimplyBook 員工顏色</label><input type="color" id="efColorPicker" value="#64748b" oninput="document.getElementById('efColor').value=this.value"></div>
+      <div class="field grow"><label>員工色號</label><input id="efColor" maxlength="7" placeholder="#34bbf1" oninput="if(/^#[0-9a-fA-F]{6}$/.test(this.value))document.getElementById('efColorPicker').value=this.value"></div>
+    </div>
     <div class="row" id="efOtRow" style="display:none">
       <div class="field grow"><label>月標準時數(正職;超過才算加班)</label><input type="number" id="efStdHours" min="0" step="0.5" placeholder="例:176(月休8天×8h)"></div>
       <div class="field grow"><label>加班時薪(元/時)</label><input type="number" id="efOtRate" min="0" placeholder="留空=用左邊時薪"></div>
@@ -558,8 +562,13 @@ function shiftMatch(sh){
 /* 顏色亮度 → 決定文字黑/白,做大忠(深)/謎先生(淺)黑白對比 */
 function lum(hex){hex=String(hex||'#64748b').replace('#','');if(hex.length<6)return .5;const r=parseInt(hex.slice(0,2),16),g=parseInt(hex.slice(2,4),16),b=parseInt(hex.slice(4,6),16);return (0.299*r+0.587*g+0.114*b)/255;}
 function textOn(bg){return lum(bg)>0.6?'#111827':'#ffffff';}
+function employeeColor(e){
+  const value=String(e?.simplybookColor||e?.simplyBookColor||e?.sbColor||e?.color||'').trim();
+  return /^#[0-9a-fA-F]{6}$/.test(value)?value.toLowerCase():'';
+}
 function chipStyle(sh){
-  const st=store(sh.storeId);const bg=isCx(sh)?'#94a3b8':(st?st.color:'#64748b');
+  const st=store(sh.storeId),assigned=(sh.assignments||[]).find(a=>a.empId),person=assigned?emp(assigned.empId):null;
+  const bg=isCx(sh)?'#94a3b8':(employeeColor(person)||(st?st.color:'#64748b'));
   return `background:${bg};color:${textOn(bg)};border:1px solid ${lum(bg)>0.82?'#cbd5e1':'transparent'}`;
 }
 /* 主題分組:把「XX加場」歸到「XX」底下,一起顯示 */
@@ -1468,9 +1477,10 @@ function vEmps(){
   return `<div class="card">
     <div class="row" style="margin-bottom:10px"><h2 class="grow">員工(${S.employees.length})</h2>
     <button class="btn" onclick="openEmp(null)">＋ 新增員工</button></div>
-    ${S.employees.length?`<table><tr><th>姓名</th><th>身分</th><th class="num">時薪</th><th class="num">月薪</th><th>會帶的主題</th><th>櫃台</th><th>練習安排</th><th>狀態</th><th></th></tr>
+    ${S.employees.length?`<table><tr><th>姓名</th><th>身分</th><th>SimplyBook 顏色</th><th class="num">時薪</th><th class="num">月薪</th><th>會帶的主題</th><th>櫃台</th><th>練習安排</th><th>狀態</th><th></th></tr>
     ${S.employees.map(e=>`<tr style="${e.active?'':'opacity:.5'}">
       <td>${esc(e.name)}</td><td>${e.type==='part'?'兼職':'正職'}</td>
+      <td>${employeeColor(e)?`<span class="tag" style="background:${employeeColor(e)};color:${textOn(employeeColor(e))};border-color:transparent">${employeeColor(e)}</span>`:'<span class="muted">未設定</span>'}</td>
       <td class="num">${e.hourlyRate||'—'}</td><td class="num">${e.monthlySalary?e.monthlySalary.toLocaleString():'—'}</td>
       <td>${Object.entries(e.skills||{}).filter(([,r])=>r.length).map(([tid,r])=>{const t=theme(tid);return t?`<span class="tag">${esc(t.name)}:${r.join('/')}</span>`:''}).join('')||'<span class="muted">未設定</span>'}</td>
       <td>${(e.counters||[]).map(sid=>esc(store(sid)?.name||'')).join('、')||'<span class="muted">—</span>'}</td>
@@ -1490,6 +1500,9 @@ function openEmp(id){
   document.getElementById('efRate').value=e?(e.hourlyRate||''):'';
   document.getElementById('efSalary').value=e?(e.monthlySalary||''):'';
   document.getElementById('efPin').value=e?(e.pin||''):'';
+  const color=employeeColor(e)||'#64748b';
+  document.getElementById('efColor').value=color;
+  document.getElementById('efColorPicker').value=color;
   document.getElementById('efStartDate').value=e?(e.startDate||''):'';
   document.getElementById('efEndDate').value=e?(e.endDate||''):'';
   document.getElementById('efStdHours').value=e?(e.stdHours||''):'';
@@ -1504,6 +1517,8 @@ function openEmp(id){
 function saveEmp(){
   const name=document.getElementById('efName').value.trim();
   if(!name)return alert('請填姓名');
+  const simplybookColor=document.getElementById('efColor').value.trim().toLowerCase();
+  if(simplybookColor&&!/^#[0-9a-f]{6}$/.test(simplybookColor))return alert('員工色號需為 # 加 6 碼英數，例如 #34bbf1');
   const data={
     name,type:document.getElementById('efType').value,
     hourlyRate:Number(document.getElementById('efRate').value)||0,
@@ -1514,7 +1529,8 @@ function saveEmp(){
     stdHours:Number(document.getElementById('efStdHours').value)||0,
     otRate:Number(document.getElementById('efOtRate').value)||0,
     active:document.getElementById('efActive').checked,
-    canSchedulePractice:document.getElementById('efPracticeScheduler').checked
+    canSchedulePractice:document.getElementById('efPracticeScheduler').checked,
+    simplybookColor
   };
   if(data.canSchedulePractice&&data.type!=='full')return alert('安排新人練習場的權限只能授予正職員工');
   if(data.startDate&&data.endDate&&data.endDate<data.startDate)return alert('離職日不可早於到職日');
@@ -1707,7 +1723,23 @@ function vAvail(){
       <button class="btn sm" onclick="loadIcal(true)">解析並匯入為可上班時間</button>
     </div>
     <div id="icalResult"><p class="muted">「抓取核對」只顯示;「解析並匯入」會自動把日曆的回報(如「1830後可以」「❌」「1700前」)轉成該月各員工可上班時段。</p></div>
+    <h3 style="margin:18px 0 8px">管理員週行事曆</h3>
+    <p class="muted" style="margin-bottom:8px">以下為既有的 Google 排班日曆唯讀畫面，方便和員工回報直接核對。若 Google 顯示需要權限，請先用有日曆權限的帳號登入。</p>
+    <div class="row" style="margin-bottom:8px">
+      <input id="gcalEmbedId" class="grow" value="${esc(S.googleCalendarId||DEFAULT_GOOGLE_CALENDAR_ID)}" placeholder="Google Calendar ID">
+      <button class="btn gray sm" onclick="saveGoogleCalendarId()">儲存日曆</button>
+    </div>
+    <iframe title="Google 排班日曆" src="${googleCalendarEmbedUrl()}" style="width:100%;height:680px;border:1px solid #e2e8f0;border-radius:10px" loading="lazy"></iframe>
   </div>`;
+}
+const DEFAULT_GOOGLE_CALENDAR_ID='3095e07580b7db24b39bcae4905b1c7bfe768cf937c8d5af30830dc941d0aa2b@group.calendar.google.com';
+function googleCalendarEmbedUrl(){
+  const id=String(S.googleCalendarId||DEFAULT_GOOGLE_CALENDAR_ID).trim();
+  return `https://calendar.google.com/calendar/embed?src=${encodeURIComponent(id)}&ctz=Asia%2FTaipei&mode=WEEK`;
+}
+function saveGoogleCalendarId(){
+  S.googleCalendarId=document.getElementById('gcalEmbedId').value.trim()||DEFAULT_GOOGLE_CALENDAR_ID;
+  save();render();
 }
 function saveIcalUrl(){S.icalUrl=document.getElementById('icalUrl').value.trim();save();alert('已儲存 iCal 網址')}
 /* 解析 Google 日曆自由格式回報 → {on,start,end} 或 null */
