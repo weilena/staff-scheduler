@@ -42,6 +42,7 @@ Deno.serve(async (request) => {
     if (typeof body.imageBase64 !== "string" || !body.imageBase64) {
       return json({ error: "imageBase64 is required" }, 400);
     }
+    const imageMime = body.imageMime === "image/jpeg" ? "image/jpeg" : "image/png";
 
     const menuName = "mythworker 員工選單";
     const oldMenus = await (await lineFetch("/v2/bot/richmenu/list", token)).json();
@@ -63,7 +64,7 @@ Deno.serve(async (request) => {
         areas: [
           { bounds: { x: 0, y: 0, width: 833, height: 843 }, action: { type: "uri", label: "查看班表", uri: `${liff}?tab=schedule` } },
           { bounds: { x: 833, y: 0, width: 834, height: 843 }, action: { type: "uri", label: "定位打卡", uri: `${liff}?tab=punch` } },
-          { bounds: { x: 1667, y: 0, width: 833, height: 843 }, action: { type: "uri", label: "正職換班申請", uri: `${liff}?tab=requests` } },
+          { bounds: { x: 1667, y: 0, width: 833, height: 843 }, action: { type: "uri", label: "謎先生備品", uri: "https://script.google.com/macros/s/AKfycbwfFHhK4W6Q9mLttUg_-Kryo5-fmnn4IMhyxsh5n60lRkGgzN9SLkKKdm_3_GqKhCsx/exec" } },
         ],
       }),
     });
@@ -72,7 +73,7 @@ Deno.serve(async (request) => {
     const binary = Uint8Array.from(atob(body.imageBase64), (char) => char.charCodeAt(0));
     await lineFetch(`/v2/bot/richmenu/${richMenuId}/content`, token, {
       method: "POST",
-      headers: { "Content-Type": "image/png" },
+      headers: { "Content-Type": imageMime },
       body: binary,
     }, true);
     await lineFetch(`/v2/bot/user/all/richmenu/${richMenuId}`, token, { method: "POST" });
