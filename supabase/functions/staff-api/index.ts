@@ -120,6 +120,25 @@ Deno.serve(async (req) => {
       return json({ ok: true, message: "練習場已建立，練習員工、陪練人員與管理員都會收到資訊" });
     }
 
+    if (action === "session-report") {
+      const shiftId = String(input.shiftId ?? ""), lat = Number(input.latitude), lng = Number(input.longitude), accuracy = Number(input.accuracy ?? 9999);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(accuracy) || accuracy <= 0 || accuracy > 250) return json({ error: "定位精確度不足" }, 403);
+      const shift = shifts.find((s: any) => String(s.id) === shiftId && s.kind === "theme" && s.status !== "cancelled" &&
+        (s.assignments ?? []).some((a: any) => a.empId === employee.id));
+      const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+      if (!shift || shift.date !== today) return json({ error: "只能回報今天指派給你的主題場次" }, 403);
+      const { data: sites } = await sb.from("worksites").select("*").eq("enabled", true).not("latitude", "is", null);
+      const ranked = (sites ?? []).map((s: any) => ({ ...s, distance: distanceMeters(lat, lng, Number(s.latitude), Number(s.longitude)) })).sort((a: any, b: any) => a.distance - b.distance);
+      const site = ranked[0];
+      if (!site || site.id !== shift.storeId || site.distance > site.radius_m + Math.min(accuracy, 50)) return json({ error: "目前不在這個場次的店家打卡範圍內" }, 403);
+      const checkedInAt = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date()).replace(" ", "T");
+      const role = (shift.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "";
+      const { error } = await sb.from("session_checkins").insert({ emp_id: employee.id, shift_id: shift.id, checked_in_at: checkedInAt,
+        worksite_id: site.id, latitude: lat, longitude: lng, accuracy_m: accuracy, verification: "line_location", source: "line", note: `${role}場次回報` });
+      if (error) return json({ error: error.code === "23505" ? "這個場次已經回報過" : error.message }, error.code === "23505" ? 409 : 500);
+      return json({ ok: true, ts: checkedInAt, site: site.name, role });
+    }
+
     if (action === "punch") {
       const type = String(input.type), lat = Number(input.latitude), lng = Number(input.longitude), accuracy = Number(input.accuracy ?? 9999);
       if (!["in", "out"].includes(type) || !Number.isFinite(lat) || !Number.isFinite(lng)) return json({ error: "打卡資料不完整" }, 400);

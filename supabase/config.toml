@@ -3,6 +3,9 @@ project_id = "xrkdwdcsyzivkjankfsg"
 [functions.sb-sync]
 verify_jwt = false
 
+[functions.sb-webhook]
+verify_jwt = false
+
 [functions.staff-api]
 verify_jwt = false
 

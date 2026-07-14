@@ -88,10 +88,21 @@ function conflictWarnings(shifts: any[], employees: any[], prepMin: number, trav
 }
 
 Deno.serve(async (req) => {
+  let supabase: ReturnType<typeof createClient> | null = null;
+  let runId: number | null = null;
   try {
     const url = new URL(req.url);
+    const source = url.searchParams.get("source") ?? "manual";
+    supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    );
     const suppliedKey = req.headers.get("x-sync-secret") ?? url.searchParams.get("key");
-    if (!suppliedKey || suppliedKey !== Deno.env.get("SYNC_SECRET")) {
+    const isDatabaseCron = source === "database-cron" && req.headers.get("x-supabase-cron") === "1";
+    const bearer = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "");
+    const { data: authData } = bearer ? await supabase.auth.getUser(bearer) : { data: { user: null } };
+    const isSignedInAdmin = !!authData.user;
+    if (!isDatabaseCron && !isSignedInAdmin && (!suppliedKey || suppliedKey !== Deno.env.get("SYNC_SECRET"))) {
       return new Response("unauthorized", { status: 401 });
     }
 
@@ -106,6 +117,23 @@ Deno.serve(async (req) => {
     }
     if ((new Date(`${to}T00:00:00Z`).getTime() - new Date(`${from}T00:00:00Z`).getTime()) / DAY > 93) {
       return Response.json({ error: "單次同步最多 93 天" }, { status: 400 });
+    }
+
+    if (apply) {
+      const { data, error } = await supabase.rpc("try_start_integration_sync", {
+        p_integration: "simplybook",
+        p_trigger_source: source,
+        p_range_from: from,
+        p_range_to: to,
+        p_min_interval_seconds: source === "manual" ? 0 : 45,
+      });
+      // During rollout the migration may not exist yet. Manual calls continue,
+      // while scheduled calls fail clearly instead of silently doing nothing.
+      if (error && source !== "manual") throw error;
+      runId = data == null ? null : Number(data);
+      if (!error && runId == null) {
+        return Response.json({ ok: true, skipped: true, reason: "another synchronization just ran" });
+      }
     }
 
     const company = Deno.env.get("SB_COMPANY");
@@ -125,10 +153,6 @@ Deno.serve(async (req) => {
     const cancelled = list(cancelledRaw);
     const providers = list(providersRaw);
 
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-    );
     const [{ data: cfgRow, error: cfgError }, { data: existing, error: shiftsError }] = await Promise.all([
       supabase.from("config").select("data").eq("id", 1).single(),
       supabase.from("shifts").select("id,data").gte("date", from).lte("date", to),
@@ -277,7 +301,7 @@ Deno.serve(async (req) => {
       if (error) throw error;
     }
 
-    return Response.json({
+    const result = {
       mode: apply ? "applied" : "preview",
       range: { from, to },
       fetched: { active: active.length, cancelled: cancelled.length, providers: providers.length },
@@ -285,9 +309,27 @@ Deno.serve(async (req) => {
       conflicts: [...warnings.entries()].map(([shiftId, messages]) => ({ shiftId, messages })),
       ignored: ignored.slice(0, 50),
       hint: apply ? undefined : "確認預覽後，以相同日期加上 apply=1 套用",
-    });
+    };
+    if (runId != null) {
+      await supabase.from("integration_sync_runs").update({
+        status: "success",
+        fetched_count: active.length + cancelled.length,
+        changed_count: upserts.length + cancelledUpdates.length,
+        ignored_count: ignored.length,
+        details: { providers: providers.length, employeeColorsUpdated, conflicts: warnings.size },
+        finished_at: new Date().toISOString(),
+      }).eq("id", runId);
+    }
+    return Response.json(result);
   } catch (error) {
     console.error(error);
+    if (supabase && runId != null) {
+      await supabase.from("integration_sync_runs").update({
+        status: "error",
+        error_message: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000),
+        finished_at: new Date().toISOString(),
+      }).eq("id", runId);
+    }
     return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 });

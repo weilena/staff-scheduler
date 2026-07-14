@@ -47,6 +47,10 @@ https://[PROJECT_REF].supabase.co/functions/v1/sb-sync?key=[SYNC_SECRET]&from=20
 - 同一人時間重疊或跨店移動時間不足時，結果會回報警告。
 - 單次同步最長 93 天，避免誤抓過大範圍。
 
-## 後續即時連動
+## 即時連動與每分鐘校正
 
-目前以定時同步作為可靠基線。SimplyBook 的 create/change/cancel 回撥網址在新的 Supabase Webhook 完成並驗證前，不要替換既有 Vercel 網址。完成後可讓 Webhook 觸發小範圍同步，並保留每 15 分鐘全量校正，避免漏單。
+- SimplyBook API 的 create/change/cancel 回撥網址使用：
+  `https://xrkdwdcsyzivkjankfsg.supabase.co/functions/v1/sb-webhook`
+- 回撥只負責觸發，`sb-sync` 會重新讀取 SimplyBook API 的正式資料。
+- Supabase `pg_cron` 每 1 分鐘呼叫一次 `sb-sync`；資料庫鎖會忽略 45 秒內的重複觸發。
+- `integration_sync_runs` 保存每次結果。管理後台顯示最後成功時間、讀取／更新筆數與錯誤。

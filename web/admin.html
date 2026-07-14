@@ -82,6 +82,16 @@ th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 .slotbox.staffed{background:#d1fae5;border-color:#6ee7b7;color:#065f46}
 .slotbox.unstaffed{background:#fef3c7;border-color:#fcd34d;color:#92400e}
 .slotbox b{font-size:12.5px}
+.day-toolbar{position:sticky;top:54px;z-index:20;background:#fff;padding:8px 0;border-bottom:1px solid var(--line)}
+.day-manpower{position:sticky;top:105px;z-index:19;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:10px;box-shadow:0 3px 10px rgba(15,23,42,.06)}
+.day-manpower-list{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
+.person-day{padding:5px 8px;border-radius:8px;font-size:12px;border:1px solid #cbd5e1;line-height:1.35}
+.day-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:10px}
+.day-canvas{min-width:900px}
+.counter-lane{display:grid;grid-template-columns:150px 1fr;border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-bottom:8px;background:#fff}
+.counter-lane>strong{padding:10px;background:#f1f5f9}
+.counter-lane .slotrow{padding:7px}
+@media(max-width:640px){main{padding:0 8px 56px;margin-top:8px}.card{padding:10px}.day-toolbar{top:48px}.day-manpower{top:100px}.sync-health{display:block}.day-canvas{min-width:780px}}
 dialog{border:none;border-radius:14px;padding:0;max-width:560px;width:94vw;box-shadow:0 20px 60px rgba(0,0,0,.3)}
 dialog::backdrop{background:rgba(15,23,42,.45)}
 .dlg-h{background:#0f172a;color:#fff;padding:12px 18px;font-size:15px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
@@ -201,6 +211,7 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
     <div class="row" id="efOtRow" style="display:none">
       <div class="field grow"><label>月標準時數(正職;超過才算加班)</label><input type="number" id="efStdHours" min="0" step="0.5" placeholder="例:176(月休8天×8h)"></div>
       <div class="field grow"><label>加班時薪(元/時)</label><input type="number" id="efOtRate" min="0" placeholder="留空=用左邊時薪"></div>
+      <div class="field grow"><label>超過40場每場加給</label><input type="number" id="efExtraSessionRate" min="0" placeholder="依員工設定"></div>
     </div>
     <div class="row">
       <div class="field grow"><label>到職日</label><input type="date" id="efStartDate"></div>
@@ -290,7 +301,7 @@ function seedThemes(){
 }
 /* ============ 雲端儲存層(Supabase)============ */
 let S=null,sbc=null;
-let LINE={accounts:[],worksites:[],requests:[],responses:[],guestReports:[],attendance:[],overtime:[],usage:[],outbox:[]};
+let LINE={accounts:[],worksites:[],requests:[],responses:[],guestReports:[],attendance:[],overtime:[],usage:[],outbox:[],syncRuns:[]};
 function isDemo(){return (window.CFG&&CFG.DEMO)||/[?&]demo=1/.test(location.search)}
 function seedConfig(){
   return {
@@ -374,10 +385,10 @@ async function afterLogin(){
   renderNav();render();
 }
 async function loadLineAdmin(){
-  if(isDemo()){LINE={accounts:[],worksites:S.stores.map(s=>({id:s.id,name:s.name,radius_m:200,enabled:true})),requests:[],responses:[],guestReports:[],attendance:[],daily:[],overtime:[],usage:[],outbox:[]};return}
-  const names=['line_accounts','worksites','shift_requests','shift_request_responses','attendance_requests','attendance_daily','overtime_reviews','message_usage','notification_outbox'];
+  if(isDemo()){LINE={accounts:[],worksites:S.stores.map(s=>({id:s.id,name:s.name,radius_m:200,enabled:true})),requests:[],responses:[],guestReports:[],attendance:[],daily:[],overtime:[],usage:[],outbox:[],syncRuns:[]};return}
+  const names=['line_accounts','worksites','shift_requests','shift_request_responses','attendance_requests','attendance_daily','overtime_reviews','message_usage','notification_outbox','integration_sync_runs'];
   const [rs,guests]=await Promise.all([Promise.all(names.map(n=>sbc.from(n).select('*'))),guestAdminApi({action:'list'})]);
-  LINE={accounts:rs[0].data||[],worksites:rs[1].data||[],requests:rs[2].data||[],responses:rs[3].data||[],guestReports:guests.reports||[],attendance:rs[4].data||[],daily:rs[5].data||[],overtime:rs[6].data||[],usage:rs[7].data||[],outbox:rs[8].data||[]};
+  LINE={accounts:rs[0].data||[],worksites:rs[1].data||[],requests:rs[2].data||[],responses:rs[3].data||[],guestReports:guests.reports||[],attendance:rs[4].data||[],daily:rs[5].data||[],overtime:rs[6].data||[],usage:rs[7].data||[],outbox:rs[8].data||[],syncRuns:(rs[9].data||[]).sort((a,b)=>String(b.started_at).localeCompare(String(a.started_at))).slice(0,20)};
 }
 async function guestAdminApi(body){
   const session=await sbc.auth.getSession(),token=session.data?.session?.access_token;if(!token)throw new Error('管理員登入已過期，請重新登入');
@@ -600,11 +611,11 @@ function staffLoad(from,to){
       else map[a.empId].other++;
     }
   }
-  const arr=Object.values(map).map(x=>({...x,total:x.gm+x.npc+x.other}));
-  arr.sort((a,b)=>b.total-a.total);
-  const active=arr.filter(x=>x.total>0);
-  const avg=active.length?active.reduce((s,x)=>s+x.total,0)/active.length:0;
-  const maxT=arr.length?arr[0].total:0;
+  const arr=Object.values(map).map(x=>({...x,total:x.gm+x.npc+x.other,displayTotal:x.e.type==='full'?x.gm+x.npc:x.npc}));
+  arr.sort((a,b)=>b.displayTotal-a.displayTotal);
+  const active=arr.filter(x=>x.displayTotal>0);
+  const avg=active.length?active.reduce((s,x)=>s+x.displayTotal,0)/active.length:0;
+  const maxT=arr.length?arr[0].displayTotal:0;
   return {arr,avg,maxT};
 }
 /* 面板固定顯示「當前月份」累積(依檢視錨點決定月份)*/
@@ -619,14 +630,14 @@ function staffLoadPanel(){
   const {arr,avg,maxT}=staffLoad(from,to);
   return `<div class="loadpanel">
     <h3 style="font-size:14px;margin-bottom:2px">👥 ${y}年${m}月 累積場數</h3>
-    <p class="muted" style="font-size:11.5px;margin-bottom:8px">整月場控+NPC 累計;🔴=偏多,建議換人</p>
+    <p class="muted" style="font-size:11.5px;margin-bottom:8px">正職顯示總場次；兼職只顯示 NPC 場次</p>
     ${arr.map(x=>{
-      const heavy=x.total>0&&avg>0&&x.total>=avg*1.4&&x.total>=3;
-      const pct=maxT?Math.round(x.total/maxT*100):0;
+      const heavy=x.displayTotal>0&&avg>0&&x.displayTotal>=avg*1.4&&x.displayTotal>=3;
+      const pct=maxT?Math.round(x.displayTotal/maxT*100):0;
       return `<div class="loadrow ${heavy?'heavy':''}" onclick="filterEmp='${x.e.id}';render()" title="點擊只看此人">
-        <div class="loadname">${heavy?'🔴 ':''}${esc(x.e.name)}<span class="muted" style="float:right">${x.total}</span></div>
+        <div class="loadname">${heavy?'🔴 ':''}${esc(x.e.name)}<span class="muted" style="float:right">${x.e.type==='full'?'總場 '+x.displayTotal:'NPC '+x.displayTotal}</span></div>
         <div class="loadbar"><div style="width:${pct}%"></div></div>
-        <div class="muted" style="font-size:11px">場控 ${x.gm}・NPC ${x.npc}${x.other?'・其他 '+x.other:''}</div>
+        <div class="muted" style="font-size:11px">${x.e.type==='full'?`場控 ${x.gm}・NPC ${x.npc}`:'論場只計 NPC'} </div>
       </div>`;
     }).join('')}
     ${arr.some(x=>x.total>=avg*1.4&&x.total>=3)?'<p class="muted" style="font-size:11px;margin-top:6px;color:#b45309">🔴 標示者場數偏多,可考慮改排他人平衡人力。</p>':''}
@@ -649,6 +660,30 @@ function cxLabel(sh){
   if(isCx(sh))return '已取消';
   return '';
 }
+function syncHealthHtml(){
+  const latest=(LINE.syncRuns||[])[0];
+  if(!latest)return `<span class="sync-health muted">SimplyBook：等待第一次背景同步</span>`;
+  const when=new Date(latest.finished_at||latest.started_at).toLocaleString('zh-TW',{hour12:false});
+  if(latest.status==='error')return `<span class="sync-health" style="color:#b91c1c">⚠ SimplyBook 同步失敗・${esc(when)}・${esc(latest.error_message||'請查看同步紀錄')}</span>`;
+  if(latest.status==='running')return `<span class="sync-health" style="color:#0369a1">↻ SimplyBook 同步中・${esc(when)}</span>`;
+  return `<span class="sync-health" style="color:#047857">● SimplyBook 已同步・${esc(when)}・讀取 ${latest.fetched_count||0} 筆／更新 ${latest.changed_count||0} 筆</span>`;
+}
+async function syncSimplyBookNow(){
+  if(isDemo())return alert('試玩模式不會連接 SimplyBook。');
+  const btn=document.getElementById('syncNowBtn');
+  if(btn){btn.disabled=true;btn.textContent='同步中…'}
+  try{
+    const session=(await sbc.auth.getSession()).data.session;
+    const response=await fetch(`${CFG.SUPABASE_URL}/functions/v1/sb-sync?apply=1&source=admin`,{
+      method:'POST',headers:{Authorization:`Bearer ${session.access_token}`,'Content-Type':'application/json'},body:'{}'
+    });
+    const result=await response.json();
+    if(!response.ok)throw new Error(result.error||`HTTP ${response.status}`);
+    await afterLogin();
+    alert(result.skipped?'剛剛已同步過，資料已是最新。':`同步完成：讀取 ${(result.fetched?.active||0)+(result.fetched?.cancelled||0)} 筆，更新 ${(result.changes?.upsert||0)+(result.changes?.markCancelled||0)} 筆。`);
+  }catch(error){alert('SimplyBook 同步失敗：'+error.message)}
+  finally{if(btn){btn.disabled=false;btn.textContent='立即同步'}}
+}
 function vSched(){
   const themeOpts='<option value="">全部主題</option>'+S.themes.map(t=>`<option value="${t.id}" ${filterTheme===t.id?'selected':''}>${esc(store(t.storeId)?.name||'')}·${esc(t.name)}</option>`).join('');
   const empOpts='<option value="">全部人員</option>'+S.employees.filter(e=>e.active).map(e=>`<option value="${e.id}" ${filterEmp===e.id?'selected':''}>${esc(e.name)}</option>`).join('');
@@ -659,6 +694,8 @@ function vSched(){
       <button class="${viewMode==='week'?'on':''}" onclick="viewMode='week';render()">週表</button>
     </div>
     <span class="grow"></span>
+    <button class="btn gray sm" id="syncNowBtn" onclick="syncSimplyBookNow()">↻ 立即同步</button>
+    <a class="btn gray sm" style="text-decoration:none" href="https://bglescape.secure.simplybook.asia/v2/" target="_blank" rel="noopener">開啟 SimplyBook</a>
     <button class="btn" onclick="openShift(null)">＋ 新增班次</button>
   </div>
   <div class="row" style="margin-bottom:12px;gap:8px">
@@ -673,7 +710,7 @@ function vSched(){
   if(viewMode==='month')body=vMonth();
   else if(viewMode==='day')body=vDaySessions();
   else body=vWeek();
-  return `<div class="card">${segBar}<div class="schedwrap"><div class="schedmain">${body}</div>${staffLoadPanel()}</div></div>`;
+  return `<div class="card">${segBar}<div style="padding:8px 10px;margin-bottom:10px;border-radius:8px;background:#f8fafc;border:1px solid var(--line)">${syncHealthHtml()}<span class="muted" style="float:right">即時回撥＋每 1 分鐘背景校正</span></div><div class="schedwrap"><div class="schedmain">${body}</div>${staffLoadPanel()}</div></div>`;
 }
 
 /* ---- 月曆 ---- */
@@ -731,13 +768,14 @@ function manpowerTags(ds,compact){
   }).join(' ');
 }
 function dayManpower(ds){
-  const full=S.employees.filter(e=>e.type==='full'&&employedOn(e,ds));
-  const fullLeave=full.filter(e=>{const a=effectiveAvail(e,ds);return !(a&&a.on)});
-  return `<div style="background:#f8fafc;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:12px">
-    <b style="font-size:13.5px">當日人力(依回報)</b>
-    ${fullLeave.length?`<span class="tag leavered" style="margin-left:6px">正職休假:${fullLeave.map(e=>esc(e.name)).join('、')}</span>`:''}
-    <br>${manpowerTags(ds,false)}
-  </div>`;
+  const ym=ds.slice(0,7),load=staffLoad(ym+'-01',fmtDate(new Date(Number(ym.slice(0,4)),Number(ym.slice(5,7)),0))).arr;
+  const list=S.employees.filter(e=>employedOn(e,ds));
+  return `<div class="day-manpower"><b>${ds}（週${WD[dateWD(ds)]}）・固定人力列</b><div class="day-manpower-list">${list.map(e=>{
+    const assigned=S.shifts.filter(s=>s.date===ds&&!isCx(s)&&(s.assignments||[]).some(a=>a.empId===e.id));
+    const a=effectiveAvail(e,ds),stat=load.find(x=>x.e.id===e.id),bg=assigned.length?(employeeColor(e)||'#cbd5e1'):'#e5e7eb';
+    const clashes=assigned.some((x,i)=>assigned.slice(i+1).some(y=>x.storeId!==y.storeId&&toMin(x.end)+(S.settings.travelMin||12)>toMin(y.start)&&toMin(y.end)+(S.settings.travelMin||12)>toMin(x.start)));
+    return `<span class="person-day" style="background:${bg};color:${textOn(bg)}">${clashes?'⚠ ':''}${esc(e.name)}<br>${a&&a.on?`${a.start}–${a.end}`:'休假／無班'}・${e.type==='full'?`總場 ${stat?.displayTotal||0}`:`NPC ${stat?.displayTotal||0}`}</span>`;
+  }).join('')}</div></div>`;
 }
 /* ---- 日場次 ---- */
 function moveDay(n){
@@ -751,15 +789,22 @@ function vDaySessions(){
   const ds=dayAnchor;
   const others=S.shifts.filter(sh=>sh.date===ds&&!(sh.kind==='theme'&&theme(sh.themeId)&&(theme(sh.themeId).slots||[]).includes(sh.start)))
     .sort((a,b)=>a.start.localeCompare(b.start));
-  return `<div class="row" style="margin-bottom:12px">
+  const counters=(storeId)=>others.filter(sh=>sh.kind==='counter'&&sh.storeId===storeId);
+  const extra=others.filter(sh=>sh.kind!=='counter');
+  const counterLane=(storeId,label)=>`<div class="counter-lane"><strong>${label}<br><button class="btn sm" style="margin-top:6px" onclick="openShift(null,'${ds}',{storeId:'${storeId}',kind:'counter'})">＋安排</button></strong><div class="slotrow">${counters(storeId).map(sh=>`<div class="slotbox ${sh.assignments.some(a=>a.empId)?'staffed':'unstaffed'}" style="${chipStyle(sh)}" onclick="openShift('${sh.id}')"><b>${sh.start}–${sh.end}</b><br>${sh.assignments.filter(a=>a.empId).map(a=>esc(emp(a.empId)?.name||'?')).join('、')||'⚠ 未排人'}</div>`).join('')||'<span class="muted">尚未安排</span>'}</div></div>`;
+  return `<div class="row day-toolbar">
     <button class="btn gray sm" onclick="moveDay(-1)">← 前一天</button>
     <input type="date" value="${ds}" onchange="dayAnchor=this.value;render()">
     <button class="btn gray sm" onclick="moveDay(1)">後一天 →</button>
-    <b>週${WD[dateWD(ds)]}</b>
-    <span class="muted">綠=已排人、黃=開場但未排人、灰=點擊即可開場排人。儲存後此表自動更新並重新檢查碰撞。</span>
+    <b>${ds}（週${WD[dateWD(ds)]}）</b>
+    <span class="muted">⚠ 表示撞班或跨店移動不足</span>
   </div>
   ${S.closedDates.includes(ds)?'<div style="background:#fee2e2;color:#b91c1c;padding:8px 12px;border-radius:8px;margin-bottom:12px;font-weight:600">🔴 本日店休</div>':''}
   ${dayManpower(ds)}
+  <div class="day-scroll"><div class="day-canvas">
+  ${counterLane('dz','大忠桌遊店櫃檯')}
+  ${counterLane('ms','謎先生櫃檯')}
+  <h3 style="margin:14px 0 8px">SimplyBook 密室場次</h3>
   ${S.stores.map(s=>{
     const groups=themeGroups(s.id);
     if(!groups.length)return '';
@@ -776,12 +821,12 @@ function vDaySessions(){
       <td><div class="slotrow">${slotCells(g.base)}${g.surge?`<span style="align-self:center;color:#94a3b8;font-size:12px;margin:0 2px">｜加場</span>${slotCells(g.surge)}`:''}</div></td></tr>`).join('')}
     </table>`;
   }).join('')}
-  ${others.length?`<h3 style="margin:14px 0 8px">其他班次(櫃台/自訂時間)</h3>
+  ${extra.length?`<h3 style="margin:14px 0 8px">其他工作（清潔／練習／駐店）</h3>
     <table><tr><th>時間</th><th>店別</th><th>內容</th><th>人員</th></tr>
-    ${others.map(sh=>`<tr class="${isCx(sh)?'cancelled':''}" onclick="openShift('${sh.id}')" style="cursor:pointer">
+    ${extra.map(sh=>`<tr class="${isCx(sh)?'cancelled':''}" onclick="openShift('${sh.id}')" style="cursor:pointer">
       <td>${sh.start}–${sh.end}</td><td>${esc(store(sh.storeId)?.name||'')}</td><td>${esc(shiftLabel(sh))}</td>
       <td>${sh.assignments.filter(a=>a.empId).map(a=>`${esc(emp(a.empId)?.name||'?')}(${a.role})`).join('、')||'<i class="muted">未排人</i>'}</td></tr>`).join('')}</table>`:''}
-  `;
+  </div></div>`;
 }
 function createSlotShift(themeId,slot){
   const t=theme(themeId);
@@ -1287,7 +1332,14 @@ function attendTable(month){
 
 /* ============ 薪資 ============ */
 let payMonth=monthStr();
-function isHolidayRate(date){const wd=dateWD(date);return wd===0||wd===6}
+const TAIWAN_HOLIDAYS_2026={
+  '2026-01-01':'元旦','2026-02-16':'除夕','2026-02-17':'春節初一','2026-02-18':'春節初二','2026-02-19':'春節初三',
+  '2026-02-28':'和平紀念日','2026-04-04':'兒童節','2026-04-05':'清明節','2026-05-01':'勞動節',
+  '2026-06-19':'端午節','2026-09-25':'中秋節','2026-09-28':'教師節','2026-10-10':'國慶日',
+  '2026-10-25':'臺灣光復節','2026-12-25':'行憲紀念日'
+};
+function holidayName(date){return (S.settings.holidays||{})[date]||TAIWAN_HOLIDAYS_2026[date]||''}
+function isHolidayRate(date){return !!holidayName(date)}
 function themeSessionRate(t,role,date){
   const holiday=isHolidayRate(date);
   if(role==='NPC')return Number(holiday?(t.payNPCHoliday??t.payNPC):(t.payNPC??0))||0;
@@ -1306,22 +1358,24 @@ function schedMinutes(empId,month){
 function actualMinutes(empId,month){
   return pairPunches(empId,month).reduce((s,r)=>s+r.min,0);
 }
-/* 場次費統計:每場依主題費率(場控 payGM / NPC payNPC)計酬 */
+/* 場次統計：兼職 NPC 論場；兼職場控改按核准工時；正職計總場與超過40場加給。 */
 function sessionStats(empId,month){
-  let pay=0,gm=0,npc=0;const detail={};
+  const e=emp(empId);let pay=0,gm=0,npc=0;const detail={};
   for(const sh of S.shifts){
     if(isCx(sh)||sh.date.slice(0,7)!==month||sh.kind!=='theme')continue;
     const t=theme(sh.themeId);if(!t)continue;
     for(const a of sh.assignments){
       if(a.empId!==empId)continue;
       let r=0;
-      if(a.role==='NPC'){npc++;r=themeSessionRate(t,a.role,sh.date)}
-      else if(a.role==='場控'){gm++;r=themeSessionRate(t,a.role,sh.date)}
+      if(a.role==='NPC'){npc++;r=e?.type==='part'?themeSessionRate(t,a.role,sh.date):0}
+      else if(a.role==='場控'){gm++;r=0}
       pay+=r;
       const k=`${t.name}${a.role}`;detail[k]=(detail[k]||0)+1;
     }
   }
-  return{pay,gm,npc,detail};
+  const total=gm+npc,baseSessions=Number(S.settings.fullBaseSessions??40),extra=e?.type==='full'?Math.max(0,total-baseSessions):0;
+  const extraPay=e?.type==='full'?Math.round(extra*Number(e.extraSessionRate||S.settings.fullExtraSessionRate||0)):0;
+  return{pay:pay+extraPay,gm,npc,total,extra,extraPay,baseSessions,detail};
 }
 /* 櫃台/駐店班時數(時薪計;不含練習場)*/
 function hourlyMinutes(empId,month){
@@ -1342,7 +1396,12 @@ function approvedHourlyBreakdown(e,month){
   let minutes=0,pay=0;
   for(const d of (LINE.daily||[]).filter(x=>x.emp_id===e.id&&String(x.work_date).slice(0,7)===month&&x.status==='approved')){
     const payable=Math.max(0,Number(d.payable_minutes)||0);if(!payable)continue;
-    const shifts=S.shifts.filter(sh=>!isCx(sh)&&sh.date===d.work_date&&sh.kind!=='theme'&&(sh.assignments||[]).some(a=>a.empId===e.id));
+    const shifts=S.shifts.filter(sh=>{
+      if(isCx(sh)||sh.date!==d.work_date)return false;
+      const a=(sh.assignments||[]).find(x=>x.empId===e.id);if(!a)return false;
+      if(sh.kind==='theme')return e.type==='part'&&a.role!=='NPC';
+      return e.type==='part';
+    });
     const weighted=shifts.map(sh=>({m:Math.max(0,toMin(sh.end)-toMin(sh.start)),rate:sh.kind==='practice'?(S.settings.practiceHourlyRate||196):sh.kind==='floor'?(S.settings.floorHourlyRate||200):(e.hourlyRate||0)}));
     const scheduled=weighted.reduce((n,x)=>n+x.m,0);minutes+=payable;
     if(scheduled)pay+=weighted.reduce((n,x)=>n+(payable*x.m/scheduled)/60*x.rate,0);else pay+=payable/60*(e.hourlyRate||0);
@@ -1420,8 +1479,8 @@ function vPay(){
     const base=e.type==='full'?(e.monthlySalary||0):0;
     const am=actualMinutes(e.id,payMonth);
     // 正職加班只採管理員核准分鐘，不讓缺卡或異常長工時自動進薪資。
-    const otMin=e.type==='full'?approvedOvertimeMinutes(e.id,payMonth):0;
-    let otHr=otMin/60,otPay=Math.round(otHr*(e.otRate||e.hourlyRate||0));
+    const ot=e.type==='full'?approvedOvertimePay(e,payMonth):{minutes:0,pay:0};
+    let otHr=ot.minutes/60,otPay=ot.pay;
     return{e,ss,hm,hp,base,am,otHr,otPay,total:ss.pay+hp+base+otPay};
   });
   const total=rows.reduce((s,r)=>s+r.total,0);
@@ -1433,11 +1492,12 @@ function vPay(){
       <button class="btn gray sm" onclick="exportPayCSV()">匯出 CSV(含場次明細)</button>
     </div>
     <table>
-      <tr><th>員工</th><th>身分</th><th class="num">場控場次</th><th class="num">NPC場次</th><th class="num">場次費</th><th class="num">櫃台/駐店時數</th><th class="num">時薪費</th><th class="num">月薪</th><th class="num">打卡時數</th><th class="num">加班時數</th><th class="num">加班費</th><th class="num">合計</th></tr>
+      <tr><th>員工</th><th>身分</th><th class="num">場控場次</th><th class="num">NPC場次</th><th class="num">正職總場／超過40場</th><th class="num">論場費</th><th class="num">核准時薪時數</th><th class="num">時薪費</th><th class="num">月薪</th><th class="num">打卡時數</th><th class="num">核准加班</th><th class="num">加班費</th><th class="num">合計</th></tr>
       ${rows.map(({e,ss,hm,hp,base,am,otHr,otPay,total})=>`<tr>
         <td><a href="#" onclick="showEmpDetail('${e.id}');return false" style="color:var(--accent);text-decoration:none;font-weight:600">${esc(e.name)}</a> <span class="muted" style="font-size:11px">明細▸</span></td>
         <td>${e.type==='part'?'兼職':'正職'}</td>
         <td class="num">${ss.gm||'—'}</td><td class="num">${ss.npc||'—'}</td>
+        <td class="num">${e.type==='full'?`${ss.total}／${ss.extra}`:'—'}</td>
         <td class="num">${ss.pay?ss.pay.toLocaleString():'—'}</td>
         <td class="num">${hm?fmtHr(hm):'—'}</td>
         <td class="num">${hp?hp.toLocaleString():'—'}</td>
@@ -1446,9 +1506,10 @@ function vPay(){
         <td class="num">${otHr>0?otHr.toFixed(1):'—'}</td>
         <td class="num">${otPay?otPay.toLocaleString():'—'}</td>
         <td class="num"><b>${total.toLocaleString()}</b></td></tr>`).join('')}
-      <tr><td colspan="11" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
+      <tr><td colspan="12" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
     </table>
-    <p class="muted" style="margin-top:8px">場次費依主題與平日／假日費率（週六、週日採假日價）；練習場時薪 $${S.settings.practiceHourlyRate||196}、駐店場控時薪 $${S.settings.floorHourlyRate||200}，其他櫃台／清潔採員工時薪。時薪工作須經管理員核准計薪分鐘；原始缺卡與異常工時不會直接進薪資。</p>
+    <p class="muted" style="margin-top:8px">一般日包含平日與週六日；只有標示名稱的國定假日採固定日費率。兼職只有 NPC 論場，兼職場控／櫃台／清潔按個人時薪；練習場時薪 $${S.settings.practiceHourlyRate||196}、駐店場控時薪 $${S.settings.floorHourlyRate||200}。正職以月薪含 ${S.settings.fullBaseSessions??40} 場，超過場次費率可依員工設定；加班僅採管理員核准分鐘，前2小時與後續時數分開計算。</p>
+    ${rows.map(r=>payrollDayGrid(r.e,payMonth)).join('')}
   </div>`;
 }
 function exportPayCSV(){
@@ -1507,6 +1568,7 @@ function openEmp(id){
   document.getElementById('efEndDate').value=e?(e.endDate||''):'';
   document.getElementById('efStdHours').value=e?(e.stdHours||''):'';
   document.getElementById('efOtRate').value=e?(e.otRate||''):'';
+  document.getElementById('efExtraSessionRate').value=e?(e.extraSessionRate||''):'';
   document.getElementById('efActive').checked=e?e.active:true;
   document.getElementById('efPracticeScheduler').checked=!!e?.canSchedulePractice;
   const tsel=document.getElementById('efType');
@@ -1528,6 +1590,7 @@ function saveEmp(){
     endDate:document.getElementById('efEndDate').value,
     stdHours:Number(document.getElementById('efStdHours').value)||0,
     otRate:Number(document.getElementById('efOtRate').value)||0,
+    extraSessionRate:Number(document.getElementById('efExtraSessionRate').value)||0,
     active:document.getElementById('efActive').checked,
     canSchedulePractice:document.getElementById('efPracticeScheduler').checked,
     simplybookColor
@@ -1732,6 +1795,23 @@ function vAvail(){
     <iframe title="Google 排班日曆" src="${googleCalendarEmbedUrl()}" style="width:100%;height:680px;border:1px solid #e2e8f0;border-radius:10px" loading="lazy"></iframe>
   </div>`;
 }
+function approvedOvertimePay(e,month){
+  const baseRate=Number(e.otRate||((e.monthlySalary||0)/240)||e.hourlyRate||0);let minutes=0,pay=0;
+  for(const row of (LINE.overtime||[]).filter(x=>x.emp_id===e.id&&String(x.work_date).slice(0,7)===month&&x.status==='approved')){
+    const m=Math.max(0,Number(row.approved_minutes)||0),first=Math.min(120,m),after=Math.max(0,m-120);
+    minutes+=m;pay+=first/60*baseRate*4/3+after/60*baseRate*5/3;
+  }
+  return{minutes,pay:Math.round(pay),baseRate};
+}
+function payrollDayGrid(e,month){
+  const[y,m]=month.split('-').map(Number),days=new Date(y,m,0).getDate();
+  const cols=Array.from({length:days},(_,i)=>month+'-'+String(i+1).padStart(2,'0'));
+  const schedule=d=>S.shifts.filter(s=>s.date===d&&!isCx(s)&&(s.assignments||[]).some(a=>a.empId===e.id));
+  return `<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">${esc(e.name)}・每日排班／多段打卡</summary><div style="overflow:auto;margin-top:8px"><table style="min-width:${Math.max(900,days*105)}px"><tr><th>項目</th>${cols.map(d=>`<th style="text-align:center">${Number(d.slice(8))}<br>週${WD[dateWD(d)]}${holidayName(d)?`<br><span style="color:#b91c1c">${holidayName(d)}</span>`:'<br><span class="muted">一般日</span>'}</th>`).join('')}</tr>
+  <tr><th>管理員排班</th>${cols.map(d=>`<td>${schedule(d).map(s=>`${s.start}–${s.end} ${esc(shiftLabel(s))}`).join('<br>')||'—'}</td>`).join('')}</tr>
+  <tr><th>實際打卡</th>${cols.map(d=>{const rs=pairPunches(e.id,month).filter(r=>r.date===d);return `<td>${rs.map(r=>`${r.in||'缺卡'}–${r.out||'缺卡'}`).join('<br>')||'—'}</td>`}).join('')}</tr>
+  <tr><th>核准計薪</th>${cols.map(d=>{const r=(LINE.daily||[]).find(x=>x.emp_id===e.id&&x.work_date===d);return `<td>${r?.status==='approved'?fmtHr(Number(r.payable_minutes)||0):r?.status==='rejected'?'不計薪':'待核准'}</td>`}).join('')}</tr></table></div></details>`;
+}
 const DEFAULT_GOOGLE_CALENDAR_ID='3095e07580b7db24b39bcae4905b1c7bfe768cf937c8d5af30830dc941d0aa2b@group.calendar.google.com';
 function googleCalendarEmbedUrl(){
   const id=String(S.googleCalendarId||DEFAULT_GOOGLE_CALENDAR_ID).trim();
@@ -1913,7 +1993,7 @@ async function calculateOvertime(){
   const month=monthStr(),rows=[];
   for(const e of S.employees.filter(x=>employedInMonth(x,month))){
     const days=[...new Set(S.punches.filter(p=>p.empId===e.id&&p.ts.slice(0,7)===month).map(p=>p.ts.slice(0,10)))];
-    for(const d of days){const ps=S.punches.filter(p=>p.empId===e.id&&p.ts.slice(0,10)===d).sort((a,b)=>a.ts.localeCompare(b.ts));let actual=0,open=null,anomaly=false;for(const p of ps){if(p.type==='in'){if(open)anomaly=true;open=p}else if(open){actual+=Math.max(0,toMin(p.ts.slice(11,16))-toMin(open.ts.slice(11,16)));open=null}else anomaly=true}if(open)anomaly=true;const scheduled=S.shifts.filter(s=>s.date===d&&s.status!=='cancelled'&&s.assignments.some(a=>a.empId===e.id)).reduce((n,s)=>n+Math.max(0,toMin(s.end)-toMin(s.start)),0);const candidate=Math.max(0,actual-scheduled);if(candidate||anomaly)rows.push({emp_id:e.id,work_date:d,scheduled_minutes:scheduled,actual_minutes:actual,candidate_minutes:candidate,status:anomaly?'anomaly':'pending'})}
+    for(const d of days){const ps=S.punches.filter(p=>p.empId===e.id&&p.ts.slice(0,10)===d).sort((a,b)=>a.ts.localeCompare(b.ts));let actual=0,open=null,anomaly=false;for(const p of ps){if(p.type==='in'){if(open)anomaly=true;open=p}else if(open){actual+=Math.max(0,toMin(p.ts.slice(11,16))-toMin(open.ts.slice(11,16)));open=null}else anomaly=true}if(open)anomaly=true;const scheduled=S.shifts.filter(s=>s.date===d&&s.status!=='cancelled'&&s.assignments.some(a=>a.empId===e.id)).reduce((n,s)=>n+Math.max(0,toMin(s.end)-toMin(s.start)),0);const threshold=e.type==='full'?9*60:8*60,candidate=Math.max(0,actual-threshold);if(candidate||anomaly)rows.push({emp_id:e.id,work_date:d,scheduled_minutes:scheduled,actual_minutes:actual,candidate_minutes:candidate,status:anomaly?'anomaly':'pending'})}
   }
   if(rows.length){const r=await sbc.from('overtime_reviews').upsert(rows,{onConflict:'emp_id,work_date'});if(r.error)return alert(r.error.message)}await refreshLineAdmin();
 }
@@ -1929,7 +2009,7 @@ function vData(){
       <button class="btn red" onclick="resetAll()">清除全部資料</button>
     </div>
     <p class="muted" style="margin-top:12px">目前:員工 ${S.employees.length} 人、主題 ${S.themes.length} 個、班次 ${S.shifts.length} 筆、打卡 ${S.punches.length} 筆。<br>
-    SimplyBook 預約由排程每 15 分鐘自動同步為班次;店員打卡請用手機開 punch.html(掃店內 QR),需先在「員工」頁設定 PIN。</p>
+    SimplyBook 預約會在新增／改期／取消時立即同步，並由排程每 1 分鐘校正一次；店員打卡請使用 LINE 員工入口。</p>
   </div>`;
 }
 function exportJSON(){dl(JSON.stringify(S,null,2),`排班系統備份_${todayStr()}.json`,'application/json')}

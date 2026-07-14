@@ -58,22 +58,13 @@ supabase/functions/sb-sync/index.ts  SimplyBook 自動同步程式
    supabase secrets set SB_COMPANY=bglescape "SB_USER_LOGIN=管理者帳號" "SB_USER_PASSWORD=密碼或api_user_key" "SYNC_SECRET=自訂一串亂碼"
    supabase functions deploy sb-sync --no-verify-jwt
    ```
-3. 手動測試:瀏覽器開
-   `https://你的專案REF.supabase.co/functions/v1/sb-sync?key=你的SYNC_SECRET`
-   看到 `{"fetched":...,"upserted":...}` 就成功
-4. 排程(每 15 分鐘自動跑):Dashboard → SQL Editor 執行:
-   ```sql
-   select cron.schedule('sb-sync-15min','*/15 * * * *', $$
-     select net.http_post(
-       url:='https://你的專案REF.supabase.co/functions/v1/sb-sync?key=你的SYNC_SECRET',
-       headers:='{}'::jsonb
-     )
-   $$);
-   ```
-   (若提示 cron/net 不存在:Dashboard → Database → Extensions 啟用 `pg_cron` 與 `pg_net`)
+3. 管理員後台可按「立即同步」測試；成功後會顯示最後同步時間與讀取／更新筆數。
+4. `20260714153000_simplybook_sync_health.sql` 會建立每 1 分鐘校正排程與防重複鎖。
+5. SimplyBook API 的 create/change/cancel 回撥網址設為
+   `https://xrkdwdcsyzivkjankfsg.supabase.co/functions/v1/sb-webhook`，預約異動會立即觸發同步。
 
 ## 同步規則說明
-- 同步範圍:前 7 天 ~ 後 60 天的預約;已取消的預約會自動移除對應班次
+- 同步範圍:前 7 天 ~ 後 60 天的預約;已取消的預約會標示取消並保留歷史
 - 主題對照:用預約服務名稱開頭比對系統主題名(詭廁/詭獄/詭店…)
 - 人員對照:用 SimplyBook 服務供應者名字比對員工姓名;別名(如「穆穆」=宏穆)可在員工資料的 aliases 欄位設定
 - 後台**手動改過**的 SimplyBook 班次(換人),之後同步不會覆蓋
