@@ -42,7 +42,7 @@ Deno.serve(async (req) => {
   const reminderHour = Math.min(22, Math.max(0, Number(cfg.settings?.reminderHour ?? 20)));
   if (localHour >= reminderHour && localHour <= 22) {
     const grouped = new Map<string, any[]>();
-    for (const shift of shifts.filter((s: any) => s.date === tomorrowDate && s.status !== "cancelled")) {
+    for (const shift of shifts.filter((s: any) => s.date === tomorrowDate && !String(s.status ?? "active").startsWith("cancelled"))) {
       for (const assignment of shift.assignments ?? []) {
         if (!assignment.empId) continue;
         grouped.set(String(assignment.empId), [...(grouped.get(String(assignment.empId)) ?? []), { ...shift, role: assignment.role }]);
@@ -55,12 +55,15 @@ Deno.serve(async (req) => {
       const lines = jobs.map((s) => {
         const store = (cfg.stores ?? []).find((x: any) => x.id === s.storeId)?.name ?? "";
         const theme = s.kind === "theme" ? (cfg.themes ?? []).find((x: any) => x.id === s.themeId)?.name :
-          s.kind === "counter" ? "櫃台" : s.kind === "practice" ? "練習場" : s.kind === "cleaning" ? "每週大清潔" : "駐店";
+          s.kind === "counter" ? "櫃台" : s.kind === "practice" ? "訓練場" : s.kind === "cleaning" ? "每週大清潔" : "駐店";
         return `${s.start}–${s.end} ${store} ${theme ?? ""} ${s.role ?? ""}`.trim();
       });
+      const employee = (cfg.employees ?? []).find((item: any) => item.id === empId);
+      const { data: lineAccount } = await sb.from("line_accounts").select("role").eq("emp_id", empId).eq("active", true).maybeSingle();
+      const canRequestChange = employee?.type === "full" || lineAccount?.role === "manager";
       await queueNotification(sb, empId, "shift_reminder", {
         title: `明日 ${tomorrowDate} 上班提醒`, text: lines.join("\n"),
-        links: portal ? [{ label: "查看我的班表", uri: link("home") }, { label: "需要換班／讓班", uri: link("requests") }] : [],
+        links: portal ? [{ label: "查看我的班表", uri: link("home") }, ...(canRequestChange ? [{ label: "需要換班／讓班", uri: link("requests") }] : [])] : [],
       }, false, `shift-reminder:${tomorrowDate}:${empId}`);
     }
   }

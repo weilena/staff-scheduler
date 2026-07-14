@@ -5,7 +5,7 @@ const dateText = (d: Date) => d.toISOString().slice(0, 10);
 const MANUAL_WORK_ITEMS: Record<string, string> = {
   grandma: "外婆", haunted_shop: "詭店", haunted_prison: "詭獄", shit_power: "屎力全開",
   haunted_toilet: "詭廁", escapee: "越獄者", orphan: "孤兒怨", mr_mystery_counter: "謎先生櫃台",
-  burgundy_counter: "桌遊大忠店櫃台", weekly_cleaning: "每週大清潔", practice: "練習場", floor_support: "場控／現場支援",
+  burgundy_counter: "桌遊大忠店櫃台", weekly_cleaning: "每週大清潔", practice: "訓練場", floor_support: "場控／現場支援",
 };
 
 Deno.serve(async (req) => {
@@ -89,35 +89,35 @@ Deno.serve(async (req) => {
     }
 
     if (action === "schedule-practice") {
-      if (account.role !== "manager" && !(employee.type === "full" && employee.canSchedulePractice)) return json({ error: "你沒有安排新人練習場的權限" }, 403);
+      if (account.role !== "manager" && !(employee.type === "full" && employee.canSchedulePractice)) return json({ error: "你沒有安排新人訓練場的權限" }, 403);
       const date = String(input.date ?? ""), start = String(input.start ?? ""), end = String(input.end ?? ""), storeId = String(input.storeId ?? "");
       const traineeId = String(input.traineeId ?? ""), companionId = String(input.companionId ?? ""), note = String(input.note ?? "").trim();
       const timeOk = (v: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !timeOk(start) || !timeOk(end) || toMinutes(end) <= toMinutes(start)) return json({ error: "請填寫正確的練習日期與起訖時間" }, 400);
-      if (!(cfg.stores ?? []).some((s: any) => s.id === storeId)) return json({ error: "練習場地錯誤" }, 400);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !timeOk(start) || !timeOk(end) || toMinutes(end) <= toMinutes(start)) return json({ error: "請填寫正確的訓練日期與起訖時間" }, 400);
+      if (!(cfg.stores ?? []).some((s: any) => s.id === storeId)) return json({ error: "訓練場地錯誤" }, 400);
       const trainee = (cfg.employees ?? []).find((e: any) => e.id === traineeId && e.active), companion = (cfg.employees ?? []).find((e: any) => e.id === companionId && e.active);
-      if (!trainee || !companion) return json({ error: "請選擇在職的練習員工與陪練人員" }, 400);
-      if (trainee.id === companion.id) return json({ error: "練習員工與陪練人員不可為同一人" }, 400);
+      if (!trainee || !companion) return json({ error: "請選擇在職的受訓員工與陪練人員" }, 400);
+      if (trainee.id === companion.id) return json({ error: "受訓員工與陪練人員不可為同一人" }, 400);
       const startsAt = new Date(`${date}T${start}:00+08:00`).getTime();
-      if (startsAt <= Date.now()) return json({ error: "練習場開始時間必須晚於現在" }, 409);
+      if (startsAt <= Date.now()) return json({ error: "訓練場開始時間必須晚於現在" }, 409);
       const id = `practice_${crypto.randomUUID()}`, target = { id, date, storeId, kind: "practice", themeId: null, start, end, status: "active", assignments: [] };
-      const traineeErrors = eligibilityErrors(trainee, target, "練習場", shifts, cfg), companionErrors = eligibilityErrors(companion, target, "陪練", shifts, cfg);
+      const traineeErrors = eligibilityErrors(trainee, target, "訓練場", shifts, cfg), companionErrors = eligibilityErrors(companion, target, "陪練", shifts, cfg);
       if (traineeErrors.length || companionErrors.length) return json({ error: [traineeErrors.length ? `${trainee.name}：${traineeErrors.join("、")}` : "", companionErrors.length ? `${companion.name}：${companionErrors.join("、")}` : ""].filter(Boolean).join("；") }, 409);
-      const shift = { ...target, note, assignments: [{ role: "練習場", empId: trainee.id }, { role: "陪練", empId: companion.id }],
+      const shift = { ...target, note, assignments: [{ role: "訓練場", empId: trainee.id }, { role: "陪練", empId: companion.id }],
         createdBy: employee.id, createdVia: "line_practice_scheduler" };
       const { error } = await sb.from("shifts").insert({ id, date, source: "manual", data: shift });
       if (error) throw error;
       const label = `${date} ${start}–${end} ${(cfg.stores ?? []).find((s: any) => s.id === storeId)?.name ?? ""}`;
-      await queueNotification(sb, trainee.id, "practice_assigned", { title: "新人練習場安排", text: `${label}，陪練：${companion.name}。請至 LINE 班表確認並依規定上下班打卡。` }, true, `practice:${id}:trainee`);
-      await queueNotification(sb, companion.id, "practice_companion", { title: "陪練工作安排", text: `${label}，練習員工：${trainee.name}。請至 LINE 班表確認並依規定上下班打卡。` }, true, `practice:${id}:companion`);
+      await queueNotification(sb, trainee.id, "practice_assigned", { title: "新人訓練場安排", text: `${label}，陪練：${companion.name}。請至 LINE 班表確認並依規定上下班打卡。` }, true, `practice:${id}:trainee`);
+      await queueNotification(sb, companion.id, "practice_companion", { title: "陪練工作安排", text: `${label}，受訓員工：${trainee.name}。請至 LINE 班表確認並依規定上下班打卡。` }, true, `practice:${id}:companion`);
       const informed = new Set([trainee.id, companion.id, employee.id]);
       const { data: managers } = await sb.from("line_accounts").select("emp_id").eq("role", "manager").eq("active", true);
       for (const manager of managers ?? []) if (!informed.has(manager.emp_id)) await queueNotification(sb, manager.emp_id, "practice_scheduled_manager", {
-        title: "練習場已安排", text: `${employee.name}安排 ${label}：${trainee.name} 練習，由 ${companion.name} 陪練。`,
+        title: "訓練場已安排", text: `${employee.name}安排 ${label}：${trainee.name} 受訓，由 ${companion.name} 陪練。`,
       }, false, `practice:${id}:manager:${manager.emp_id}`);
       await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: "schedule_practice", target_type: "shift", target_id: id,
         details: { traineeId: trainee.id, companionId: companion.id, date, start, end, storeId } });
-      return json({ ok: true, message: "練習場已建立，練習員工、陪練人員與管理員都會收到資訊" });
+      return json({ ok: true, message: "訓練場已建立，受訓員工、陪練人員與管理員都會收到資訊" });
     }
 
     if (action === "session-report") {
@@ -166,13 +166,13 @@ Deno.serve(async (req) => {
           workItem = { source: "scheduled", attendance_mode: npcOnly ? "session_checkin" : "clock_range", labels: selectedShifts.map((s: any) => {
             const theme = (cfg.themes ?? []).find((t: any) => t.id === s.themeId)?.name;
             const label = s.kind === "theme" ? theme : s.kind === "counter" ? (s.storeId === "ms" ? "謎先生櫃台" : "桌遊大忠店櫃台") :
-              s.kind === "cleaning" ? "每週大清潔" : s.kind === "practice" ? "練習場" : s.kind === "floor" ? "場控／現場支援" : "其他工作";
+              s.kind === "cleaning" ? "每週大清潔" : s.kind === "practice" ? "訓練場" : s.kind === "floor" ? "場控／現場支援" : "其他工作";
             const role = (s.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "";
             return `${s.start}–${s.end} ${label}${role ? `（${role}）` : ""}`;
           }) };
         } else {
           const code = String(input.workItemCode ?? "");
-          if (!MANUAL_WORK_ITEMS[code]) return json({ error: "請先選擇今天要執行的主題、櫃台或練習場。" }, 400);
+          if (!MANUAL_WORK_ITEMS[code]) return json({ error: "請先選擇今天要執行的主題、櫃台或訓練場。" }, 400);
           workItem = { source: "temporary_support", code, labels: [MANUAL_WORK_ITEMS[code]] };
           verification = "line_location_unassigned";
         }

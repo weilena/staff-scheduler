@@ -164,7 +164,7 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
           <option value="counter">櫃台班</option>
           <option value="floor">駐店場控班</option>
           <option value="cleaning">每周大清潔</option>
-          <option value="practice">練習場(時數依打卡之星)</option>
+          <option value="practice">訓練場（依實際打卡時數）</option>
         </select>
       </div>
     </div>
@@ -241,7 +241,7 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
       <div class="field grow"><label>離職日(最後工作日)</label><input type="date" id="efEndDate"></div>
     </div>
     <label class="cklab" style="margin:0"><input type="checkbox" id="efActive" checked> 在職中(停用後不出現在排班與打卡)</label>
-    <label class="cklab" style="margin-top:10px"><input type="checkbox" id="efPracticeScheduler"> 授權安排新人練習場（限需要負責人資安排的正職）</label>
+    <label class="cklab" style="margin-top:10px"><input type="checkbox" id="efPracticeScheduler"> 授權安排新人訓練場（限需要負責人資安排的正職）</label>
   </div>
   <div class="dlg-f">
     <button class="btn red" id="efDelete" onclick="deleteEmp()">刪除</button>
@@ -306,7 +306,10 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
 </div>
 <script>
 /* ============ 資料 ============ */
-const ROLES=['場控','NPC','櫃台','練習場','陪練'];
+const ROLES=['場控','NPC','櫃台','訓練場','陪練'];
+const ADMIN_WORK_ITEMS={grandma:'外婆',haunted_shop:'詭店',haunted_prison:'詭獄',shit_power:'屎力全開',haunted_toilet:'詭廁',escapee:'越獄者',orphan:'孤兒怨',mr_mystery_counter:'謎先生櫃台',burgundy_counter:'桌遊大忠店櫃台',weekly_cleaning:'每週大清潔',practice:'訓練場',floor_support:'場控／現場支援'};
+function adminWorkOptions(){return '<option value="">— 選擇本次工作 —</option>'+Object.entries(ADMIN_WORK_ITEMS).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}
+function adminWorkItem(code){const label=ADMIN_WORK_ITEMS[code];return label?{source:'admin_correction',code,label,labels:[label]}:null}
 const WD=['日','一','二','三','四','五','六'];
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
 function defaultAvail(){const a={};for(let i=0;i<7;i++)a[i]={on:true,start:'09:00',end:'22:30'};return a}
@@ -375,6 +378,14 @@ async function afterLogin(){
     sessionCheckins:(ciRes.data||[]).map(function(x){return{id:x.id,empId:x.emp_id,shiftId:x.shift_id,checkedInAt:x.checked_in_at,worksiteId:x.worksite_id,verification:x.verification,source:x.source,note:x.note||''}}),
     shiftConfirmations:(cfRes.data||[]).map(function(x){return{shiftId:x.shift_id,empId:x.emp_id,status:x.status,confirmedAt:x.confirmed_at}})
   });
+  // 舊資料仍可能使用「練習場」角色名稱；載入時改為「訓練場」並回存，
+  // 保留原本 kind=practice 識別碼，避免影響既有打卡與薪資關聯。
+  const legacyTraining=S.shifts.filter(function(sh){
+    let changed=false;(sh.assignments||[]).forEach(function(a){if(a.role==='練習場'){a.role='訓練場';changed=true}});return changed;
+  });
+  if(legacyTraining.length)setTimeout(function(){
+    sbc.from('shifts').upsert(legacyTraining.map(function(sh){return{id:sh.id,date:sh.date,source:String(sh.id).startsWith('sb_')?'simplybook':'manual',data:sh}}));
+  },0);
   if(!S.settings)S.settings={prepMin:10,travelMin:12};
   if(S.settings.npcMaxChain==null)S.settings.npcMaxChain=2;
   if(S.settings.npcRestMin==null)S.settings.npcRestMin=30;
@@ -686,7 +697,7 @@ function shiftLabel(sh){
   if(sh.kind==='theme'){const t=theme(sh.themeId);return t?t.name:'(主題已刪)'}
   if(sh.kind==='floor')return '駐店場控';
   if(sh.kind==='cleaning')return '每周大清潔';
-  if(sh.kind==='practice')return '練習場';
+  if(sh.kind==='practice')return '訓練場';
   if(sh.kind==='counter')return sh.storeId==='ms'?'謎先生櫃台':sh.storeId==='dz'?'桌遊大忠店櫃台':'櫃台班';
   return '其他班別';
 }
@@ -898,7 +909,7 @@ function vDaySessions(){
       <td><div class="slotrow">${slotCells(g.base)}${g.surge?`<span style="align-self:center;color:#94a3b8;font-size:12px;margin:0 2px">｜加場</span>${slotCells(g.surge)}`:''}</div></td></tr>`).join('')}
     </table>`;
   }).join('')}
-  ${extra.length?`<h3 style="margin:14px 0 8px">其他工作（清潔／練習／駐店）</h3>
+  ${extra.length?`<h3 style="margin:14px 0 8px">其他工作（清潔／訓練／駐店）</h3>
     <table><tr><th>時間</th><th>店別</th><th>內容</th><th>人員</th></tr>
     ${extra.map(sh=>`<tr class="${isCx(sh)?'cancelled':''}${bulkClass(sh)}" onclick="${shiftAction(sh)}" style="cursor:pointer">
       <td>${sh.start}–${sh.end}</td><td>${esc(store(sh.storeId)?.name||'')}</td><td>${esc(shiftLabel(sh))}</td>
@@ -925,7 +936,7 @@ async function copyManualWeekToNext(){
   const days=weekDates(weekAnchor),nextDays=days.map(ds=>{const d=new Date(ds+'T00:00:00');d.setDate(d.getDate()+7);return fmtDate(d)});
   const source=S.shifts.filter(sh=>days.includes(sh.date)&&!isCx(sh)&&!String(sh.id).startsWith('sb_'));
   if(!source.length)return alert('本週沒有可複製的人工班次。SimplyBook 場次不會由這裡複製。');
-  if(!confirm(`將本週 ${source.length} 筆人工班次複製到下週？\n\n包含櫃台、清潔、練習場、駐店及人工建立的班次；不包含 SimplyBook 同步場次。`))return;
+  if(!confirm(`將本週 ${source.length} 筆人工班次複製到下週？\n\n包含櫃台、清潔、訓練場、駐店及人工建立的班次；不包含 SimplyBook 同步場次。`))return;
   let added=0;
   for(const sh of source){
     const date=nextDays[days.indexOf(sh.date)],exists=S.shifts.some(x=>x.date===date&&x.storeId===sh.storeId&&x.kind===sh.kind&&x.themeId===sh.themeId&&x.start===sh.start&&x.end===sh.end);
@@ -1089,13 +1100,13 @@ function defaultSlots(){
     const t=theme(document.getElementById('sfTheme').value);
     for(let i=0;i<(t?t.needGM:1);i++)dlgSlotsArr.push({role:'場控',empId:''});
     for(let i=0;i<(t?t.needNPC:0);i++)dlgSlotsArr.push({role:'NPC',empId:''});
-  }else if(kind==='practice')dlgSlotsArr.push({role:'練習場',empId:''},{role:'陪練',empId:''});
+  }else if(kind==='practice')dlgSlotsArr.push({role:'訓練場',empId:''},{role:'陪練',empId:''});
   else if(kind==='floor'||kind==='cleaning')dlgSlotsArr.push({role:'場控',empId:''});
   else dlgSlotsArr.push({role:'櫃台',empId:''});
 }
 function addSlot(){
   const kind=document.getElementById('sfKind').value;
-  dlgSlotsArr.push({role:kind==='counter'?'櫃台':kind==='practice'?'練習場':'場控',empId:''});
+  dlgSlotsArr.push({role:kind==='counter'?'櫃台':kind==='practice'?'訓練場':'場控',empId:''});
   renderSlots();
 }
 function rmSlot(i){dlgSlotsArr.splice(i,1);renderSlots()}
@@ -1291,6 +1302,7 @@ function vPunch(){
       ${sel?`<span class="big-status">${esc(sel.name)}:目前 <span class="pill ${onDuty?'in':'out'}">${onDuty?'上班中(自 '+lp.ts.slice(11,16)+')':'未上班'}</span></span>`:''}
     </div>
     ${sel?`<div class="punch-btns">
+      ${!onDuty||!lp?.workItem?`<select id="adminPunchWork" style="min-width:190px">${adminWorkOptions()}</select>`:''}
       <button class="btn green" ${onDuty?'disabled style="opacity:.4"':''} onclick="doPunch('in')">上班打卡</button>
       <button class="btn red" ${!onDuty?'disabled style="opacity:.4"':''} onclick="doPunch('out')">下班打卡</button>
     </div>`:'<p class="muted" style="margin-top:8px">請先選擇員工</p>'}
@@ -1318,6 +1330,7 @@ function vPunch(){
       <input type="date" id="mpDate" value="${td}">
       <input type="time" id="mpTime">
       <select id="mpType"><option value="in">上班</option><option value="out">下班</option></select>
+      <select id="mpWork">${adminWorkOptions()}</select>
       <input id="mpReason" placeholder="補登原因（必填）" style="min-width:180px">
       <button class="btn sm" onclick="manualPunch()">管理員補登</button>
     </div>
@@ -1331,17 +1344,19 @@ function localISO(){
 }
 async function doPunch(type){
   const reason=prompt(`管理員代為${type==='in'?'上班':'下班'}打卡，請填寫原因：`);if(!reason||reason.trim().length<3)return;
+  const open=lastPunch(punchEmp),workItem=type==='in'?adminWorkItem(document.getElementById('adminPunchWork')?.value):(open?.workItem||adminWorkItem(document.getElementById('adminPunchWork')?.value));
+  if(!workItem)return alert('請先選擇本次工作的主題、櫃台、訓練場或現場支援。');
   const p={id:uid(),empId:punchEmp,type,ts:localISO(),source:'admin_correction',verification:'manager_entered',reviewState:'corrected'};
-  const r=await sbc.from('punches').insert({id:p.id,emp_id:p.empId,ts:p.ts,type:p.type,source:p.source,verification:p.verification,review_state:p.reviewState,raw:{reason:reason.trim()}});
+  const r=await sbc.from('punches').insert({id:p.id,emp_id:p.empId,ts:p.ts,type:p.type,source:p.source,verification:p.verification,review_state:p.reviewState,raw:{reason:reason.trim(),work_item:workItem}});
   if(r.error)return alert(r.error.message);
   await sbc.from('audit_log').insert({actor_type:'supabase_admin',action:'manager_punch',target_type:'punch',target_id:p.id,details:{reason:reason.trim()}});
   await sbc.rpc('recalculate_attendance_day',{p_emp:p.empId,p_date:p.ts.slice(0,10)});await afterLogin();tab='punch';renderNav();render();
 }
 function manualPunch(){
-  const e=document.getElementById('mpEmp').value,d=document.getElementById('mpDate').value,t=document.getElementById('mpTime').value,reason=document.getElementById('mpReason').value.trim();
-  if(!e||!d||!t||reason.length<3)return alert('請填員工、日期、時間及補登原因');
+  const e=document.getElementById('mpEmp').value,d=document.getElementById('mpDate').value,t=document.getElementById('mpTime').value,reason=document.getElementById('mpReason').value.trim(),workItem=adminWorkItem(document.getElementById('mpWork').value);
+  if(!e||!d||!t||reason.length<3||!workItem)return alert('請填員工、日期、時間、工作項目及補登原因');
   const p={id:uid(),empId:e,type:document.getElementById('mpType').value,ts:d+'T'+t+':00',source:'admin_correction',verification:'manager_entered',reviewState:'corrected'};
-  sbc.from('punches').insert({id:p.id,emp_id:e,type:p.type,ts:p.ts,source:p.source,verification:p.verification,review_state:p.reviewState,raw:{reason}}).then(async r=>{
+  sbc.from('punches').insert({id:p.id,emp_id:e,type:p.type,ts:p.ts,source:p.source,verification:p.verification,review_state:p.reviewState,raw:{reason,work_item:workItem}}).then(async r=>{
     if(r.error)return alert(r.error.message);await sbc.from('audit_log').insert({actor_type:'supabase_admin',action:'manual_punch',target_type:'punch',target_id:p.id,details:{reason}});await sbc.rpc('recalculate_attendance_day',{p_emp:e,p_date:d});await afterLogin();tab='punch';renderNav();render();
   });
 }
@@ -1369,7 +1384,11 @@ function pairPunches(empId,month){
   for(const p of ps){
     if(p.type==='in'){if(open)rows.push({date:open.ts.slice(0,10),in:open.ts.slice(11,16),out:null,min:0,inPunch:open,outPunch:null});open=p}
     else{
-      if(open){rows.push({date:open.ts.slice(0,10),in:open.ts.slice(11,16),out:p.ts.slice(11,16),
+      if(open&&open.ts.slice(0,10)!==p.ts.slice(0,10)){
+        rows.push({date:open.ts.slice(0,10),in:open.ts.slice(11,16),out:null,min:0,inPunch:open,outPunch:null});
+        rows.push({date:p.ts.slice(0,10),in:null,out:p.ts.slice(11,16),min:0,inPunch:null,outPunch:p});open=null;
+      }
+      else if(open){rows.push({date:open.ts.slice(0,10),in:open.ts.slice(11,16),out:p.ts.slice(11,16),
         min:Math.max(0,(new Date(p.ts)-new Date(open.ts))/60000),inPunch:open,outPunch:p});open=null}
       else rows.push({date:p.ts.slice(0,10),in:null,out:p.ts.slice(11,16),min:0,inPunch:null,outPunch:p});
     }
@@ -1454,7 +1473,7 @@ function sessionStats(empId,month){
   const extraPay=e?.type==='full'?Math.round(extra*Number(e.extraSessionRate||S.settings.fullExtraSessionRate||0)):0;
   return{pay:pay+extraPay,gm,npc,total,extra,extraPay,baseSessions,detail};
 }
-/* 櫃台/駐店班時數(時薪計;不含練習場)*/
+/* 櫃台/駐店班時數(時薪計;不含訓練場)*/
 function hourlyMinutes(empId,month){
   let m=0;
   for(const sh of S.shifts){
@@ -1489,7 +1508,7 @@ function approvedOvertimeMinutes(empId,month){
   return (LINE.overtime||[]).filter(x=>x.emp_id===empId&&String(x.work_date).slice(0,7)===month&&x.status==='approved')
     .reduce((n,x)=>n+Math.max(0,Number(x.approved_minutes)||0),0);
 }
-/* 練習場時數(單獨統計,不自動計薪)*/
+/* 訓練場時數(單獨統計,不自動計薪)*/
 function practiceMinutes(empId,month){
   let m=0;
   for(const sh of S.shifts){
@@ -1508,7 +1527,7 @@ function empSessions(empId,month){
     if(!a)continue;
     const t=sh.kind==='theme'?theme(sh.themeId):null;
     let fee=0;
-    if(!isCx(sh)&&t){fee=themeSessionRate(t,a.role,sh.date);}
+    if(!isCx(sh)&&t&&e?.type==='part'&&a.role==='NPC'){fee=themeSessionRate(t,a.role,sh.date);}
     rows.push({date:sh.date,start:sh.start,end:sh.end,
       kind:sh.kind,label:shiftLabel(sh),role:a.role,
       store:store(sh.storeId)?.name||'',fee,cancelled:isCx(sh),cx:cxLabel(sh)});
@@ -1535,10 +1554,10 @@ function showEmpDetail(empId){
     `<div class="row" style="gap:16px;flex-wrap:wrap">
        <b>場控 ${gm.length} 場 = $${gmFee.toLocaleString()}</b>
        <b>NPC ${npc.length} 場 = $${npcFee.toLocaleString()}</b>
-       <b>櫃台/駐店/練習 ${other.length} 筆</b>
+       <b>櫃台/駐店/訓練 ${other.length} 筆</b>
        ${cx.length?`<span class="warn">取消 ${cx.length} 筆(不計費)</span>`:''}
      </div>`
-    +tbl('場控場次',gm,true)+tbl('NPC 場次',npc,true)+tbl('櫃台/駐店/練習場',other,false)+tbl('已取消',cx,true);
+    +tbl('場控場次',gm,true)+tbl('NPC 場次',npc,true)+tbl('櫃台/駐店/訓練場',other,false)+tbl('已取消',cx,true);
   dlgDetail.showModal();
 }
 function exportEmpDetailCSV(){
@@ -1585,20 +1604,21 @@ function vPay(){
         <td class="num"><b>${total.toLocaleString()}</b></td></tr>`).join('')}
       <tr><td colspan="12" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
     </table>
-    <p class="muted" style="margin-top:8px">一般日包含平日與週六日；只有標示名稱的國定假日採固定日費率。兼職只有 NPC 論場，兼職場控／櫃台／清潔按個人時薪；練習場時薪 $${S.settings.practiceHourlyRate||196}、駐店場控時薪 $${S.settings.floorHourlyRate||200}。正職以月薪含 ${S.settings.fullBaseSessions??40} 場，超過場次費率可依員工設定；加班僅採管理員核准分鐘，前2小時與後續時數分開計算。</p>
+    <p class="muted" style="margin-top:8px">一般日包含平日與週六日；只有標示名稱的國定假日採固定日費率。兼職只有 NPC 論場，兼職場控／櫃台／清潔按個人時薪；訓練場時薪 $${S.settings.practiceHourlyRate||196}、駐店場控時薪 $${S.settings.floorHourlyRate||200}。正職以月薪含 ${S.settings.fullBaseSessions??40} 場，超過場次費率可依員工設定；加班僅採管理員核准分鐘，前2小時與後續時數分開計算。</p>
     ${rows.map(r=>payrollDayGrid(r.e,payMonth)).join('')}
   </div>`;
 }
 function exportPayCSV(){
-  const actives=S.employees.filter(e=>e.active);
-  let csv='﻿員工,身分,場控場次,NPC場次,場次費,櫃台駐店時數,時薪費,月薪,打卡時數,合計,場次明細\n';
+  const actives=S.employees.filter(e=>employedInMonth(e,payMonth));
+  let csv='﻿員工,身分,場控場次,NPC場次,正職總場,超過40場,論場費,核准時薪時數,時薪費,月薪,打卡時數,核准加班時數,加班費,合計,場次明細\n';
   for(const e of actives){
     const ss=sessionStats(e.id,payMonth);
     const hourly=approvedHourlyBreakdown(e,payMonth),hm=hourly.minutes,hp=hourly.pay;
     const base=e.type==='full'?(e.monthlySalary||0):0;
     const am=actualMinutes(e.id,payMonth);
+    const ot=e.type==='full'?approvedOvertimePay(e,payMonth):{minutes:0,pay:0};
     const detail=Object.entries(ss.detail).map(([k,n])=>k+'×'+n).join('、');
-    csv+=`${e.name},${e.type==='part'?'兼職':'正職'},${ss.gm},${ss.npc},${ss.pay},${fmtHr(hm)},${hp},${base},${fmtHr(am)},${ss.pay+hp+base},"${detail}"\n`;
+    csv+=`${e.name},${e.type==='part'?'兼職':'正職'},${ss.gm},${ss.npc},${e.type==='full'?ss.total:''},${e.type==='full'?ss.extra:''},${ss.pay},${fmtHr(hm)},${hp},${base},${fmtHr(am)},${fmtHr(ot.minutes)},${ot.pay},${ss.pay+hp+base+ot.pay},"${detail}"\n`;
   }
   dl(csv,`薪資_${payMonth}.csv`,'text/csv');
 }
@@ -1615,7 +1635,7 @@ function vEmps(){
   return `<div class="card">
     <div class="row" style="margin-bottom:10px"><h2 class="grow">員工(${S.employees.length})</h2>
     <button class="btn" onclick="openEmp(null)">＋ 新增員工</button></div>
-    ${S.employees.length?`<table><tr><th>姓名</th><th>身分</th><th>SimplyBook 顏色</th><th class="num">時薪</th><th class="num">月薪</th><th>會帶的主題</th><th>櫃台</th><th>練習安排</th><th>狀態</th><th></th></tr>
+    ${S.employees.length?`<table><tr><th>姓名</th><th>身分</th><th>SimplyBook 顏色</th><th class="num">時薪</th><th class="num">月薪</th><th>會帶的主題</th><th>櫃台</th><th>訓練安排</th><th>狀態</th><th></th></tr>
     ${S.employees.map(e=>`<tr style="${e.active?'':'opacity:.5'}">
       <td>${esc(e.name)}</td><td>${e.type==='part'?'兼職':'正職'}</td>
       <td>${employeeColor(e)?`<span class="tag" style="background:${employeeColor(e)};color:${textOn(employeeColor(e))};border-color:transparent">${employeeColor(e)}</span>`:'<span class="muted">未設定</span>'}</td>
@@ -1672,7 +1692,7 @@ function saveEmp(){
     canSchedulePractice:document.getElementById('efPracticeScheduler').checked,
     simplybookColor
   };
-  if(data.canSchedulePractice&&data.type!=='full')return alert('安排新人練習場的權限只能授予正職員工');
+  if(data.canSchedulePractice&&data.type!=='full')return alert('安排新人訓練場的權限只能授予正職員工');
   if(data.startDate&&data.endDate&&data.endDate<data.startDate)return alert('離職日不可早於到職日');
   if(editEmpId){Object.assign(emp(editEmpId),data)}
   else S.employees.push({id:uid(),skills:{},counters:[],avail:defaultAvail(),...data});
@@ -2003,7 +2023,7 @@ function vLineAdmin(){
   const completedTrades=LINE.requests.filter(r=>r.status==='completed'&&(r.request_type==='give'||r.request_type==='swap'));
   const pendingAtt=LINE.attendance.filter(r=>r.status==='pending');
   const pendingDaily=(LINE.daily||[]).filter(r=>r.status==='pending'||r.status==='anomaly').sort((a,b)=>b.work_date.localeCompare(a.work_date));
-  const pendingOt=LINE.overtime.filter(r=>r.status==='pending'||r.status==='anomaly');
+  const pendingOt=LINE.overtime.filter(r=>(r.status==='pending'||r.status==='anomaly')&&emp(r.emp_id)?.type==='full');
   return `<div class="card"><div class="row"><h2 class="grow">LINE 員工系統</h2><button class="btn gray sm" onclick="refreshLineAdmin()">重新整理</button></div>
     <div class="row" style="margin-top:10px"><span class="pill ${usage>=160?'out':'in'}">本月主動訊息 ${usage}/200</span><span class="muted">160則後只發緊急通知，保留40則。</span></div>
     <div class="row" style="margin-top:10px"><label style="margin:0">前一日上班提醒時間 <select id="reminderHour" style="width:auto">${Array.from({length:10},(_,i)=>i+13).map(h=>`<option value="${h}" ${Number(S.settings.reminderHour)===h?'selected':''}>${String(h).padStart(2,'0')}:00</option>`).join('')}</select></label><button class="btn sm" onclick="saveReminderHour()">儲存</button><span class="muted">同一員工隔日多個班次合併成一則通知。</span></div>
@@ -2066,11 +2086,15 @@ async function reviewAttendance(id,status){const r=await sbc.rpc('review_attenda
 async function reviewDaily(empId,date,status,inputId){const payable=status==='approved'?Math.max(0,Number(document.getElementById(inputId).value)||0):0,note=prompt(status==='approved'?'核准備註（可留空）':'不計薪原因（建議填寫）','')||'';const r=await sbc.rpc('review_attendance_day',{p_emp:empId,p_date:date,p_status:status,p_payable:payable,p_note:note});if(r.error||!r.data?.ok)alert(r.error?.message||r.data?.msg||'審核失敗');else{await refreshLineAdmin();render()}}
 async function revertTrade(id){if(!confirm('確定撤銷這次換班並恢復原班表？兩位員工都會收到通知。'))return;const r=await sbc.rpc('revert_shift_request',{p_request:id});if(r.error||!r.data?.ok)alert(r.error?.message||r.data?.msg||'撤銷失敗');else{await afterLogin();tab='line';renderNav();render()}}
 async function reviewOvertime(id,status){const approved=status==='approved'?Math.max(0,Number(document.getElementById('ot_'+id).value)||0):0,u=await sbc.auth.getUser(),reviewed_by=u.data?.user?.id||null;const r=await sbc.from('overtime_reviews').update({status,approved_minutes:approved,reviewed_by,reviewed_at:new Date().toISOString()}).eq('id',id);if(r.error)alert(r.error.message);else await refreshLineAdmin()}
+function unionShiftMinutes(shifts){
+  const ranges=shifts.map(s=>[toMin(s.start),toMin(s.end)]).filter(x=>Number.isFinite(x[0])&&Number.isFinite(x[1])&&x[1]>x[0]).sort((a,b)=>a[0]-b[0]);
+  let total=0,open=null;for(const range of ranges){if(!open)open=[...range];else if(range[0]<=open[1])open[1]=Math.max(open[1],range[1]);else{total+=open[1]-open[0];open=[...range]}}return total+(open?open[1]-open[0]:0);
+}
 async function calculateOvertime(){
   const month=monthStr(),rows=[];
-  for(const e of S.employees.filter(x=>employedInMonth(x,month))){
-    const days=[...new Set(S.punches.filter(p=>p.empId===e.id&&p.ts.slice(0,7)===month).map(p=>p.ts.slice(0,10)))];
-    for(const d of days){const ps=S.punches.filter(p=>p.empId===e.id&&p.ts.slice(0,10)===d).sort((a,b)=>a.ts.localeCompare(b.ts));let actual=0,open=null,anomaly=false;for(const p of ps){if(p.type==='in'){if(open)anomaly=true;open=p}else if(open){actual+=Math.max(0,toMin(p.ts.slice(11,16))-toMin(open.ts.slice(11,16)));open=null}else anomaly=true}if(open)anomaly=true;const scheduled=S.shifts.filter(s=>s.date===d&&s.status!=='cancelled'&&s.assignments.some(a=>a.empId===e.id)).reduce((n,s)=>n+Math.max(0,toMin(s.end)-toMin(s.start)),0);const threshold=e.type==='full'?9*60:8*60,candidate=Math.max(0,actual-threshold);if(candidate||anomaly)rows.push({emp_id:e.id,work_date:d,scheduled_minutes:scheduled,actual_minutes:actual,candidate_minutes:candidate,status:anomaly?'anomaly':'pending'})}
+  for(const e of S.employees.filter(x=>x.type==='full'&&employedInMonth(x,month))){
+    const paired=pairPunches(e.id,month),days=[...new Set(paired.map(p=>p.date))];
+    for(const d of days){const segments=paired.filter(p=>p.date===d),actual=segments.reduce((n,p)=>n+p.min,0),anomaly=segments.some(p=>!p.in||!p.out),scheduled=unionShiftMinutes(S.shifts.filter(s=>s.date===d&&!isCx(s)&&s.assignments.some(a=>a.empId===e.id))),candidate=Math.max(0,actual-9*60);if(candidate||anomaly)rows.push({emp_id:e.id,work_date:d,scheduled_minutes:scheduled,actual_minutes:actual,candidate_minutes:candidate,status:anomaly?'anomaly':'pending'})}
   }
   if(rows.length){const r=await sbc.from('overtime_reviews').upsert(rows,{onConflict:'emp_id,work_date'});if(r.error)return alert(r.error.message)}await refreshLineAdmin();
 }

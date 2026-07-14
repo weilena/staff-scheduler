@@ -114,7 +114,11 @@ export async function getContext(sb: any) {
   ]);
   if (configError) throw configError;
   if (shiftError) throw shiftError;
-  return { cfg: config.data, shifts: (rows ?? []).map((r: any) => r.data) };
+  const shifts = (rows ?? []).map((r: any) => r.data);
+  for (const shift of shifts) for (const assignment of shift.assignments ?? []) {
+    if (assignment.role === "練習場") assignment.role = "訓練場";
+  }
+  return { cfg: config.data, shifts };
 }
 
 export async function queueNotification(sb: any, employeeId: string, category: string, payload: any, critical = false, key?: string) {
