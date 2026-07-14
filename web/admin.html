@@ -285,7 +285,7 @@ function seedThemes(){
 }
 /* ============ 雲端儲存層(Supabase)============ */
 let S=null,sbc=null;
-let LINE={accounts:[],worksites:[],requests:[],responses:[],attendance:[],overtime:[],usage:[],outbox:[]};
+let LINE={accounts:[],worksites:[],requests:[],responses:[],guestReports:[],attendance:[],overtime:[],usage:[],outbox:[]};
 function isDemo(){return (window.CFG&&CFG.DEMO)||/[?&]demo=1/.test(location.search)}
 function seedConfig(){
   return {
@@ -365,10 +365,15 @@ async function afterLogin(){
   renderNav();render();
 }
 async function loadLineAdmin(){
-  if(isDemo()){LINE={accounts:[],worksites:S.stores.map(s=>({id:s.id,name:s.name,radius_m:200,enabled:true})),requests:[],responses:[],attendance:[],daily:[],overtime:[],usage:[],outbox:[]};return}
+  if(isDemo()){LINE={accounts:[],worksites:S.stores.map(s=>({id:s.id,name:s.name,radius_m:200,enabled:true})),requests:[],responses:[],guestReports:[],attendance:[],daily:[],overtime:[],usage:[],outbox:[]};return}
   const names=['line_accounts','worksites','shift_requests','shift_request_responses','attendance_requests','attendance_daily','overtime_reviews','message_usage','notification_outbox'];
-  const rs=await Promise.all(names.map(n=>sbc.from(n).select('*')));
-  LINE={accounts:rs[0].data||[],worksites:rs[1].data||[],requests:rs[2].data||[],responses:rs[3].data||[],attendance:rs[4].data||[],daily:rs[5].data||[],overtime:rs[6].data||[],usage:rs[7].data||[],outbox:rs[8].data||[]};
+  const [rs,guests]=await Promise.all([Promise.all(names.map(n=>sbc.from(n).select('*'))),guestAdminApi({action:'list'})]);
+  LINE={accounts:rs[0].data||[],worksites:rs[1].data||[],requests:rs[2].data||[],responses:rs[3].data||[],guestReports:guests.reports||[],attendance:rs[4].data||[],daily:rs[5].data||[],overtime:rs[6].data||[],usage:rs[7].data||[],outbox:rs[8].data||[]};
+}
+async function guestAdminApi(body){
+  const session=await sbc.auth.getSession(),token=session.data?.session?.access_token;if(!token)throw new Error('管理員登入已過期，請重新登入');
+  const r=await fetch(CFG.SUPABASE_URL+'/functions/v1/guest-reports-admin',{method:'POST',headers:{'content-type':'application/json','apikey':CFG.SUPABASE_ANON_KEY,'authorization':'Bearer '+token},body:JSON.stringify(body)}),x=await r.json();
+  if(!r.ok)throw new Error(x.error||'客人回報服務連線失敗');return x;
 }
 let saveTimer=null;
 function save(){
@@ -1765,9 +1770,20 @@ function delAvailX(d){
 
 /* ============ LINE 員工系統 ============ */
 function fmtStatus(s){return({open:'開放中',pending_manager:'待管理員選人',completed:'已完成',cancelled:'已取消',expired:'已截止',pending:'待審核',approved:'已核准',rejected:'已拒絕',anomaly:'異常'}[s]||s)}
+function managerChangeCandidates(r,sh){
+  const slot=(sh?.assignments||[]).find(a=>a.empId===r.requester_emp_id),role=slot?.role||'';
+  return S.employees.filter(e=>e.active&&e.id!==r.requester_emp_id&&employedOn(e,sh.date)).filter(e=>{
+    const warnings=empWarnings(e,sh.date,sh.start,sh.end,sh.storeId,role);
+    if(role==='櫃台'&&!(e.counters||[]).includes(sh.storeId))warnings.push('未具此店櫃台資格');
+    if(sh.kind==='theme'&&(role==='場控'||role==='NPC')&&!(e.skills?.[sh.themeId]||[]).includes(role))warnings.push('未具主題資格');
+    return !warnings.length;
+  });
+}
 function vLineAdmin(){
   const month=monthStr(),usage=LINE.usage.find(x=>x.month===month)?.chargeable_count||0;
-  const pendingReq=LINE.requests.filter(r=>r.status==='pending_manager');
+  const pendingReq=LINE.requests.filter(r=>r.status==='pending_manager'&&r.request_type==='extra');
+  const pendingChanges=LINE.requests.filter(r=>r.status==='pending_manager'&&(r.request_type==='give'||r.request_type==='swap'));
+  const pendingGuests=(LINE.guestReports||[]).filter(r=>r.status==='pending').sort((a,b)=>b.created_at.localeCompare(a.created_at));
   const completedTrades=LINE.requests.filter(r=>r.status==='completed'&&(r.request_type==='give'||r.request_type==='swap'));
   const pendingAtt=LINE.attendance.filter(r=>r.status==='pending');
   const pendingDaily=(LINE.daily||[]).filter(r=>r.status==='pending'||r.status==='anomaly').sort((a,b)=>b.work_date.localeCompare(a.work_date));
@@ -1781,7 +1797,9 @@ function vLineAdmin(){
   <div class="card"><h2>兩間店定位</h2><p class="muted">請在店內用手機地圖確認緯度、經度。半徑建議先設200公尺，測試後再縮小。</p>
     <table><tr><th>店別</th><th>緯度</th><th>經度</th><th>允許半徑</th><th></th></tr>${LINE.worksites.map(w=>`<tr><td>${esc(w.name)}</td><td><input id="lat_${w.id}" value="${w.latitude??''}" placeholder="25.xxxxxx"></td><td><input id="lng_${w.id}" value="${w.longitude??''}" placeholder="121.xxxxxx"></td><td><input id="rad_${w.id}" type="number" value="${w.radius_m||200}" min="20" max="2000" style="width:90px"> 公尺</td><td><button class="btn sm" onclick="saveWorksite('${w.id}')">儲存</button></td></tr>`).join('')}</table></div>
   <div class="card"><h2>加場候選（${pendingReq.length}）</h2>${pendingReq.map(r=>{const sh=byId(S.shifts,r.shift_id);const accepted=LINE.responses.filter(x=>x.request_id===r.id&&x.response==='accept');return `<div style="padding:10px 0;border-bottom:1px solid #e5e7eb"><b>${sh?`${sh.date} ${sh.start} ${esc(shiftLabel(sh))}`:esc(r.shift_id)}</b><br><span class="muted">願意接班：</span>${accepted.map(x=>`<button class="btn sm" style="margin:5px" onclick="selectExtra('${r.id}','${x.emp_id}')">選 ${esc(emp(x.emp_id)?.name||x.emp_id)}</button>`).join('')||'<span class="warn">目前無人</span>'}</div>`}).join('')||'<p class="muted">目前沒有待選加場</p>'}</div>
-  <div class="card"><h2>近期自動換班／讓班</h2>${completedTrades.slice(0,20).map(r=>`<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${r.request_type==='swap'?'互換':'讓班'}・${esc(emp(r.requester_emp_id)?.name||r.requester_emp_id)} → ${esc(emp(r.selected_emp_id)?.name||r.selected_emp_id)}</b><br><span class="muted">${esc(byId(S.shifts,r.shift_id)?.date||'')} ${esc(byId(S.shifts,r.shift_id)?.start||'')}</span></span><button class="btn red sm" onclick="revertTrade('${r.id}')">撤銷並還原</button></div>`).join('')||'<p class="muted">尚無已完成換班</p>'}</div>
+  <div class="card"><h2>正職換班待確認（${pendingChanges.length}）</h2><p class="muted">員工只負責回報；不會自動邀請其他同事。請由管理員選定替補人員或拒絕。</p>${pendingChanges.map(r=>{const sh=byId(S.shifts,r.shift_id),cands=sh?managerChangeCandidates(r,sh):[];return `<div style="padding:10px 0;border-bottom:1px solid #e5e7eb"><b>${esc(emp(r.requester_emp_id)?.name||r.requester_emp_id)}・${sh?`${sh.date} ${sh.start}–${sh.end} ${esc(shiftLabel(sh))}`:esc(r.shift_id)}</b><br><span class="muted">原因：${esc(r.details?.note||'未填')}</span><div class="row" style="margin-top:8px"><select id="change_${r.id}" style="width:auto;min-width:150px"><option value="">選擇替補人員</option>${cands.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select><button class="btn sm" onclick="reviewShiftChange('${r.id}','approved')" ${cands.length?'':'disabled'}>核准換人</button><button class="btn red sm" onclick="reviewShiftChange('${r.id}','rejected')">拒絕</button></div></div>`}).join('')||'<p class="muted">目前沒有待確認換班</p>'}</div>
+  <div class="card"><h2>客人回報待處理（${pendingGuests.length}）</h2><p class="muted">請先回到 SimplyBook 建立／確認預約與訂金，再確認帶場人員，最後在此回覆員工。</p>${pendingGuests.map(r=>{const sh=byId(S.shifts,r.shift_id);return `<div style="padding:10px 0;border-bottom:1px solid #e5e7eb"><b>${r.customer_type==='walk_in'?'現場客人':'預約客人'}・${esc(r.surname)}・${r.party_size}人</b><br><span class="muted">電話：${esc(r.phone)}<br>場次：${sh?`${sh.date} ${sh.start}–${sh.end} ${esc(shiftLabel(sh))}`:esc(r.shift_id)}<br>回報者：${esc(emp(r.emp_id)?.name||r.emp_id)}${r.note?`<br>補充：${esc(r.note)}`:''}</span><label>回覆內容</label><input id="guestReply_${r.id}" placeholder="例如：已建立 SimplyBook，訂金已確認，由庭瑋帶場"><div class="row" style="margin-top:8px"><button class="btn sm" onclick="reviewGuestReport('${r.id}','confirmed')">完成並回覆</button><button class="btn red sm" onclick="reviewGuestReport('${r.id}','rejected')">無法受理</button></div></div>`}).join('')||'<p class="muted">目前沒有待處理客人回報</p>'}</div>
+  <div class="card"><h2>近期管理員換班紀錄</h2>${completedTrades.slice(0,20).map(r=>`<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>換人・${esc(emp(r.requester_emp_id)?.name||r.requester_emp_id)} → ${esc(emp(r.selected_emp_id)?.name||r.selected_emp_id)}</b><br><span class="muted">${esc(byId(S.shifts,r.shift_id)?.date||'')} ${esc(byId(S.shifts,r.shift_id)?.start||'')}</span></span><button class="btn red sm" onclick="revertTrade('${r.id}')">撤銷並還原</button></div>`).join('')||'<p class="muted">尚無已完成換班</p>'}</div>
   <div class="card"><h2>補卡申請（${pendingAtt.length}）</h2>${pendingAtt.map(r=>{const label=r.request_type==='missing_in'?'補上班卡':r.request_type==='missing_out'?'補下班卡':r.request_type==='npc_checkin'?'NPC 補場次報到':'補／更正完整場次',times=r.request_type==='correction'?`${r.requested?.inTime||'?'}–${r.requested?.outTime||'?'}`:(r.requested?.time||'?'),work=(r.requested?.workItem?.labels||[]).join('、')||'未填工作項目';return `<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${esc(emp(r.emp_id)?.name||r.emp_id)}・${r.punch_date}・${label} ${times}</b><br><span class="muted">工作：${esc(work)}<br>原因：${esc(r.reason)}</span></span><button class="btn sm" onclick="reviewAttendance('${r.id}','approved')">核准並補登</button><button class="btn red sm" onclick="reviewAttendance('${r.id}','rejected')">拒絕</button></div>`}).join('')||'<p class="muted">目前沒有待審補卡</p>'}</div>
   <div class="card"><h2>每日工時與時薪計薪審核（${pendingDaily.length}）</h2><p class="muted">原始打卡只計算候選工時；管理員核准「計薪分鐘」後才會進入時薪薪資。</p>${pendingDaily.slice(0,80).map(r=>{const id=`pay_${r.emp_id}_${r.work_date}`;return `<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${esc(emp(r.emp_id)?.name||r.emp_id)}・${r.work_date}</b><br><span class="muted">排班 ${r.scheduled_minutes}分／打卡 ${r.actual_minutes}分${r.anomalies?.length?`／<span class="warn">${esc(r.anomalies.join('、'))}</span>`:''}</span></span><label style="margin:0">計薪 <input id="${id}" type="number" min="0" max="1440" value="${r.payable_minutes??r.actual_minutes}" style="width:82px"> 分</label><button class="btn sm" onclick="reviewDaily('${r.emp_id}','${r.work_date}','approved','${id}')">核准</button><button class="btn red sm" onclick="reviewDaily('${r.emp_id}','${r.work_date}','rejected','${id}')">不計薪</button></div>`}).join('')||'<p class="muted">目前沒有待審工時</p>'}</div>
   <div class="card"><div class="row"><h2 class="grow">加班候選（${pendingOt.length}）</h2><button class="btn gray sm" onclick="calculateOvertime()">重新計算本月</button></div>${pendingOt.map(r=>`<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${esc(emp(r.emp_id)?.name||r.emp_id)}・${r.work_date}</b><br><span class="muted">排班 ${r.scheduled_minutes}分／實際 ${r.actual_minutes}分／候選 ${r.candidate_minutes}分・${fmtStatus(r.status)}</span></span><input id="ot_${r.id}" type="number" min="0" value="${r.candidate_minutes}" style="width:80px"><button class="btn sm" onclick="reviewOvertime('${r.id}','approved')">核准</button><button class="btn red sm" onclick="reviewOvertime('${r.id}','rejected')">拒絕</button></div>`).join('')||'<p class="muted">目前沒有待審加班</p>'}</div>
@@ -1803,6 +1821,27 @@ async function selectExtra(requestId,empId){
   const slotIndex=Number(req.details?.slotIndex),slot=Number.isInteger(slotIndex)&&sh.assignments?.[slotIndex]&&!sh.assignments[slotIndex].empId?sh.assignments[slotIndex]:(sh.assignments||[]).find(a=>!a.empId&&(!req.details?.role||a.role===req.details.role));if(!slot)return alert('此班次已沒有對應缺額');slot.empId=empId;sh.manualEdit=true;
   const [a,b,c]=await Promise.all([sbc.from('shifts').upsert({id:sh.id,date:sh.date,source:String(sh.id).startsWith('sb_')?'simplybook':'manual',data:sh}),sbc.from('shift_requests').update({status:'completed',selected_emp_id:empId,completed_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq('id',requestId),sbc.from('notification_outbox').upsert({recipient_emp_id:empId,category:'extra_selected',critical:true,payload:{title:'加場安排確認',text:`你已被安排 ${sh.date} ${sh.start} ${shiftLabel(sh)}`},idempotency_key:`extra-selected:${requestId}:${empId}`},{onConflict:'idempotency_key',ignoreDuplicates:true})]);
   if(a.error||b.error||c.error)return alert('安排失敗：'+(a.error||b.error||c.error).message);await refreshLineAdmin();
+}
+async function reviewShiftChange(requestId,status){
+  const req=LINE.requests.find(r=>r.id===requestId),sh=byId(S.shifts,req?.shift_id);if(!req||!sh)return alert('找不到換班資料');
+  const now=new Date().toISOString();
+  if(status==='rejected'){
+    const reason=prompt('請填寫拒絕原因','目前無合適替補人員')||'管理員未核准';
+    const [a,b]=await Promise.all([sbc.from('shift_requests').update({status:'cancelled',details:{...(req.details||{}),managerReply:reason},updated_at:now}).eq('id',requestId),sbc.from('notification_outbox').upsert({recipient_emp_id:req.requester_emp_id,category:'shift_change_result',critical:true,payload:{title:'換班申請未核准',text:`${sh.date} ${sh.start}–${sh.end}：${reason}`},idempotency_key:`shift-change-rejected:${requestId}`},{onConflict:'idempotency_key',ignoreDuplicates:true})]);
+    if(a.error||b.error)return alert('處理失敗：'+(a.error||b.error).message);await refreshLineAdmin();render();return;
+  }
+  const selected=document.getElementById('change_'+requestId)?.value;if(!selected)return alert('請先選擇替補人員');
+  if(!managerChangeCandidates(req,sh).some(e=>e.id===selected))return alert('該員工目前已不符合時間、技能或撞班規則，請重新整理');
+  const slot=(sh.assignments||[]).find(a=>a.empId===req.requester_emp_id);if(!slot)return alert('原排班人員已不在此班次，請重新整理');
+  slot.empId=selected;sh.manualEdit=true;
+  const src=String(sh.id).startsWith('sb_')?'simplybook':'manual',text=`${sh.date} ${sh.start}–${sh.end} ${shiftLabel(sh)}`;
+  const results=await Promise.all([sbc.from('shifts').upsert({id:sh.id,date:sh.date,source:src,data:sh}),sbc.from('shift_requests').update({status:'completed',selected_emp_id:selected,completed_at:now,updated_at:now}).eq('id',requestId),sbc.from('notification_outbox').upsert({recipient_emp_id:req.requester_emp_id,category:'shift_change_result',critical:true,payload:{title:'換班已核准',text:`${text} 已由 ${emp(selected)?.name||selected} 接替。`},idempotency_key:`shift-change-approved:${requestId}:requester`},{onConflict:'idempotency_key',ignoreDuplicates:true}),sbc.from('notification_outbox').upsert({recipient_emp_id:selected,category:'shift_assigned',critical:true,payload:{title:'管理員指派新班次',text:`你已接替 ${text}，請至 LINE 班表確認。`},idempotency_key:`shift-change-approved:${requestId}:replacement`},{onConflict:'idempotency_key',ignoreDuplicates:true})]);
+  const failed=results.find(x=>x.error);if(failed)return alert('換班失敗：'+failed.error.message);await refreshLineAdmin();render();
+}
+async function reviewGuestReport(id,status){
+  const report=(LINE.guestReports||[]).find(r=>r.id===id);if(!report)return alert('找不到客人回報');
+  const reply=document.getElementById('guestReply_'+id)?.value.trim();if(!reply)return alert('請填寫要回覆員工的處理結果');
+  try{await guestAdminApi({action:'review',id,status,reply});await refreshLineAdmin();render()}catch(e){alert('處理失敗：'+e.message)}
 }
 async function reviewAttendance(id,status){const r=await sbc.rpc('review_attendance_request',{p_request:id,p_status:status});if(r.error||!r.data?.ok)alert(r.error?.message||r.data?.msg||'審核失敗');else{await afterLogin();tab='line';renderNav();render()}}
 async function reviewDaily(empId,date,status,inputId){const payable=status==='approved'?Math.max(0,Number(document.getElementById(inputId).value)||0):0,note=prompt(status==='approved'?'核准備註（可留空）':'不計薪原因（建議填寫）','')||'';const r=await sbc.rpc('review_attendance_day',{p_emp:empId,p_date:date,p_status:status,p_payable:payable,p_note:note});if(r.error||!r.data?.ok)alert(r.error?.message||r.data?.msg||'審核失敗');else{await refreshLineAdmin();render()}}

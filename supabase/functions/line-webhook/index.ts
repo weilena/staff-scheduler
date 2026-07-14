@@ -40,7 +40,7 @@ function employeePortalMessages() {
       actions: [
         { type: "uri", label: "查看班表", uri: link("schedule") },
         { type: "uri", label: "手機定位打卡", uri: link("punch") },
-        { type: "uri", label: "換班與我的申請", uri: link("mine") },
+        { type: "uri", label: "正職換班申請", uri: link("requests") },
       ],
     },
   }];

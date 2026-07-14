@@ -63,7 +63,7 @@ Deno.serve(async (request) => {
         areas: [
           { bounds: { x: 0, y: 0, width: 833, height: 843 }, action: { type: "uri", label: "查看班表", uri: `${liff}?tab=schedule` } },
           { bounds: { x: 833, y: 0, width: 834, height: 843 }, action: { type: "uri", label: "定位打卡", uri: `${liff}?tab=punch` } },
-          { bounds: { x: 1667, y: 0, width: 833, height: 843 }, action: { type: "uri", label: "換班申請", uri: `${liff}?tab=mine` } },
+          { bounds: { x: 1667, y: 0, width: 833, height: 843 }, action: { type: "uri", label: "正職換班申請", uri: `${liff}?tab=requests` } },
         ],
       }),
     });

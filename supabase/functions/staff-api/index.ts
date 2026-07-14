@@ -39,28 +39,38 @@ Deno.serve(async (req) => {
 
     if (action === "bootstrap") {
       const now = new Date(), from = dateText(new Date(now.getTime() - 60 * DAY)), to = dateText(new Date(now.getTime() + 60 * DAY));
-      const [{ data: worksites }, { data: punches }, { data: sessionCheckins }, { data: shiftConfirmations }, { data: requests }, { data: responses }, { data: attendanceDays }, { data: attendanceRequests }] = await Promise.all([
+      const [{ data: worksites }, { data: punches }, { data: sessionCheckins }, { data: shiftConfirmations }, { data: attendanceDays }, { data: attendanceRequests }] = await Promise.all([
         sb.from("worksites").select("id,name,radius_m,enabled").eq("enabled", true),
         sb.from("punches").select("id,ts,type,worksite_id,verification,review_state,voided_at,void_reason,shift_ids,raw").eq("emp_id", employee.id).gte("ts", from).order("ts", { ascending: false }).limit(60),
         sb.from("session_checkins").select("id,shift_id,checked_in_at,worksite_id,verification,source,note").eq("emp_id", employee.id).gte("checked_in_at", from).order("checked_in_at", { ascending: false }).limit(100),
         sb.from("shift_confirmations").select("shift_id,status,confirmed_at").eq("emp_id", employee.id),
-        sb.from("shift_requests").select("*").or(`requester_emp_id.eq.${employee.id},target_emp_id.eq.${employee.id},target_emp_id.is.null`).order("created_at", { ascending: false }).limit(100),
-        sb.from("shift_request_responses").select("*").eq("emp_id", employee.id),
         sb.from("attendance_daily").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: false }).limit(70),
         sb.from("attendance_requests").select("*").eq("emp_id", employee.id).order("created_at", { ascending: false }).limit(30),
       ]);
       const publicEmployees = (cfg.employees ?? []).filter((e: any) => e.active).map((e: any) => ({ id: e.id, name: e.name }));
-      const publicShifts = shifts.filter((s: any) => s.date >= from && s.date <= to).map((s: any) => ({
-        id: s.id, date: s.date, storeId: s.storeId, kind: s.kind, themeId: s.themeId, start: s.start, end: s.end,
-        status: s.status ?? "active", assignments: s.assignments ?? [],
-      }));
+      const publicShifts = shifts.filter((s: any) => s.date >= from && s.date <= to).map((s: any) => {
+        const emptyRoles = (s.assignments ?? []).filter((a: any) => !a.empId).map((a: any) => String(a.role ?? ""));
+        const eligible = emptyRoles.length ? (cfg.employees ?? []).filter((candidate: any) => candidate.active &&
+          emptyRoles.some((role: string) => eligibilityErrors(candidate, s, role, shifts, cfg).length === 0)) : [];
+        const ranked = rankCandidatesByWorkload(eligible, shifts, s.date, 99);
+        const onSite = ranked.filter((candidate: any) => shifts.some((other: any) => other.id !== s.id && other.date === s.date &&
+          other.storeId === s.storeId && other.status !== "cancelled" && (other.assignments ?? []).some((a: any) => a.empId === candidate.id)));
+        const onSiteIds = new Set(onSite.map((candidate: any) => candidate.id));
+        return {
+          id: s.id, date: s.date, storeId: s.storeId, kind: s.kind, themeId: s.themeId, start: s.start, end: s.end,
+          status: s.status ?? "active", assignments: s.assignments ?? [], candidateGroups: emptyRoles.length ? {
+            onSite: onSite.map((candidate: any) => candidate.name),
+            available: ranked.filter((candidate: any) => !onSiteIds.has(candidate.id)).map((candidate: any) => candidate.name),
+          } : null,
+        };
+      });
       const publicPunches = (punches ?? []).map((p: any) => ({
         id: p.id, ts: p.ts, type: p.type, worksite_id: p.worksite_id, verification: p.verification,
         review_state: p.review_state, voided_at: p.voided_at, void_reason: p.void_reason, shift_ids: p.shift_ids ?? [],
         work_item: p.raw?.work_item ?? null,
       }));
-      return json({ me: { id: employee.id, name: employee.name, role: account.role }, stores: cfg.stores, themes: cfg.themes,
-        employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches, requests, responses,
+      return json({ me: { id: employee.id, name: employee.name, role: account.role, type: employee.type }, stores: cfg.stores, themes: cfg.themes,
+        employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches,
         attendanceDays, attendanceRequests, sessionCheckins, shiftConfirmations, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
 
@@ -139,8 +149,8 @@ Deno.serve(async (req) => {
     }
 
     if (action === "create-request") {
-      const type = String(input.requestType), shiftId = String(input.shiftId), offeredId = input.offeredShiftId ? String(input.offeredShiftId) : null;
-      if (!["give", "swap"].includes(type)) return json({ error: "申請類型錯誤" }, 400);
+      if (employee.type !== "full" && account.role !== "manager") return json({ error: "換班申請只開放正職員工與管理員使用" }, 403);
+      const shiftId = String(input.shiftId);
       const shift = shifts.find((s: any) => s.id === shiftId);
       if (!shift || !(shift.assignments ?? []).some((a: any) => a.empId === employee.id)) return json({ error: "你不在此班次中" }, 403);
       const shiftStart = new Date(`${shift.date}T${shift.start}:00+08:00`).getTime();
@@ -148,36 +158,40 @@ Deno.serve(async (req) => {
       const { data: duplicate } = await sb.from("shift_requests").select("id").eq("requester_emp_id", employee.id).eq("shift_id", shiftId)
         .in("status", ["open", "pending_manager"]).limit(1).maybeSingle();
       if (duplicate) return json({ error: "此班次已有進行中的申請" }, 409);
-      const offeredShift = type === "swap" ? shifts.find((s: any) => s.id === offeredId) : null;
-      if (type === "swap") {
-        if (!offeredShift || !(offeredShift.assignments ?? []).some((a: any) => a.empId && a.empId !== employee.id)) return json({ error: "交換班次無效" }, 400);
-      }
       const requestedDeadline = input.deadline ? new Date(input.deadline).getTime() : Date.now() + 24 * 3_600_000;
       const deadline = new Date(Math.max(Date.now() + 5 * 60_000, Math.min(requestedDeadline, shiftStart - 60 * 60_000))).toISOString();
-      const { data: request, error } = await sb.from("shift_requests").insert({ request_type: type, shift_id: shiftId,
-        requester_emp_id: employee.id, offered_shift_id: offeredId, target_emp_id: input.targetEmpId || null, deadline,
-        details: { note: String(input.note ?? "") } }).select().single();
+      const note = String(input.note ?? "").trim();
+      if (note.length < 2) return json({ error: "請填寫換班原因或希望如何調整" }, 400);
+      const { data: request, error } = await sb.from("shift_requests").insert({ request_type: "give", shift_id: shiftId,
+        requester_emp_id: employee.id, deadline, status: "pending_manager", details: { note, approval_flow: "manager_only" } }).select().single();
       if (error) throw error;
-      const targetRole = (shift.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "";
-      const offeredEmployeeIds = new Set((offeredShift?.assignments ?? []).map((a: any) => a.empId).filter(Boolean));
-      const eligibleCandidates = (cfg.employees ?? []).filter((e: any) => e.id !== employee.id && (!input.targetEmpId || e.id === input.targetEmpId))
-        .filter((e: any) => type !== "swap" || offeredEmployeeIds.has(e.id))
-        .filter((e: any) => eligibilityErrors(e, shift, targetRole, shifts, cfg, [offeredId].filter(Boolean) as string[]).length === 0);
-      const candidates = rankCandidatesByWorkload(eligibleCandidates, shifts, shift.date, 2);
-      if (!candidates.length) {
-        await sb.from("shift_requests").delete().eq("id", request.id);
-        return json({ error: "目前找不到符合技能與時間的接班者" }, 409);
-      }
-      for (const candidate of candidates) await queueNotification(sb, candidate.id, "shift_request", {
-        title: type === "swap" ? "換班邀請" : "讓班邀請", requestId: request.id, shift: { date: shift.date, start: shift.start, end: shift.end },
-        text: `${employee.name}提出${type === "swap" ? "換班" : "讓班"}申請`, actions: true,
-      }, false, `shift-request:${request.id}:${candidate.id}`);
       const { data: managers } = await sb.from("line_accounts").select("emp_id").eq("role", "manager").eq("active", true);
       for (const manager of managers ?? []) await queueNotification(sb, manager.emp_id, "shift_change_requested", {
-        title: type === "swap" ? "員工提出換班" : "員工提出讓班",
-        text: `${employee.name}提出 ${shift.date} ${shift.start}–${shift.end} ${type === "swap" ? "換班" : "讓班"}申請，系統已通知合適人選。`,
+        title: "正職員工提出換班",
+        text: `${employee.name}提出 ${shift.date} ${shift.start}–${shift.end} 換班申請，請至管理後台確認。`,
       }, false, `shift-change-manager:${request.id}:${manager.emp_id}`);
-      return json({ ok: true, requestId: request.id, candidates: candidates.length });
+      return json({ ok: true, requestId: request.id, message: "已送交管理員確認，不會自動通知其他員工" });
+    }
+
+    if (action === "guest-booking-report") {
+      const shiftId = String(input.shiftId ?? ""), customerType = String(input.customerType ?? "");
+      const surname = String(input.surname ?? "").trim(), phone = String(input.phone ?? "").replace(/\s+/g, "");
+      const partySize = Number(input.partySize), note = String(input.note ?? "").trim();
+      const shift = shifts.find((s: any) => String(s.id) === shiftId && s.status !== "cancelled");
+      if (!shift || !(shift.assignments ?? []).some((a: any) => !a.empId)) return json({ error: "這個場次已排人、已取消或不存在" }, 409);
+      if (!["walk_in", "reservation"].includes(customerType)) return json({ error: "請選擇現場客人或預約客人" }, 400);
+      if (!surname || surname.length > 30) return json({ error: "請填寫客人姓氏" }, 400);
+      if (!/^[0-9+()\-]{8,20}$/.test(phone)) return json({ error: "請填寫可聯絡的電話號碼" }, 400);
+      if (!Number.isInteger(partySize) || partySize < 1 || partySize > 99) return json({ error: "請填寫正確人數" }, 400);
+      const { data: report, error } = await sb.from("guest_booking_reports").insert({ emp_id: employee.id, shift_id: shiftId,
+        customer_type: customerType, surname, phone, party_size: partySize, note }).select("id").single();
+      if (error) throw error;
+      const { data: managers } = await sb.from("line_accounts").select("emp_id").eq("role", "manager").eq("active", true);
+      for (const manager of managers ?? []) await queueNotification(sb, manager.emp_id, "guest_booking_report", {
+        title: customerType === "walk_in" ? "現場客人待處理" : "預約客人待處理",
+        text: `${employee.name}回報：${shift.date} ${shift.start} ${surname}先生／小姐，${partySize}人。聯絡電話請至管理後台查看，並處理 SimplyBook 與訂金。`,
+      }, false, `guest-report:${report.id}:${manager.emp_id}`);
+      return json({ ok: true, message: "已回報管理員；這不是正式預約，請等待管理員完成 SimplyBook 與訂金確認" });
     }
 
     if (action === "respond-request") {
