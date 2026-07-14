@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>排班打卡系統(雲端版)|大忠店・謎先生</title>
-<meta name="build-version" content="2026-07-13-payroll-rates">
+<meta name="build-version" content="2026-07-14-bulk-colors">
 <style>
 :root{
   --accent:#2563eb; --accent2:#7c3aed; --bg:#f4f6fa; --card:#fff;
@@ -86,6 +86,10 @@ th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 .day-manpower{position:sticky;top:105px;z-index:19;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:10px;box-shadow:0 3px 10px rgba(15,23,42,.06)}
 .day-manpower-list{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
 .person-day{padding:5px 8px;border-radius:8px;font-size:12px;border:1px solid #cbd5e1;line-height:1.35}
+.emp-tag{display:inline-block;padding:1px 6px;border-radius:6px;font-size:11.5px;margin:1px;border:1px solid rgba(15,23,42,.12);white-space:nowrap}
+.bulkbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#eff6ff;border:1px solid #93c5fd;border-radius:10px;padding:9px 10px;margin-bottom:10px}
+.bulk-picked{outline:3px solid #2563eb!important;outline-offset:1px;box-shadow:0 0 0 2px #fff inset}
+.bulk-check{font-weight:800;margin-right:4px}
 .day-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:10px}
 .day-canvas{min-width:900px}
 .counter-lane{display:grid;grid-template-columns:150px 1fr;border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-bottom:8px;background:#fff}
@@ -563,6 +567,10 @@ let dayAnchor='2026-06-01';
 let weekAnchor=todayStr();
 let filterTheme='';               // 主題篩選
 let filterEmp='';                 // 人員篩選
+let bulkMode=false;
+let bulkSelected=new Set();
+let bulkEmp='';
+let bulkRole='場控';
 function setFilterTheme(v){filterTheme=v;render()}
 function setFilterEmp(v){filterEmp=v;render()}
 function shiftMatch(sh){
@@ -577,6 +585,16 @@ function employeeColor(e){
   const value=String(e?.simplybookColor||e?.simplyBookColor||e?.sbColor||e?.color||'').trim();
   return /^#[0-9a-fA-F]{6}$/.test(value)?value.toLowerCase():'';
 }
+function employeeTag(e,label){
+  if(!e)return esc(label||'?');
+  const bg=employeeColor(e)||'#cbd5e1';
+  return `<span class="emp-tag" style="background:${bg};color:${textOn(bg)}">${esc(label||e.name)}</span>`;
+}
+function assignedTags(sh,withRole=true){
+  return (sh.assignments||[]).filter(a=>a.empId).map(a=>{const e=emp(a.empId);return employeeTag(e,(e?.name||'?')+(withRole?`(${a.role})`:''));}).join(' ');
+}
+function bulkClass(sh){return bulkSelected.has(sh.id)?' bulk-picked':''}
+function shiftAction(sh){return bulkMode?`event.stopPropagation();toggleBulkShift('${sh.id}')`:`event.stopPropagation();openShift('${sh.id}')`}
 function chipStyle(sh){
   const st=store(sh.storeId),assigned=(sh.assignments||[]).find(a=>a.empId),person=assigned?emp(assigned.empId):null;
   const bg=isCx(sh)?'#94a3b8':(employeeColor(person)||(st?st.color:'#64748b'));
@@ -635,7 +653,7 @@ function staffLoadPanel(){
       const heavy=x.displayTotal>0&&avg>0&&x.displayTotal>=avg*1.4&&x.displayTotal>=3;
       const pct=maxT?Math.round(x.displayTotal/maxT*100):0;
       return `<div class="loadrow ${heavy?'heavy':''}" onclick="filterEmp='${x.e.id}';render()" title="點擊只看此人">
-        <div class="loadname">${heavy?'🔴 ':''}${esc(x.e.name)}<span class="muted" style="float:right">${x.e.type==='full'?'總場 '+x.displayTotal:'NPC '+x.displayTotal}</span></div>
+        <div class="loadname">${heavy?'🔴 ':''}${employeeTag(x.e,x.e.name)}<span class="muted" style="float:right">${x.e.type==='full'?'總場 '+x.displayTotal:'NPC '+x.displayTotal}</span></div>
         <div class="loadbar"><div style="width:${pct}%"></div></div>
         <div class="muted" style="font-size:11px">${x.e.type==='full'?`場控 ${x.gm}・NPC ${x.npc}`:'論場只計 NPC'} </div>
       </div>`;
@@ -684,6 +702,36 @@ async function syncSimplyBookNow(){
   }catch(error){alert('SimplyBook 同步失敗：'+error.message)}
   finally{if(btn){btn.disabled=false;btn.textContent='立即同步'}}
 }
+function toggleBulkMode(){bulkMode=!bulkMode;if(!bulkMode)bulkSelected.clear();render()}
+function toggleBulkShift(id){if(bulkSelected.has(id))bulkSelected.delete(id);else bulkSelected.add(id);render()}
+function visibleShifts(){const[from,to]=viewRange();return S.shifts.filter(sh=>sh.date>=from&&sh.date<=to&&!isCx(sh)&&shiftMatch(sh))}
+function selectSameTheme(){
+  const first=[...bulkSelected].map(id=>byId(S.shifts,id)).find(sh=>sh?.themeId);
+  if(!first)return alert('請先勾選一個主題場次。');
+  visibleShifts().filter(sh=>sh.themeId===first.themeId).forEach(sh=>bulkSelected.add(sh.id));render();
+}
+function selectVisible(){visibleShifts().forEach(sh=>bulkSelected.add(sh.id));render()}
+async function applyBulkEmployee(){
+  const e=emp(bulkEmp),selected=[...bulkSelected].map(id=>byId(S.shifts,id)).filter(Boolean);
+  if(!e)return alert('請先選擇要安排的員工。');
+  if(!selected.length)return alert('請先勾選至少一個班次。');
+  if(!confirm(`將 ${e.name} 以「${bulkRole}」安排到已選的 ${selected.length} 個班次？\n系統會略過撞班、超出可上班時間及跨店移動不足的班次。`))return;
+  let added=0;const skipped=[];
+  for(const sh of selected.sort((a,b)=>(a.date+a.start).localeCompare(b.date+b.start))){
+    if((sh.assignments||[]).some(a=>a.empId===e.id&&a.role===bulkRole))continue;
+    const oldEdit=editShiftId;editShiftId=sh.id;const warnings=empWarnings(e,sh.date,sh.start,sh.end,sh.storeId,bulkRole);editShiftId=oldEdit;
+    if(warnings.length){skipped.push(`${sh.date} ${sh.start} ${shiftLabel(sh)}：${warnings.join('、')}`);continue;}
+    const prev=JSON.parse(JSON.stringify(sh));sh.assignments=sh.assignments||[];
+    const empty=sh.assignments.find(a=>!a.empId&&a.role===bulkRole);
+    if(empty)empty.empId=e.id;else sh.assignments.push({role:bulkRole,empId:e.id});
+    if(sh.kind==='theme'&&(bulkRole==='場控'||bulkRole==='NPC')){e.skills=e.skills||{};const roles=e.skills[sh.themeId]||[];if(!roles.includes(bulkRole))e.skills[sh.themeId]=[...roles,bulkRole]}
+    if(bulkRole==='櫃台'){e.counters=e.counters||[];if(!e.counters.includes(sh.storeId))e.counters.push(sh.storeId)}
+    if(String(sh.id).startsWith('sb_'))sh.manualEdit=true;
+    await dbUpsertShift(sh);notifyShiftAssignments(sh,prev);added++;
+  }
+  save();bulkSelected.clear();render();
+  alert(`批次安排完成：新增 ${added} 筆。${skipped.length?`\n略過 ${skipped.length} 筆：\n`+skipped.slice(0,8).join('\n'):''}`);
+}
 function vSched(){
   const themeOpts='<option value="">全部主題</option>'+S.themes.map(t=>`<option value="${t.id}" ${filterTheme===t.id?'selected':''}>${esc(store(t.storeId)?.name||'')}·${esc(t.name)}</option>`).join('');
   const empOpts='<option value="">全部人員</option>'+S.employees.filter(e=>e.active).map(e=>`<option value="${e.id}" ${filterEmp===e.id?'selected':''}>${esc(e.name)}</option>`).join('');
@@ -696,6 +744,7 @@ function vSched(){
     <span class="grow"></span>
     <button class="btn gray sm" id="syncNowBtn" onclick="syncSimplyBookNow()">↻ 立即同步</button>
     <a class="btn gray sm" style="text-decoration:none" href="https://bglescape.secure.simplybook.asia/v2/" target="_blank" rel="noopener">開啟 SimplyBook</a>
+    <button class="btn ${bulkMode?'red':'gray'} sm" onclick="toggleBulkMode()">${bulkMode?'結束批次':'☑ 批次安排'}</button>
     <button class="btn" onclick="openShift(null)">＋ 新增班次</button>
   </div>
   <div class="row" style="margin-bottom:12px;gap:8px">
@@ -706,11 +755,20 @@ function vSched(){
     <span class="grow"></span>
     ${S.stores.map(s=>`<span class="badge" style="background:${s.color};color:${textOn(s.color)};border:1px solid ${lum(s.color)>0.82?'#cbd5e1':'transparent'}">${esc(s.name)}</span>`).join(' ')}
   </div>`;
+  const bulkBar=bulkMode?`<div class="bulkbar">
+    <b>批次安排</b><span>已選 ${bulkSelected.size} 場</span>
+    <select onchange="bulkEmp=this.value"><option value="">選擇同一位員工</option>${S.employees.filter(e=>e.active).map(e=>`<option value="${e.id}" ${bulkEmp===e.id?'selected':''}>${esc(e.name)}</option>`).join('')}</select>
+    <select onchange="bulkRole=this.value">${ROLES.map(r=>`<option ${bulkRole===r?'selected':''}>${r}</option>`).join('')}</select>
+    <button class="btn gray sm" onclick="selectSameTheme()">選取同主題</button>
+    <button class="btn gray sm" onclick="selectVisible()">全選目前篩選</button>
+    <button class="btn green sm" onclick="applyBulkEmployee()">套用同一員工</button>
+    <span class="muted">點場次勾選；撞班、跨店或不可上班時段會自動略過。</span>
+  </div>`:'';
   let body='';
   if(viewMode==='month')body=vMonth();
   else if(viewMode==='day')body=vDaySessions();
   else body=vWeek();
-  return `<div class="card">${segBar}<div style="padding:8px 10px;margin-bottom:10px;border-radius:8px;background:#f8fafc;border:1px solid var(--line)">${syncHealthHtml()}<span class="muted" style="float:right">即時回撥＋每 1 分鐘背景校正</span></div><div class="schedwrap"><div class="schedmain">${body}</div>${staffLoadPanel()}</div></div>`;
+  return `<div class="card">${segBar}${bulkBar}<div style="padding:8px 10px;margin-bottom:10px;border-radius:8px;background:#f8fafc;border:1px solid var(--line)">${syncHealthHtml()}<span class="muted" style="float:right">即時回撥＋每 1 分鐘背景校正</span></div><div class="schedwrap"><div class="schedmain">${body}</div>${staffLoadPanel()}</div></div>`;
 }
 
 /* ---- 月曆 ---- */
@@ -748,22 +806,21 @@ function vMonth(){
       ${S.closedDates.includes(ds)?'<div class="chip" style="background:#dc2626;color:#fff">店休</div>':''}
       ${shifts.map(sh=>{
         const staffed=sh.assignments.some(a=>a.empId);
-        const who=filterEmp?'':(staffed?'':' ⚠未排');
-        return `<div class="chip ${isCx(sh)?'cancelled':staffed?'':'unstaffed'}" style="${chipStyle(sh)}"
-          onclick="event.stopPropagation();openShift('${sh.id}')">${sh.start} ${esc(shiftLabel(sh))}${isCx(sh)?' '+cxLabel(sh):who}</div>`;
+        const who=filterEmp?'':(staffed?' · '+sh.assignments.filter(a=>a.empId).map(a=>esc(emp(a.empId)?.name||'?')).join('／'):' ⚠未排');
+        return `<div class="chip ${isCx(sh)?'cancelled':staffed?'':'unstaffed'}${bulkClass(sh)}" style="${chipStyle(sh)}"
+          onclick="${shiftAction(sh)}">${bulkMode?`<span class="bulk-check">${bulkSelected.has(sh.id)?'☑':'☐'}</span>`:''}${sh.start} ${esc(shiftLabel(sh))}${isCx(sh)?' '+cxLabel(sh):who}</div>`;
       }).join('')||(filterTheme||filterEmp?'<span class="muted" style="font-size:11px">—</span>':'')}
     </div>`;
   }).join('')}</div>`;
 }
 
-/* 當日人力標籤:可上班=綠、兼職休=灰、正職休=紅 */
+/* 當日人力標籤:可上班使用 SimplyBook 人員色；休假/無班一律灰色 */
 function manpowerTags(ds,compact){
   const list=S.employees.filter(e=>employedOn(e,ds));
   if(!list.length)return '<span class="muted">尚無員工</span>';
   return list.map(e=>{
     const a=effectiveAvail(e,ds);
-    if(a&&a.on)return `<span class="tag" style="background:#d1fae5;color:#065f46">${esc(e.name)}${compact?'':' '+a.start+'–'+a.end}</span>`;
-    if(e.type==='full')return `<span class="tag leavered">${esc(e.name)} 休🔴</span>`;
+    if(a&&a.on)return employeeTag(e,`${e.name} ${a.start}–${a.end}`);
     return `<span class="tag" style="background:#f1f5f9;color:#94a3b8">${esc(e.name)} 休</span>`;
   }).join(' ');
 }
@@ -772,7 +829,7 @@ function dayManpower(ds){
   const list=S.employees.filter(e=>employedOn(e,ds));
   return `<div class="day-manpower"><b>${ds}（週${WD[dateWD(ds)]}）・固定人力列</b><div class="day-manpower-list">${list.map(e=>{
     const assigned=S.shifts.filter(s=>s.date===ds&&!isCx(s)&&(s.assignments||[]).some(a=>a.empId===e.id));
-    const a=effectiveAvail(e,ds),stat=load.find(x=>x.e.id===e.id),bg=assigned.length?(employeeColor(e)||'#cbd5e1'):'#e5e7eb';
+    const a=effectiveAvail(e,ds),stat=load.find(x=>x.e.id===e.id),bg=(assigned.length||(a&&a.on))?(employeeColor(e)||'#cbd5e1'):'#e5e7eb';
     const clashes=assigned.some((x,i)=>assigned.slice(i+1).some(y=>x.storeId!==y.storeId&&toMin(x.end)+(S.settings.travelMin||12)>toMin(y.start)&&toMin(y.end)+(S.settings.travelMin||12)>toMin(x.start)));
     return `<span class="person-day" style="background:${bg};color:${textOn(bg)}">${clashes?'⚠ ':''}${esc(e.name)}<br>${a&&a.on?`${a.start}–${a.end}`:'休假／無班'}・${e.type==='full'?`總場 ${stat?.displayTotal||0}`:`NPC ${stat?.displayTotal||0}`}</span>`;
   }).join('')}</div></div>`;
@@ -791,7 +848,7 @@ function vDaySessions(){
     .sort((a,b)=>a.start.localeCompare(b.start));
   const counters=(storeId)=>others.filter(sh=>sh.kind==='counter'&&sh.storeId===storeId);
   const extra=others.filter(sh=>sh.kind!=='counter');
-  const counterLane=(storeId,label)=>`<div class="counter-lane"><strong>${label}<br><button class="btn sm" style="margin-top:6px" onclick="openShift(null,'${ds}',{storeId:'${storeId}',kind:'counter'})">＋安排</button></strong><div class="slotrow">${counters(storeId).map(sh=>`<div class="slotbox ${sh.assignments.some(a=>a.empId)?'staffed':'unstaffed'}" style="${chipStyle(sh)}" onclick="openShift('${sh.id}')"><b>${sh.start}–${sh.end}</b><br>${sh.assignments.filter(a=>a.empId).map(a=>esc(emp(a.empId)?.name||'?')).join('、')||'⚠ 未排人'}</div>`).join('')||'<span class="muted">尚未安排</span>'}</div></div>`;
+  const counterLane=(storeId,label)=>`<div class="counter-lane"><strong>${label}<br><button class="btn sm" style="margin-top:6px" onclick="openShift(null,'${ds}',{storeId:'${storeId}',kind:'counter'})">＋安排</button></strong><div class="slotrow">${counters(storeId).map(sh=>`<div class="slotbox ${sh.assignments.some(a=>a.empId)?'staffed':'unstaffed'}${bulkClass(sh)}" style="${chipStyle(sh)}" onclick="${shiftAction(sh)}">${bulkMode?`<span class="bulk-check">${bulkSelected.has(sh.id)?'☑':'☐'}</span>`:''}<b>${sh.start}–${sh.end}</b><br>${assignedTags(sh,false)||'⚠ 未排人'}</div>`).join('')||'<span class="muted">尚未安排</span>'}</div></div>`;
   return `<div class="row day-toolbar">
     <button class="btn gray sm" onclick="moveDay(-1)">← 前一天</button>
     <input type="date" value="${ds}" onchange="dayAnchor=this.value;render()">
@@ -812,7 +869,7 @@ function vDaySessions(){
       const sh=findSlotShift(ds,t.id,slot);
       if(sh){
         const names=sh.assignments.filter(a=>a.empId).map(a=>{const e=emp(a.empId);return e?`${esc(e.name)}(${a.role})`:''}).filter(Boolean).join('、');
-        return `<div class="slotbox ${isCx(sh)?'cancelled':names?'staffed':'unstaffed'}" onclick="openShift('${sh.id}')"><b>${slot}</b><br>${isCx(sh)?cxLabel(sh):names||'⚠ 未排人'}</div>`;
+        return `<div class="slotbox ${isCx(sh)?'cancelled':names?'staffed':'unstaffed'}${bulkClass(sh)}" style="${names||isCx(sh)?chipStyle(sh):''}" onclick="${shiftAction(sh)}">${bulkMode?`<span class="bulk-check">${bulkSelected.has(sh.id)?'☑':'☐'}</span>`:''}<b>${slot}</b><br>${isCx(sh)?cxLabel(sh):assignedTags(sh,true)||'⚠ 未排人'}</div>`;
       }
       return `<div class="slotbox" onclick="createSlotShift('${t.id}','${slot}')"><b>${slot}</b><br>＋開場</div>`;
     }).join('');
@@ -823,9 +880,9 @@ function vDaySessions(){
   }).join('')}
   ${extra.length?`<h3 style="margin:14px 0 8px">其他工作（清潔／練習／駐店）</h3>
     <table><tr><th>時間</th><th>店別</th><th>內容</th><th>人員</th></tr>
-    ${extra.map(sh=>`<tr class="${isCx(sh)?'cancelled':''}" onclick="openShift('${sh.id}')" style="cursor:pointer">
+    ${extra.map(sh=>`<tr class="${isCx(sh)?'cancelled':''}${bulkClass(sh)}" onclick="${shiftAction(sh)}" style="cursor:pointer">
       <td>${sh.start}–${sh.end}</td><td>${esc(store(sh.storeId)?.name||'')}</td><td>${esc(shiftLabel(sh))}</td>
-      <td>${sh.assignments.filter(a=>a.empId).map(a=>`${esc(emp(a.empId)?.name||'?')}(${a.role})`).join('、')||'<i class="muted">未排人</i>'}</td></tr>`).join('')}</table>`:''}
+      <td>${bulkMode?`<span class="bulk-check">${bulkSelected.has(sh.id)?'☑':'☐'}</span>`:''}${assignedTags(sh,true)||'<i class="muted">未排人</i>'}</td></tr>`).join('')}</table>`:''}
   </div></div>`;
 }
 function createSlotShift(themeId,slot){
@@ -868,7 +925,7 @@ function vWeek(){
       <button class="btn gray sm" onclick="weekAnchor=todayStr();render()">本週</button>
       <button class="btn sm" onclick="copyManualWeekToNext()">複製人工班次到下週</button>
     </div>
-    <p class="muted" style="margin-bottom:8px">每欄上方為當日人力(綠=可上班、灰=兼職休、<span class="leavered" style="padding:0 4px;border-radius:4px">紅=正職休</span>);黃底=有未排人場次。</p>
+    <p class="muted" style="margin-bottom:8px">每欄上方為當日人力（可上班＝SimplyBook 人員色並顯示時段；休假／無班＝灰色）；黃底＝有未排人場次。</p>
     <div class="week">${days.map(ds=>{
       const shifts=S.shifts.filter(x=>x.date===ds&&shiftMatch(x)).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
       const hasUnstaffed=shifts.some(sh=>!isCx(sh)&&!sh.assignments.some(a=>a.empId));
@@ -880,8 +937,8 @@ function vWeek(){
         </div>
         ${shifts.map(sh=>{
           const who=sh.assignments.filter(a=>a.empId).map(a=>{const e=emp(a.empId);return e?`${esc(e.name)}(${a.role})`:''}).filter(Boolean).join('、')||'<i>未排人</i>';
-          return `<div class="shift ${isCx(sh)?'cancelled':''}" style="${chipStyle(sh)}" onclick="openShift('${sh.id}')">
-            <b>${sh.start||''}–${sh.end||''}</b> ${esc(shiftLabel(sh))}${isCx(sh)?' ('+cxLabel(sh)+')':''}<br><span class="who">${who}</span></div>`;
+          return `<div class="shift ${isCx(sh)?'cancelled':''}${bulkClass(sh)}" style="${chipStyle(sh)}" onclick="${shiftAction(sh)}">
+            ${bulkMode?`<span class="bulk-check">${bulkSelected.has(sh.id)?'☑':'☐'}</span>`:''}<b>${sh.start||''}–${sh.end||''}</b> ${esc(shiftLabel(sh))}${isCx(sh)?' ('+cxLabel(sh)+')':''}<br><span class="who">${assignedTags(sh,true)||who}</span></div>`;
         }).join('')||'<span class="muted" style="font-size:12px">—</span>'}
       </div>`;
     }).join('')}</div>`;
