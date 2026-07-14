@@ -1,4 +1,4 @@
-import { cors, distanceMeters, eligibilityErrors, getContext, json, queueNotification, rankCandidatesByWorkload, serviceClient, verifyLineIdToken } from "../_shared/common.ts";
+import { cors, distanceMeters, eligibilityErrors, getContext, json, queueNotification, rankCandidatesByWorkload, serviceClient, toMinutes, verifyLineIdToken } from "../_shared/common.ts";
 
 const DAY = 86_400_000;
 const dateText = (d: Date) => d.toISOString().slice(0, 10);
@@ -69,7 +69,8 @@ Deno.serve(async (req) => {
         review_state: p.review_state, voided_at: p.voided_at, void_reason: p.void_reason, shift_ids: p.shift_ids ?? [],
         work_item: p.raw?.work_item ?? null,
       }));
-      return json({ me: { id: employee.id, name: employee.name, role: account.role, type: employee.type }, stores: cfg.stores, themes: cfg.themes,
+      return json({ me: { id: employee.id, name: employee.name, role: account.role, type: employee.type,
+          canSchedulePractice: account.role === "manager" || (employee.type === "full" && !!employee.canSchedulePractice) }, stores: cfg.stores, themes: cfg.themes,
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches,
         attendanceDays, attendanceRequests, sessionCheckins, shiftConfirmations, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
@@ -83,6 +84,38 @@ Deno.serve(async (req) => {
       await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: "confirm_shift", target_type: "shift", target_id: shiftId,
         details: { date: shift.date, start: shift.start, end: shift.end, kind: shift.kind } });
       return json({ ok: true, message: "已確認收到這個班次" });
+    }
+
+    if (action === "schedule-practice") {
+      if (account.role !== "manager" && !(employee.type === "full" && employee.canSchedulePractice)) return json({ error: "你沒有安排新人練習場的權限" }, 403);
+      const date = String(input.date ?? ""), start = String(input.start ?? ""), end = String(input.end ?? ""), storeId = String(input.storeId ?? "");
+      const traineeId = String(input.traineeId ?? ""), companionId = String(input.companionId ?? ""), note = String(input.note ?? "").trim();
+      const timeOk = (v: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !timeOk(start) || !timeOk(end) || toMinutes(end) <= toMinutes(start)) return json({ error: "請填寫正確的練習日期與起訖時間" }, 400);
+      if (!(cfg.stores ?? []).some((s: any) => s.id === storeId)) return json({ error: "練習場地錯誤" }, 400);
+      const trainee = (cfg.employees ?? []).find((e: any) => e.id === traineeId && e.active), companion = (cfg.employees ?? []).find((e: any) => e.id === companionId && e.active);
+      if (!trainee || !companion) return json({ error: "請選擇在職的練習員工與陪練人員" }, 400);
+      if (trainee.id === companion.id) return json({ error: "練習員工與陪練人員不可為同一人" }, 400);
+      const startsAt = new Date(`${date}T${start}:00+08:00`).getTime();
+      if (startsAt <= Date.now()) return json({ error: "練習場開始時間必須晚於現在" }, 409);
+      const id = `practice_${crypto.randomUUID()}`, target = { id, date, storeId, kind: "practice", themeId: null, start, end, status: "active", assignments: [] };
+      const traineeErrors = eligibilityErrors(trainee, target, "練習場", shifts, cfg), companionErrors = eligibilityErrors(companion, target, "陪練", shifts, cfg);
+      if (traineeErrors.length || companionErrors.length) return json({ error: [traineeErrors.length ? `${trainee.name}：${traineeErrors.join("、")}` : "", companionErrors.length ? `${companion.name}：${companionErrors.join("、")}` : ""].filter(Boolean).join("；") }, 409);
+      const shift = { ...target, note, assignments: [{ role: "練習場", empId: trainee.id }, { role: "陪練", empId: companion.id }],
+        createdBy: employee.id, createdVia: "line_practice_scheduler" };
+      const { error } = await sb.from("shifts").insert({ id, date, source: "manual", data: shift });
+      if (error) throw error;
+      const label = `${date} ${start}–${end} ${(cfg.stores ?? []).find((s: any) => s.id === storeId)?.name ?? ""}`;
+      await queueNotification(sb, trainee.id, "practice_assigned", { title: "新人練習場安排", text: `${label}，陪練：${companion.name}。請至 LINE 班表確認並依規定上下班打卡。` }, true, `practice:${id}:trainee`);
+      await queueNotification(sb, companion.id, "practice_companion", { title: "陪練工作安排", text: `${label}，練習員工：${trainee.name}。請至 LINE 班表確認並依規定上下班打卡。` }, true, `practice:${id}:companion`);
+      const informed = new Set([trainee.id, companion.id, employee.id]);
+      const { data: managers } = await sb.from("line_accounts").select("emp_id").eq("role", "manager").eq("active", true);
+      for (const manager of managers ?? []) if (!informed.has(manager.emp_id)) await queueNotification(sb, manager.emp_id, "practice_scheduled_manager", {
+        title: "練習場已安排", text: `${employee.name}安排 ${label}：${trainee.name} 練習，由 ${companion.name} 陪練。`,
+      }, false, `practice:${id}:manager:${manager.emp_id}`);
+      await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: "schedule_practice", target_type: "shift", target_id: id,
+        details: { traineeId: trainee.id, companionId: companion.id, date, start, end, storeId } });
+      return json({ ok: true, message: "練習場已建立，練習員工、陪練人員與管理員都會收到資訊" });
     }
 
     if (action === "punch") {
@@ -150,25 +183,27 @@ Deno.serve(async (req) => {
 
     if (action === "create-request") {
       if (employee.type !== "full" && account.role !== "manager") return json({ error: "換班申請只開放正職員工與管理員使用" }, 403);
-      const shiftId = String(input.shiftId);
+      const shiftId = String(input.shiftId), replacedEmpId = String(input.replacedEmpId ?? employee.id), reasonCode = String(input.reasonCode ?? ""), note = String(input.note ?? "").trim();
+      const reasons: Record<string, string> = { extra: "臨時加場，人力調換", emergency: "緊急事故發生，人力調換", health: "員工個人身體有狀況，人力調換", other: "其他" };
+      if (!reasons[reasonCode]) return json({ error: "請選擇換班原因" }, 400);
       const shift = shifts.find((s: any) => s.id === shiftId);
-      if (!shift || !(shift.assignments ?? []).some((a: any) => a.empId === employee.id)) return json({ error: "你不在此班次中" }, 403);
-      const shiftStart = new Date(`${shift.date}T${shift.start}:00+08:00`).getTime();
-      if (shift.status === "cancelled" || shiftStart <= Date.now()) return json({ error: "此班次已取消或已開始" }, 409);
-      const { data: duplicate } = await sb.from("shift_requests").select("id").eq("requester_emp_id", employee.id).eq("shift_id", shiftId)
+      const originalAssignment = (shift?.assignments ?? []).find((a: any) => a.empId === replacedEmpId);
+      if (!shift || !originalAssignment) return json({ error: "所選班別或原排班人員不存在" }, 400);
+      const shiftEnd = new Date(`${shift.date}T${shift.end}:00+08:00`).getTime();
+      if (shift.status === "cancelled" || shiftEnd <= Date.now()) return json({ error: "此班次已取消或已結束" }, 409);
+      const { data: duplicate } = await sb.from("shift_requests").select("id").eq("shift_id", shiftId)
+        .contains("details", { replacedEmpId })
         .in("status", ["open", "pending_manager"]).limit(1).maybeSingle();
       if (duplicate) return json({ error: "此班次已有進行中的申請" }, 409);
-      const requestedDeadline = input.deadline ? new Date(input.deadline).getTime() : Date.now() + 24 * 3_600_000;
-      const deadline = new Date(Math.max(Date.now() + 5 * 60_000, Math.min(requestedDeadline, shiftStart - 60 * 60_000))).toISOString();
-      const note = String(input.note ?? "").trim();
-      if (note.length < 2) return json({ error: "請填寫換班原因或希望如何調整" }, 400);
+      const deadline = new Date(Math.max(Date.now() + 5 * 60_000, shiftEnd)).toISOString();
       const { data: request, error } = await sb.from("shift_requests").insert({ request_type: "give", shift_id: shiftId,
-        requester_emp_id: employee.id, deadline, status: "pending_manager", details: { note, approval_flow: "manager_only" } }).select().single();
+        requester_emp_id: employee.id, deadline, status: "pending_manager", details: { note, reasonCode, reasonLabel: reasons[reasonCode],
+          replacedEmpId, replacedRole: originalAssignment.role, approval_flow: "manager_only" } }).select().single();
       if (error) throw error;
       const { data: managers } = await sb.from("line_accounts").select("emp_id").eq("role", "manager").eq("active", true);
       for (const manager of managers ?? []) await queueNotification(sb, manager.emp_id, "shift_change_requested", {
         title: "正職員工提出換班",
-        text: `${employee.name}提出 ${shift.date} ${shift.start}–${shift.end} 換班申請，請至管理後台確認。`,
+        text: `${employee.name}提出 ${shift.date} ${shift.start}–${shift.end} ${originalAssignment.role}（原排 ${((cfg.employees ?? []).find((e: any) => e.id === replacedEmpId)?.name ?? replacedEmpId)}）換班：${reasons[reasonCode]}。請至管理後台確認。`,
       }, false, `shift-change-manager:${request.id}:${manager.emp_id}`);
       return json({ ok: true, requestId: request.id, message: "已送交管理員確認，不會自動通知其他員工" });
     }

@@ -41,6 +41,7 @@ function employeePortalMessages() {
         { type: "uri", label: "查看班表", uri: link("schedule") },
         { type: "uri", label: "手機定位打卡", uri: link("punch") },
         { type: "uri", label: "正職換班申請", uri: link("requests") },
+        { type: "uri", label: "謎先生備品系統", uri: "https://script.google.com/macros/s/AKfycbwfFHhK4W6Q9mLttUg_-Kryo5-fmnn4IMhyxsh5n60lRkGgzN9SLkKKdm_3_GqKhCsx/exec" },
       ],
     },
   }];

@@ -123,7 +123,7 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
   <div class="dlg-h"><span id="dlgShiftTitle">新增班次</span><button onclick="dlgShift.close()">✕</button></div>
   <div class="dlg-b">
     <div class="row">
-      <div class="field grow"><label>日期</label><input type="date" id="sfDate" onchange="refreshSlotOptions()"></div>
+      <div class="field grow"><label>日期</label><input type="date" id="sfDate" onchange="refreshSlotOptions();renderQuick()"></div>
       <div class="field grow"><label>店別</label><select id="sfStore" onchange="onShiftStoreKind()"></select></div>
       <div class="field grow"><label>類型</label>
         <select id="sfKind" onchange="onShiftStoreKind()">
@@ -203,6 +203,7 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
       <div class="field grow"><label>離職日(最後工作日)</label><input type="date" id="efEndDate"></div>
     </div>
     <label class="cklab" style="margin:0"><input type="checkbox" id="efActive" checked> 在職中(停用後不出現在排班與打卡)</label>
+    <label class="cklab" style="margin-top:10px"><input type="checkbox" id="efPracticeScheduler"> 授權安排新人練習場（限需要負責人資安排的正職）</label>
   </div>
   <div class="dlg-f">
     <button class="btn red" id="efDelete" onclick="deleteEmp()">刪除</button>
@@ -267,7 +268,7 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
 </div>
 <script>
 /* ============ 資料 ============ */
-const ROLES=['場控','NPC','櫃台','練習場'];
+const ROLES=['場控','NPC','櫃台','練習場','陪練'];
 const WD=['日','一','二','三','四','五','六'];
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
 function defaultAvail(){const a={};for(let i=0;i<7;i++)a[i]={on:true,start:'09:00',end:'22:30'};return a}
@@ -340,6 +341,10 @@ async function afterLogin(){
   if(S.settings.npcMaxChain==null)S.settings.npcMaxChain=2;
   if(S.settings.npcRestMin==null)S.settings.npcRestMin=30;
   if(S.settings.reminderHour==null)S.settings.reminderHour=20;
+  if(!Array.isArray(S.settings.shiftPresets)){S.settings.shiftPresets=[
+    {id:'dz_full_mon_wed',label:'大忠正職週一至週三',storeId:'dz',kind:'counter',start:'13:30',end:'22:00',days:[1,2,3]},
+    {id:'dz_full_weekend',label:'大忠正職週六日',storeId:'dz',kind:'counter',start:'12:30',end:'22:00',days:[6,0]}
+  ];setTimeout(save,0)}
   if(!Array.isArray(S.closedDates))S.closedDates=[];
   let payrollDefaultsChanged=false;
   S.themes.forEach(function(t){
@@ -911,9 +916,18 @@ function renderQuick(){
   const kind=document.getElementById('sfKind').value;
   const box=document.getElementById('sfQuick');
   if(kind==='theme'){box.innerHTML='';return}
-  box.innerHTML=[['全天','09:00','22:30'],['早班','09:00','15:30'],['晚班','15:30','22:30']]
-    .map(p=>`<button onclick="pickQuick('${p[1]}','${p[2]}')">${p[0]} ${p[1]}–${p[2]}</button>`).join('');
+  const storeId=document.getElementById('sfStore').value,date=document.getElementById('sfDate').value,day=date?new Date(date+'T00:00:00').getDay():null;
+  const presets=(S.settings.shiftPresets||[]).filter(p=>p.storeId===storeId&&p.kind===kind&&(!Array.isArray(p.days)||!p.days.length||p.days.includes(day)));
+  box.innerHTML=presets.map(p=>`<span style="display:inline-flex;gap:2px"><button onclick="pickQuick('${p.start}','${p.end}')">${esc(p.label)} ${p.start}–${p.end}</button><button class="btn red sm" title="刪除此常用時段" onclick="deleteQuickPreset('${p.id}')">×</button></span>`).join('')
+    +`<button onclick="saveQuickPreset()">＋ 將目前時間存為常用</button>`;
 }
+function saveQuickPreset(){
+  const start=document.getElementById('sfStart').value,end=document.getElementById('sfEnd').value;if(!start||!end||toMin(end)<=toMin(start))return alert('請先選好正確的開始與結束時間');
+  const label=prompt('這組常用時間的名稱','常用班次');if(!label?.trim())return;
+  const date=document.getElementById('sfDate').value,onlyThisDay=confirm('只在相同星期顯示這組常用時間嗎？\n\n按「確定」＝只在星期'+WD[new Date(date+'T00:00:00').getDay()]+'顯示；按「取消」＝每天都顯示。');
+  S.settings.shiftPresets=S.settings.shiftPresets||[];S.settings.shiftPresets.push({id:uid(),label:label.trim(),storeId:document.getElementById('sfStore').value,kind:document.getElementById('sfKind').value,start,end,days:onlyThisDay?[new Date(date+'T00:00:00').getDay()]:[]});save();renderQuick();
+}
+function deleteQuickPreset(id){if(!confirm('刪除這組常用時段？已建立的班次不受影響。'))return;S.settings.shiftPresets=(S.settings.shiftPresets||[]).filter(p=>p.id!==id);save();renderQuick()}
 function pickQuick(s,e){
   document.getElementById('sfStart').value=s;
   document.getElementById('sfEnd').value=e;
@@ -944,7 +958,7 @@ function defaultSlots(){
     const t=theme(document.getElementById('sfTheme').value);
     for(let i=0;i<(t?t.needGM:1);i++)dlgSlotsArr.push({role:'場控',empId:''});
     for(let i=0;i<(t?t.needNPC:0);i++)dlgSlotsArr.push({role:'NPC',empId:''});
-  }else if(kind==='practice')dlgSlotsArr.push({role:'練習場',empId:''});
+  }else if(kind==='practice')dlgSlotsArr.push({role:'練習場',empId:''},{role:'陪練',empId:''});
   else if(kind==='floor'||kind==='cleaning')dlgSlotsArr.push({role:'場控',empId:''});
   else dlgSlotsArr.push({role:'櫃台',empId:''});
 }
@@ -1039,6 +1053,15 @@ function renderSlots(){
   }).join('')||'<span class="muted">尚無人員欄位</span>';
 }
 function refreshSlotOptions(){if(dlgShift.open)renderSlots()}
+function notifyShiftAssignments(obj,prev){
+  if(isDemo()||isCx(obj))return;
+  const oldSig=prev?`${prev.date}|${prev.start}|${prev.end}|${prev.storeId}|${prev.kind}|${prev.themeId||''}`:'',newSig=`${obj.date}|${obj.start}|${obj.end}|${obj.storeId}|${obj.kind}|${obj.themeId||''}`;
+  for(const a of obj.assignments||[]){
+    if(!a.empId)continue;
+    const existed=(prev?.assignments||[]).some(x=>x.empId===a.empId&&x.role===a.role)&&oldSig===newSig;if(existed)continue;
+    sbc.from('notification_outbox').upsert({recipient_emp_id:a.empId,category:'shift_assigned',critical:true,payload:{title:'新的工作安排',text:`${obj.date} ${obj.start}–${obj.end} ${store(obj.storeId)?.name||''}・${shiftLabel(obj)}（${a.role}），請至 LINE 班表確認。`},idempotency_key:`manual-shift:${obj.id}:${a.empId}:${obj.date}:${obj.start}:${obj.end}`},{onConflict:'idempotency_key',ignoreDuplicates:true});
+  }
+}
 function saveShift(){
   const date=document.getElementById('sfDate').value;
   const start=document.getElementById('sfStart').value,end=document.getElementById('sfEnd').value;
@@ -1083,7 +1106,7 @@ function saveShift(){
   if(String(obj.id).indexOf('sb_')===0)obj.manualEdit=true; // SimplyBook 班次手動改過,同步時不覆蓋
   if(editShiftId){const i=S.shifts.findIndex(x=>x.id===editShiftId);S.shifts[i]=obj}
   else S.shifts.push(obj);
-  save();dbUpsertShift(obj);dlgShift.close();render();
+  save();dbUpsertShift(obj);notifyShiftAssignments(obj,prev);dlgShift.close();render();
 }
 function deleteShift(){
   if(!confirm('確定刪除此班次?'))return;
@@ -1445,12 +1468,13 @@ function vEmps(){
   return `<div class="card">
     <div class="row" style="margin-bottom:10px"><h2 class="grow">員工(${S.employees.length})</h2>
     <button class="btn" onclick="openEmp(null)">＋ 新增員工</button></div>
-    ${S.employees.length?`<table><tr><th>姓名</th><th>身分</th><th class="num">時薪</th><th class="num">月薪</th><th>會帶的主題</th><th>櫃台</th><th>狀態</th><th></th></tr>
+    ${S.employees.length?`<table><tr><th>姓名</th><th>身分</th><th class="num">時薪</th><th class="num">月薪</th><th>會帶的主題</th><th>櫃台</th><th>練習安排</th><th>狀態</th><th></th></tr>
     ${S.employees.map(e=>`<tr style="${e.active?'':'opacity:.5'}">
       <td>${esc(e.name)}</td><td>${e.type==='part'?'兼職':'正職'}</td>
       <td class="num">${e.hourlyRate||'—'}</td><td class="num">${e.monthlySalary?e.monthlySalary.toLocaleString():'—'}</td>
       <td>${Object.entries(e.skills||{}).filter(([,r])=>r.length).map(([tid,r])=>{const t=theme(tid);return t?`<span class="tag">${esc(t.name)}:${r.join('/')}</span>`:''}).join('')||'<span class="muted">未設定</span>'}</td>
       <td>${(e.counters||[]).map(sid=>esc(store(sid)?.name||'')).join('、')||'<span class="muted">—</span>'}</td>
+      <td>${e.canSchedulePractice?'✅ 可安排':'—'}</td>
       <td>${e.active?'在職':'停用'}${e.startDate?`<br><span class="muted">到職 ${esc(e.startDate)}</span>`:''}${e.endDate?`<br><span class="muted">離職 ${esc(e.endDate)}</span>`:''}</td>
       <td><button class="btn gray sm" onclick="openEmp('${e.id}')">編輯</button></td></tr>`).join('')}</table>`
     :'<p class="muted">尚無員工,點右上「新增員工」開始。技能與可上班時間分別在「技能表」「可上班時間」頁設定。</p>'}
@@ -1471,6 +1495,7 @@ function openEmp(id){
   document.getElementById('efStdHours').value=e?(e.stdHours||''):'';
   document.getElementById('efOtRate').value=e?(e.otRate||''):'';
   document.getElementById('efActive').checked=e?e.active:true;
+  document.getElementById('efPracticeScheduler').checked=!!e?.canSchedulePractice;
   const tsel=document.getElementById('efType');
   tsel.onchange=()=>{document.getElementById('efOtRow').style.display=tsel.value==='full'?'':'none'};
   document.getElementById('efOtRow').style.display=(e?e.type:'part')==='full'?'':'none';
@@ -1488,8 +1513,10 @@ function saveEmp(){
     endDate:document.getElementById('efEndDate').value,
     stdHours:Number(document.getElementById('efStdHours').value)||0,
     otRate:Number(document.getElementById('efOtRate').value)||0,
-    active:document.getElementById('efActive').checked
+    active:document.getElementById('efActive').checked,
+    canSchedulePractice:document.getElementById('efPracticeScheduler').checked
   };
+  if(data.canSchedulePractice&&data.type!=='full')return alert('安排新人練習場的權限只能授予正職員工');
   if(data.startDate&&data.endDate&&data.endDate<data.startDate)return alert('離職日不可早於到職日');
   if(editEmpId){Object.assign(emp(editEmpId),data)}
   else S.employees.push({id:uid(),skills:{},counters:[],avail:defaultAvail(),...data});
@@ -1771,8 +1798,8 @@ function delAvailX(d){
 /* ============ LINE 員工系統 ============ */
 function fmtStatus(s){return({open:'開放中',pending_manager:'待管理員選人',completed:'已完成',cancelled:'已取消',expired:'已截止',pending:'待審核',approved:'已核准',rejected:'已拒絕',anomaly:'異常'}[s]||s)}
 function managerChangeCandidates(r,sh){
-  const slot=(sh?.assignments||[]).find(a=>a.empId===r.requester_emp_id),role=slot?.role||'';
-  return S.employees.filter(e=>e.active&&e.id!==r.requester_emp_id&&employedOn(e,sh.date)).filter(e=>{
+  const replaced=r.details?.replacedEmpId||r.requester_emp_id,slot=(sh?.assignments||[]).find(a=>a.empId===replaced),role=slot?.role||'';
+  return S.employees.filter(e=>e.active&&e.id!==replaced&&employedOn(e,sh.date)).filter(e=>{
     const warnings=empWarnings(e,sh.date,sh.start,sh.end,sh.storeId,role);
     if(role==='櫃台'&&!(e.counters||[]).includes(sh.storeId))warnings.push('未具此店櫃台資格');
     if(sh.kind==='theme'&&(role==='場控'||role==='NPC')&&!(e.skills?.[sh.themeId]||[]).includes(role))warnings.push('未具主題資格');
@@ -1791,13 +1818,13 @@ function vLineAdmin(){
   return `<div class="card"><div class="row"><h2 class="grow">LINE 員工系統</h2><button class="btn gray sm" onclick="refreshLineAdmin()">重新整理</button></div>
     <div class="row" style="margin-top:10px"><span class="pill ${usage>=160?'out':'in'}">本月主動訊息 ${usage}/200</span><span class="muted">160則後只發緊急通知，保留40則。</span></div>
     <div class="row" style="margin-top:10px"><label style="margin:0">前一日上班提醒時間 <select id="reminderHour" style="width:auto">${Array.from({length:10},(_,i)=>i+13).map(h=>`<option value="${h}" ${Number(S.settings.reminderHour)===h?'selected':''}>${String(h).padStart(2,'0')}:00</option>`).join('')}</select></label><button class="btn sm" onclick="saveReminderHour()">儲存</button><span class="muted">同一員工隔日多個班次合併成一則通知。</span></div>
-    <p class="muted" style="margin-top:10px">員工入口：<a href="staff.html" target="_blank">staff.html</a>。正式使用前需完成 LINE Login／LIFF 與 Edge Functions 部署。</p></div>
+    <p class="muted" style="margin-top:10px">員工入口：<a href="staff.html" target="_blank">staff.html</a>　｜　<a href="https://script.google.com/macros/s/AKfycbwfFHhK4W6Q9mLttUg_-Kryo5-fmnn4IMhyxsh5n60lRkGgzN9SLkKKdm_3_GqKhCsx/exec" target="_blank" rel="noopener">開啟謎先生備品系統</a></p></div>
   <div class="card"><h2>LINE 身分綁定</h2><p class="muted">為員工產生一次性驗證碼，有效24小時。員工在 LINE 入口輸入後即綁定本人。</p>
     <table><tr><th>員工</th><th>LINE狀態</th><th>權限</th><th></th></tr>${S.employees.map(e=>{const a=LINE.accounts.find(x=>x.emp_id===e.id);return `<tr><td>${esc(e.name)}</td><td>${a?`✅ ${esc(a.display_name||'已綁定')}`:'尚未綁定'}</td><td>${a?.role==='manager'?'管理員':'員工'}</td><td>${a?`<button class="btn gray sm" onclick="unbindLine('${e.id}')">解除</button>`:`<button class="btn sm" onclick="makeBindCode('${e.id}','employee')">產生員工碼</button> <button class="btn gray sm" onclick="makeBindCode('${e.id}','manager')">管理員碼</button>`}</td></tr>`}).join('')}</table></div>
   <div class="card"><h2>兩間店定位</h2><p class="muted">請在店內用手機地圖確認緯度、經度。半徑建議先設200公尺，測試後再縮小。</p>
     <table><tr><th>店別</th><th>緯度</th><th>經度</th><th>允許半徑</th><th></th></tr>${LINE.worksites.map(w=>`<tr><td>${esc(w.name)}</td><td><input id="lat_${w.id}" value="${w.latitude??''}" placeholder="25.xxxxxx"></td><td><input id="lng_${w.id}" value="${w.longitude??''}" placeholder="121.xxxxxx"></td><td><input id="rad_${w.id}" type="number" value="${w.radius_m||200}" min="20" max="2000" style="width:90px"> 公尺</td><td><button class="btn sm" onclick="saveWorksite('${w.id}')">儲存</button></td></tr>`).join('')}</table></div>
   <div class="card"><h2>加場候選（${pendingReq.length}）</h2>${pendingReq.map(r=>{const sh=byId(S.shifts,r.shift_id);const accepted=LINE.responses.filter(x=>x.request_id===r.id&&x.response==='accept');return `<div style="padding:10px 0;border-bottom:1px solid #e5e7eb"><b>${sh?`${sh.date} ${sh.start} ${esc(shiftLabel(sh))}`:esc(r.shift_id)}</b><br><span class="muted">願意接班：</span>${accepted.map(x=>`<button class="btn sm" style="margin:5px" onclick="selectExtra('${r.id}','${x.emp_id}')">選 ${esc(emp(x.emp_id)?.name||x.emp_id)}</button>`).join('')||'<span class="warn">目前無人</span>'}</div>`}).join('')||'<p class="muted">目前沒有待選加場</p>'}</div>
-  <div class="card"><h2>正職換班待確認（${pendingChanges.length}）</h2><p class="muted">員工只負責回報；不會自動邀請其他同事。請由管理員選定替補人員或拒絕。</p>${pendingChanges.map(r=>{const sh=byId(S.shifts,r.shift_id),cands=sh?managerChangeCandidates(r,sh):[];return `<div style="padding:10px 0;border-bottom:1px solid #e5e7eb"><b>${esc(emp(r.requester_emp_id)?.name||r.requester_emp_id)}・${sh?`${sh.date} ${sh.start}–${sh.end} ${esc(shiftLabel(sh))}`:esc(r.shift_id)}</b><br><span class="muted">原因：${esc(r.details?.note||'未填')}</span><div class="row" style="margin-top:8px"><select id="change_${r.id}" style="width:auto;min-width:150px"><option value="">選擇替補人員</option>${cands.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select><button class="btn sm" onclick="reviewShiftChange('${r.id}','approved')" ${cands.length?'':'disabled'}>核准換人</button><button class="btn red sm" onclick="reviewShiftChange('${r.id}','rejected')">拒絕</button></div></div>`}).join('')||'<p class="muted">目前沒有待確認換班</p>'}</div>
+  <div class="card"><h2>正職換班待確認（${pendingChanges.length}）</h2><p class="muted">正職可回報今日所有場次班別；不會自動邀請其他同事。請由管理員選定替補人員或拒絕。</p>${pendingChanges.map(r=>{const sh=byId(S.shifts,r.shift_id),cands=sh?managerChangeCandidates(r,sh):[],replaced=r.details?.replacedEmpId||r.requester_emp_id;return `<div style="padding:10px 0;border-bottom:1px solid #e5e7eb"><b>回報：${esc(emp(r.requester_emp_id)?.name||r.requester_emp_id)}・原排：${esc(emp(replaced)?.name||replaced)}（${esc(r.details?.replacedRole||'')}）</b><br><span class="muted">${sh?`${sh.date} ${sh.start}–${sh.end} ${esc(shiftLabel(sh))}`:esc(r.shift_id)}<br>原因：${esc(r.details?.reasonLabel||'其他')}${r.details?.note?`；${esc(r.details.note)}`:''}</span><div class="row" style="margin-top:8px"><select id="change_${r.id}" style="width:auto;min-width:150px"><option value="">選擇替補人員</option>${cands.map(e=>`<option value="${e.id}">${esc(e.name)}</option>`).join('')}</select><button class="btn sm" onclick="reviewShiftChange('${r.id}','approved')" ${cands.length?'':'disabled'}>核准換人</button><button class="btn red sm" onclick="reviewShiftChange('${r.id}','rejected')">拒絕</button></div></div>`}).join('')||'<p class="muted">目前沒有待確認換班</p>'}</div>
   <div class="card"><h2>客人回報待處理（${pendingGuests.length}）</h2><p class="muted">請先回到 SimplyBook 建立／確認預約與訂金，再確認帶場人員，最後在此回覆員工。</p>${pendingGuests.map(r=>{const sh=byId(S.shifts,r.shift_id);return `<div style="padding:10px 0;border-bottom:1px solid #e5e7eb"><b>${r.customer_type==='walk_in'?'現場客人':'預約客人'}・${esc(r.surname)}・${r.party_size}人</b><br><span class="muted">電話：${esc(r.phone)}<br>場次：${sh?`${sh.date} ${sh.start}–${sh.end} ${esc(shiftLabel(sh))}`:esc(r.shift_id)}<br>回報者：${esc(emp(r.emp_id)?.name||r.emp_id)}${r.note?`<br>補充：${esc(r.note)}`:''}</span><label>回覆內容</label><input id="guestReply_${r.id}" placeholder="例如：已建立 SimplyBook，訂金已確認，由庭瑋帶場"><div class="row" style="margin-top:8px"><button class="btn sm" onclick="reviewGuestReport('${r.id}','confirmed')">完成並回覆</button><button class="btn red sm" onclick="reviewGuestReport('${r.id}','rejected')">無法受理</button></div></div>`}).join('')||'<p class="muted">目前沒有待處理客人回報</p>'}</div>
   <div class="card"><h2>近期管理員換班紀錄</h2>${completedTrades.slice(0,20).map(r=>`<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>換人・${esc(emp(r.requester_emp_id)?.name||r.requester_emp_id)} → ${esc(emp(r.selected_emp_id)?.name||r.selected_emp_id)}</b><br><span class="muted">${esc(byId(S.shifts,r.shift_id)?.date||'')} ${esc(byId(S.shifts,r.shift_id)?.start||'')}</span></span><button class="btn red sm" onclick="revertTrade('${r.id}')">撤銷並還原</button></div>`).join('')||'<p class="muted">尚無已完成換班</p>'}</div>
   <div class="card"><h2>補卡申請（${pendingAtt.length}）</h2>${pendingAtt.map(r=>{const label=r.request_type==='missing_in'?'補上班卡':r.request_type==='missing_out'?'補下班卡':r.request_type==='npc_checkin'?'NPC 補場次報到':'補／更正完整場次',times=r.request_type==='correction'?`${r.requested?.inTime||'?'}–${r.requested?.outTime||'?'}`:(r.requested?.time||'?'),work=(r.requested?.workItem?.labels||[]).join('、')||'未填工作項目';return `<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${esc(emp(r.emp_id)?.name||r.emp_id)}・${r.punch_date}・${label} ${times}</b><br><span class="muted">工作：${esc(work)}<br>原因：${esc(r.reason)}</span></span><button class="btn sm" onclick="reviewAttendance('${r.id}','approved')">核准並補登</button><button class="btn red sm" onclick="reviewAttendance('${r.id}','rejected')">拒絕</button></div>`}).join('')||'<p class="muted">目前沒有待審補卡</p>'}</div>
@@ -1824,6 +1851,7 @@ async function selectExtra(requestId,empId){
 }
 async function reviewShiftChange(requestId,status){
   const req=LINE.requests.find(r=>r.id===requestId),sh=byId(S.shifts,req?.shift_id);if(!req||!sh)return alert('找不到換班資料');
+  const replaced=req.details?.replacedEmpId||req.requester_emp_id;
   const now=new Date().toISOString();
   if(status==='rejected'){
     const reason=prompt('請填寫拒絕原因','目前無合適替補人員')||'管理員未核准';
@@ -1832,10 +1860,12 @@ async function reviewShiftChange(requestId,status){
   }
   const selected=document.getElementById('change_'+requestId)?.value;if(!selected)return alert('請先選擇替補人員');
   if(!managerChangeCandidates(req,sh).some(e=>e.id===selected))return alert('該員工目前已不符合時間、技能或撞班規則，請重新整理');
-  const slot=(sh.assignments||[]).find(a=>a.empId===req.requester_emp_id);if(!slot)return alert('原排班人員已不在此班次，請重新整理');
+  const slot=(sh.assignments||[]).find(a=>a.empId===replaced);if(!slot)return alert('原排班人員已不在此班次，請重新整理');
   slot.empId=selected;sh.manualEdit=true;
   const src=String(sh.id).startsWith('sb_')?'simplybook':'manual',text=`${sh.date} ${sh.start}–${sh.end} ${shiftLabel(sh)}`;
-  const results=await Promise.all([sbc.from('shifts').upsert({id:sh.id,date:sh.date,source:src,data:sh}),sbc.from('shift_requests').update({status:'completed',selected_emp_id:selected,completed_at:now,updated_at:now}).eq('id',requestId),sbc.from('notification_outbox').upsert({recipient_emp_id:req.requester_emp_id,category:'shift_change_result',critical:true,payload:{title:'換班已核准',text:`${text} 已由 ${emp(selected)?.name||selected} 接替。`},idempotency_key:`shift-change-approved:${requestId}:requester`},{onConflict:'idempotency_key',ignoreDuplicates:true}),sbc.from('notification_outbox').upsert({recipient_emp_id:selected,category:'shift_assigned',critical:true,payload:{title:'管理員指派新班次',text:`你已接替 ${text}，請至 LINE 班表確認。`},idempotency_key:`shift-change-approved:${requestId}:replacement`},{onConflict:'idempotency_key',ignoreDuplicates:true})]);
+  const notifications=[sbc.from('notification_outbox').upsert({recipient_emp_id:req.requester_emp_id,category:'shift_change_result',critical:true,payload:{title:'換班已核准',text:`${text} 已由 ${emp(selected)?.name||selected} 接替。`},idempotency_key:`shift-change-approved:${requestId}:requester`},{onConflict:'idempotency_key',ignoreDuplicates:true}),sbc.from('notification_outbox').upsert({recipient_emp_id:selected,category:'shift_assigned',critical:true,payload:{title:'管理員指派新班次',text:`你已接替 ${text}，請至 LINE 班表確認。`},idempotency_key:`shift-change-approved:${requestId}:replacement`},{onConflict:'idempotency_key',ignoreDuplicates:true})];
+  if(replaced!==req.requester_emp_id)notifications.push(sbc.from('notification_outbox').upsert({recipient_emp_id:replaced,category:'shift_replaced',critical:true,payload:{title:'班表人力已調整',text:`你原本的 ${text} 已由 ${emp(selected)?.name||selected} 接替。`},idempotency_key:`shift-change-approved:${requestId}:original`},{onConflict:'idempotency_key',ignoreDuplicates:true}));
+  const results=await Promise.all([sbc.from('shifts').upsert({id:sh.id,date:sh.date,source:src,data:sh}),sbc.from('shift_requests').update({status:'completed',selected_emp_id:selected,completed_at:now,updated_at:now}).eq('id',requestId),...notifications]);
   const failed=results.find(x=>x.error);if(failed)return alert('換班失敗：'+failed.error.message);await refreshLineAdmin();render();
 }
 async function reviewGuestReport(id,status){
