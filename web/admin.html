@@ -475,6 +475,7 @@ async function afterLogin(){
     if(s.id==='ms'&&(s.color==='#7c3aed'||!s.color)){s.color='#e5e7eb';changed=true;}
   });if(changed)save();}
   await ensureYijiaCounterSchedule();
+  await ensureMsCounterFromThemeControl();
   await loadLineAdmin();
   renderNav();render();
   startSyncHealthTicker();
@@ -753,6 +754,37 @@ async function ensureYijiaCounterSchedule(){
   if(!rows.length)return;
   const result=await sbc.from('shifts').upsert(rows.map(sh=>({id:sh.id,date:sh.date,source:'manual',data:sh})));
   if(result.error)console.error('翊嘉固定櫃台班自動建立失敗',result.error);
+}
+async function ensureMsCounterFromThemeControl(){
+  const firstDay=monthStr()+'-01',prefix='auto_ms_counter_theme_';
+  const groups=new Map();
+  for(const sh of S.shifts){
+    if(sh.date<firstDay||sh.storeId!=='ms'||sh.kind!=='theme'||isCx(sh))continue;
+    const t=theme(sh.themeId),name=t?baseThemeName(t):'';
+    if(name!=='外婆'&&name!=='詭獄')continue;
+    // 只用主題場次直接排定的場控作為來源，避免自動櫃台班的連結反向重複推算。
+    for(const a of sh.assignments||[]){
+      if(!a.empId||a.role!=='場控')continue;
+      const key=sh.date+'|'+a.empId,g=groups.get(key)||{date:sh.date,empId:a.empId,start:sh.start,end:sh.end,links:[]};
+      if(sh.start<g.start)g.start=sh.start;if(sh.end>g.end)g.end=sh.end;
+      g.links.push({shiftId:sh.id,empId:a.empId});groups.set(key,g);
+    }
+  }
+  const rows=[],activeIds=new Set();
+  for(const g of groups.values()){
+    const id=prefix+g.date.replaceAll('-','')+'_'+g.empId,manual=activeCounterShifts(g.date,'ms').find(sh=>sh.id!==id&&!String(sh.autoAssigned||'').startsWith('theme_controller_')&&(sh.assignments||[]).some(a=>a.empId===g.empId));
+    if(manual)continue; // 人工櫃台班優先，不更動人工設定的時間。
+    activeIds.add(id);
+    const obj={id,date:g.date,storeId:'ms',kind:'counter',start:g.start,end:g.end,assignments:[{role:'櫃台',empId:g.empId}],linkedThemeAssignments:g.links,note:'依外婆／詭獄場控時間自動帶入',status:'active',autoAssigned:'theme_controller_counter'};
+    const i=S.shifts.findIndex(sh=>sh.id===id);if(i>=0)S.shifts[i]=obj;else S.shifts.push(obj);rows.push(obj);
+  }
+  // 原來源場次被取消、改期或換人時，保留歷程但停止顯示舊的自動櫃台班。
+  for(const sh of S.shifts.filter(sh=>sh.date>=firstDay&&String(sh.id).startsWith(prefix)&&!activeIds.has(sh.id)&&!isCx(sh))){
+    sh.status='cancelled_auto_source_removed';rows.push(sh);
+  }
+  if(!rows.length)return;
+  const result=await sbc.from('shifts').upsert(rows.map(sh=>({id:sh.id,date:sh.date,source:'manual',data:sh})));
+  if(result.error)console.error('謎先生主題場控自動櫃台班建立失敗',result.error);
 }
 function yijiaNeedsDzCoverage(ds){
   if(!dzCounterDefaultTime(ds))return false;
@@ -1474,6 +1506,8 @@ function saveShift(){
   if(editShiftId){const i=S.shifts.findIndex(x=>x.id===editShiftId);S.shifts[i]=obj}
   else S.shifts.push(obj);
   save();dbUpsertShift(obj);notifyShiftAssignments(obj,prev);dlgShift.close();render();
+  // 外婆／詭獄場控有異動時，立即重新計算謎先生櫃台起訖時間。
+  ensureMsCounterFromThemeControl().then(render).catch(e=>console.error('櫃台班重新計算失敗',e));
 }
 function deleteShift(){
   if(!confirm('確定刪除此班次?'))return;
