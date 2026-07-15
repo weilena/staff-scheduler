@@ -421,8 +421,12 @@ async function afterLogin(){
   if(S.settings.reminderHour==null)S.settings.reminderHour=20;
   if(!Array.isArray(S.settings.shiftPresets)){S.settings.shiftPresets=[
     {id:'dz_full_mon_wed',label:'大忠正職週一至週三',storeId:'dz',kind:'counter',start:'13:30',end:'22:00',days:[1,2,3]},
+    {id:'dz_full_fri',label:'大忠正職週五',storeId:'dz',kind:'counter',start:'13:30',end:'22:00',days:[5]},
     {id:'dz_full_weekend',label:'大忠正職週六日',storeId:'dz',kind:'counter',start:'12:30',end:'22:00',days:[6,0]}
   ];setTimeout(save,0)}
+  if(!S.settings.shiftPresets.some(p=>p.id==='dz_full_fri')){
+    S.settings.shiftPresets.push({id:'dz_full_fri',label:'大忠正職週五',storeId:'dz',kind:'counter',start:'13:30',end:'22:00',days:[5]});setTimeout(save,0);
+  }
   if(!Array.isArray(S.closedDates))S.closedDates=[];
   let payrollDefaultsChanged=false;
   S.themes.forEach(function(t){
@@ -470,6 +474,7 @@ async function afterLogin(){
     if(s.id==='dz'&&(s.color==='#2563eb'||!s.color)){s.color='#111827';changed=true;}
     if(s.id==='ms'&&(s.color==='#7c3aed'||!s.color)){s.color='#e5e7eb';changed=true;}
   });if(changed)save();}
+  await ensureYijiaCounterSchedule();
   await loadLineAdmin();
   renderNav();render();
   startSyncHealthTicker();
@@ -722,15 +727,41 @@ function isShiftUnstaffed(sh){
   return allowedThemeRoles(t).some(role=>shiftRolePeople(sh,role).length<Number(role==='場控'?t.needGM:t.needNPC));
 }
 function activeCounterShifts(ds,storeId){return S.shifts.filter(sh=>sh.date===ds&&sh.storeId===storeId&&sh.kind==='counter'&&!isCx(sh)).sort((a,b)=>a.start.localeCompare(b.start))}
+function dzCounterDefaultTime(ds){
+  const day=dateWD(ds);
+  if(day===4||S.closedDates.includes(ds))return null;
+  if(day===0||day===6)return{start:'12:30',end:'22:00'};
+  return{start:'13:30',end:'22:00'};
+}
+async function ensureYijiaCounterSchedule(){
+  const e=S.employees.find(x=>x.active&&x.name==='翊嘉');if(!e)return;
+  const rows=[],start=new Date(todayStr()+'T00:00:00'),end=new Date(start);end.setDate(end.getDate()+75);
+  for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){
+    const ds=fmtDate(d),hours=dzCounterDefaultTime(ds),availability=effectiveAvail(e,ds);if(!hours||!employedOn(e,ds)||!availability?.on)continue;
+    const id='auto_dz_counter_'+ds.replaceAll('-',''),existingById=S.shifts.find(sh=>sh.id===id);
+    if(existingById)continue; // 手動取消自動班時保留取消狀態，不會再次生成。
+    const existing=activeCounterShifts(ds,'dz');
+    if(existing.some(sh=>(sh.assignments||[]).some(a=>a.empId)))continue;
+    if(existing.length){
+      const sh=existing[0];sh.assignments=sh.assignments||[];sh.assignments.push({role:'櫃台',empId:e.id});sh.autoAssigned='yijia_fixed_counter';rows.push(sh);continue;
+    }
+    const sh={id,date:ds,storeId:'dz',kind:'counter',start:hours.start,end:hours.end,assignments:[{role:'櫃台',empId:e.id}],note:'依翊嘉固定班自動帶入',status:'normal',autoAssigned:'yijia_fixed_counter'};
+    S.shifts.push(sh);rows.push(sh);
+  }
+  if(!rows.length)return;
+  const result=await sbc.from('shifts').upsert(rows.map(sh=>({id:sh.id,date:sh.date,source:'manual',data:sh})));
+  if(result.error)console.error('翊嘉固定櫃台班自動建立失敗',result.error);
+}
 function yijiaNeedsDzCoverage(ds){
-  if(S.closedDates.includes(ds))return false;
+  if(!dzCounterDefaultTime(ds))return false;
   const e=S.employees.find(x=>x.active&&x.name==='翊嘉');if(!e||!employedOn(e,ds))return false;
   const a=effectiveAvail(e,ds);if(a&&a.on)return false;
   return !activeCounterShifts(ds,'dz').some(sh=>(sh.assignments||[]).some(x=>x.empId));
 }
 function counterCoverageChip(ds,storeId){
   const shifts=activeCounterShifts(ds,storeId),label=storeId==='dz'?'大忠櫃台':'謎先生櫃台';
-  if(S.closedDates.includes(ds))return `<div class="chip" style="background:#e5e7eb;color:#6b7280;border:1px solid #d1d5db"><b>${label}</b> 店休</div>`;
+  const closed=dateWD(ds)===4||S.closedDates.includes(ds);
+  if(closed&&!shifts.length)return `<div class="chip" style="background:#e5e7eb;color:#6b7280;border:1px solid #d1d5db" onclick="event.stopPropagation();openShift(null,'${ds}',{storeId:'${storeId}',kind:'counter'})"><b>${label}</b> 公休・仍可安排</div>`;
   const people=[...new Set(shifts.flatMap(sh=>(sh.assignments||[]).filter(a=>a.empId).map(a=>emp(a.empId)?.name||a.empId)))];
   const urgent=storeId==='dz'&&yijiaNeedsDzCoverage(ds),missing=!shifts.length||!people.length;
   const bg=urgent?'#fee2e2':missing?'#fff7ed':'#ecfdf5',color=urgent?'#b91c1c':missing?'#9a3412':'#047857';
@@ -1115,7 +1146,7 @@ function openShift(id,presetDate,preset){
   document.getElementById('sfWriteback').style.display=(sh&&String(sh.id).indexOf('sb_')===0&&!isDemo())?'':'none';
   fillStoreSelect(document.getElementById('sfStore'),sh?sh.storeId:(preset?preset.storeId:S.stores[0].id));
   document.getElementById('sfDate').value=sh?sh.date:(presetDate||todayStr());
-  document.getElementById('sfKind').value=sh?sh.kind:'theme';
+  document.getElementById('sfKind').value=sh?sh.kind:(preset?.kind||'theme');
   document.getElementById('sfNote').value=sh?(sh.note||''):'';
   dlgLinkedThemeArr=sh&&Array.isArray(sh.linkedThemeAssignments)?sh.linkedThemeAssignments.map(x=>({shiftId:x.shiftId,empId:x.empId})):[];
   rebuildThemeSelect(sh?sh.themeId:(preset?preset.themeId:null));
@@ -1124,8 +1155,9 @@ function openShift(id,presetDate,preset){
     document.getElementById('sfEnd').value=sh.end;
     dlgSlotsArr=sh.assignments.map(a=>({role:a.role,empId:a.empId}));
   }else if(preset){
-    document.getElementById('sfStart').value=preset.start;
-    autoEnd();
+    document.getElementById('sfStart').value=preset.start||'';
+    document.getElementById('sfEnd').value=preset.end||'';
+    if(preset.start&&!preset.end)autoEnd();
     defaultSlots();
   }else{
     const t=theme(document.getElementById('sfTheme').value);
