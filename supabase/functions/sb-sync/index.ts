@@ -195,7 +195,7 @@ const handler = async (req: Request) => {
       }
       const employee = matchedEmployee(cfg.employees ?? [], providerName);
       const role = (selectedTheme.payNPC ?? 0) > 0 ? "NPC" : "場控";
-      // 客人與付款資訊(僅存私人雲端,受 RLS 保護,登入管理者才看得到)
+      // 客人與付款資訊僅存私人雲端；員工 API 只提供給該場人員、同店值班櫃台與管理員。
       const customer = {
         name: String(pick(booking, ["client", "text", "client_name"])),
         phone: String(pick(booking, ["client_phone"])),
