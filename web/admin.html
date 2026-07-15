@@ -14,10 +14,14 @@
 body{font-family:"Segoe UI","Microsoft JhengHei",sans-serif;background:var(--bg);color:var(--txt);font-size:15px}
 header{background:#0f172a;color:#fff;padding:10px 16px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;position:sticky;top:0;z-index:50}
 header h1{font-size:17px;font-weight:700}
-nav{display:flex;gap:4px;flex-wrap:wrap}
+nav{display:flex;flex-direction:column;gap:5px;flex:1;min-width:0}
+.navmain{display:flex;gap:4px;flex-wrap:wrap}
 nav button{background:transparent;border:none;color:#cbd5e1;padding:7px 12px;border-radius:8px;cursor:pointer;font-size:14px}
 nav button:hover{background:#1e293b;color:#fff}
-nav button.on{background:var(--accent);color:#fff;font-weight:600}
+.navmain button.on{background:var(--accent);color:#fff;font-weight:600}
+.subnav{display:flex;gap:4px;flex-wrap:wrap;background:#1e293b;border-radius:9px;padding:3px;align-self:flex-start}
+.subnav button{padding:5px 12px;font-size:13px;color:#94a3b8}
+.subnav button.on{background:#475569;color:#fff;font-weight:600}
 main{max-width:1280px;margin:18px auto;padding:0 14px 60px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
 .card h2{font-size:16px;margin-bottom:12px}
@@ -103,7 +107,7 @@ th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 .counter-lane>strong{padding:10px;background:#f1f5f9}
 .counter-lane .slotrow{padding:7px}
 @media(max-width:640px){
-  header{padding:8px 10px;gap:7px}header h1{font-size:15px}nav{flex-wrap:nowrap;overflow-x:auto;width:100%}nav button{white-space:nowrap;padding:6px 9px}
+  header{padding:8px 10px;gap:7px}header h1{font-size:15px}nav{width:100%}.navmain,.subnav{flex-wrap:nowrap;overflow-x:auto;width:100%}nav button{white-space:nowrap;padding:6px 9px}
   main{padding:0 5px 70px;margin-top:6px}.card{padding:8px;border-radius:8px}.row{gap:6px}
   .seg{width:100%}.seg button{flex:1;padding:8px 6px}
   .schedwrap{display:block}.loadpanel{width:100%;position:static;max-height:none;order:0;margin-top:12px;padding:9px}.loadpanel:not([open]){display:block}
@@ -564,11 +568,26 @@ function employedInMonth(e,month){
 }
 
 /* ============ 導覽 ============ */
-const TABS=[['sched','排班表'],['punch','打卡'],['pay','薪資'],['emps','員工'],['themes','主題'],['skills','技能表'],['avail','可上班時間'],['line','LINE員工系統'],['admins','管理者帳號'],['data','資料備份']];
+/* 導覽分成五大類,相似功能放一起 */
+const NAV_GROUPS=[
+ ['grpSched','📅 排班',[['sched','排班表'],['themes','主題設定']]],
+ ['grpAtt','🕐 打卡出勤',[['punch','打卡紀錄'],['line','LINE員工系統']]],
+ ['grpPay','💰 薪資計算',[['pay','薪資計算']]],
+ ['grpPpl','👥 人員設定',[['emps','員工'],['skills','技能表'],['avail','可上班時間'],['admins','管理者帳號']]],
+ ['grpSys','⚙️ 系統',[['data','資料備份與同步']]]
+];
+const TABS=NAV_GROUPS.flatMap(g=>g[2]);
 let tab='sched';
+function navGroupOf(t){return NAV_GROUPS.find(g=>g[2].some(([k])=>k===t))||NAV_GROUPS[0]}
 function renderNav(){
-  document.getElementById('nav').innerHTML=TABS.map(([k,n])=>
-    `<button class="${tab===k?'on':''}" onclick="go('${k}')">${n}</button>`).join('');
+  const g=navGroupOf(tab);
+  const row1=NAV_GROUPS.map(gr=>
+    `<button class="${gr[0]===g[0]?'on':''}" onclick="go('${gr[2][0][0]}')">${gr[1]}</button>`).join('');
+  const subs=g[2];
+  const row2=subs.length>1
+    ?`<div class="subnav">${subs.map(([k,n])=>`<button class="${k===tab?'on':''}" onclick="go('${k}')">${n}</button>`).join('')}</div>`
+    :'';
+  document.getElementById('nav').innerHTML=`<div class="navmain">${row1}</div>${row2}`;
 }
 function go(k){tab=k;renderNav();render()}
 /* 颱風天/取消 → 待客人改期的提醒(期限一週內或已逾期)*/
@@ -2256,6 +2275,19 @@ function vData(){
     </div>
     <p class="muted" style="margin-top:12px">目前:員工 ${S.employees.length} 人、主題 ${S.themes.length} 個、班次 ${S.shifts.length} 筆、打卡 ${S.punches.length} 筆。<br>
     SimplyBook 預約會在新增／改期／取消時立即同步，並由排程每 1 分鐘校正一次；店員打卡請使用 LINE 員工入口。</p>
+  </div>
+  <div class="card"><h2>🔄 SimplyBook 同步紀錄</h2>
+    <div class="row" style="margin-bottom:8px">${syncHealthHtml()}<span class="grow"></span>
+      <button class="btn sm" id="syncNowBtn" onclick="syncSimplyBookNow()">立即同步</button></div>
+    ${(LINE.syncRuns||[]).length?`<table><tr><th>時間</th><th>觸發來源</th><th>狀態</th><th class="num">讀取</th><th class="num">更新</th><th>訊息</th></tr>
+      ${(LINE.syncRuns||[]).slice(0,12).map(r=>{
+        const t=new Date(r.finished_at||r.started_at).toLocaleString('zh-TW',{hour12:false});
+        const src={'database-cron':'排程','manual':'手動','admin':'後台按鈕','webhook':'SimplyBook即時'}[r.trigger_source]||esc(r.trigger_source||'');
+        const st=r.status==='success'?'<span class="pill in">成功</span>':r.status==='running'?'<span class="pill" style="background:#dbeafe;color:#1d4ed8">進行中</span>':'<span class="pill out" style="background:#fee2e2;color:#b91c1c">失敗</span>';
+        return `<tr><td>${esc(t)}</td><td>${src}</td><td>${st}</td><td class="num">${r.fetched_count??'—'}</td><td class="num">${r.changed_count??'—'}</td><td class="muted" style="font-size:12px">${esc((r.error_message||'').slice(0,60))}</td></tr>`;
+      }).join('')}</table>`
+    :'<p class="muted">尚無同步紀錄(等待第一次背景同步)。</p>'}
+    <p class="muted" style="margin-top:6px">排班表最上方也有即時同步狀態列;失敗時這裡會顯示原因。</p>
   </div>`;
 }
 function exportJSON(){dl(JSON.stringify(S,null,2),`排班系統備份_${todayStr()}.json`,'application/json')}
