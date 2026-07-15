@@ -735,7 +735,9 @@ function dzCounterDefaultTime(ds){
 }
 async function ensureYijiaCounterSchedule(){
   const e=S.employees.find(x=>x.active&&x.name==='翊嘉');if(!e)return;
-  const rows=[],start=new Date(todayStr()+'T00:00:00'),end=new Date(start);end.setDate(end.getDate()+75);
+  // 從當月 1 日開始補齊，避免月中才開啟管理後台時，當月前半段的固定櫃台班漏失。
+  // 未來仍預建 75 天；週四、公休、翊嘉請休及已有人工排班的日期都不會被覆蓋。
+  const now=new Date(todayStr()+'T00:00:00'),start=new Date(now.getFullYear(),now.getMonth(),1),end=new Date(now);end.setDate(end.getDate()+75);
   for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){
     const ds=fmtDate(d),hours=dzCounterDefaultTime(ds),availability=effectiveAvail(e,ds);if(!hours||!employedOn(e,ds)||!availability?.on)continue;
     const id='auto_dz_counter_'+ds.replaceAll('-',''),existingById=S.shifts.find(sh=>sh.id===id);
