@@ -87,7 +87,13 @@ function conflictWarnings(shifts: any[], employees: any[], prepMin: number, trav
   return warnings;
 }
 
-Deno.serve(async (req) => {
+// CORS:讓管理後台(GitHub Pages)能用「立即同步」按鈕直接呼叫;排程與伺服器呼叫不受影響
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-sync-secret, x-supabase-cron, apikey, content-type",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+};
+const handler = async (req: Request) => {
   let supabase: ReturnType<typeof createClient> | null = null;
   let runId: number | null = null;
   try {
@@ -332,4 +338,12 @@ Deno.serve(async (req) => {
     }
     return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
+};
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS_HEADERS });
+  const res = await handler(req);
+  const headers = new Headers(res.headers);
+  for (const [k, v] of Object.entries(CORS_HEADERS)) headers.set(k, v);
+  return new Response(res.body, { status: res.status, headers });
 });

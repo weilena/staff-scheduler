@@ -441,6 +441,18 @@ async function afterLogin(){
   });if(changed)save();}
   await loadLineAdmin();
   renderNav();render();
+  startSyncHealthTicker();
+}
+/* 同步狀態每 60 秒自動更新(修正:頁面久開顯示舊快照,誤以為同步停了) */
+let syncTicker=null;
+function startSyncHealthTicker(){
+  if(syncTicker||isDemo())return;
+  syncTicker=setInterval(async function(){
+    try{
+      const r=await sbc.from('integration_sync_runs').select('*').order('started_at',{ascending:false}).limit(20);
+      if(r.data){LINE.syncRuns=r.data;document.querySelectorAll('.sync-health').forEach(el=>{el.outerHTML=syncHealthHtml()});}
+    }catch(e){}
+  },60000);
 }
 async function loadLineAdmin(){
   if(isDemo()){LINE={accounts:[],worksites:S.stores.map(s=>({id:s.id,name:s.name,radius_m:200,enabled:true})),requests:[],responses:[],guestReports:[],attendance:[],daily:[],overtime:[],usage:[],outbox:[],syncRuns:[]};return}
