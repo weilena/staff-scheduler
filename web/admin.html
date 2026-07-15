@@ -22,6 +22,15 @@ nav button:hover{background:#1e293b;color:#fff}
 .subnav{display:flex;gap:4px;flex-wrap:wrap;background:#1e293b;border-radius:9px;padding:3px;align-self:flex-start}
 .subnav button{padding:5px 12px;font-size:13px;color:#94a3b8}
 .subnav button.on{background:#475569;color:#fff;font-weight:600}
+.attendance-scroll{overflow:auto;max-width:100%;max-height:68vh;overscroll-behavior:contain;border:1px solid #e2e8f0;border-radius:10px}
+.attendance-matrix{border-collapse:collapse;min-width:1200px;margin:0}
+.attendance-matrix th,.attendance-matrix td{min-width:112px;vertical-align:top;font-size:12px;line-height:1.35}
+.attendance-matrix .row-label{position:sticky;left:0;z-index:2;min-width:145px;max-width:145px;font-weight:700}
+.attendance-matrix thead th{position:sticky;top:0;z-index:3;text-align:center}
+.attendance-matrix thead .row-label{z-index:4}
+.att-source{font-size:10px;color:#64748b;overflow-wrap:anywhere}
+.att-segment{padding:3px 0;border-bottom:1px dotted #94a3b8}.att-segment:last-child{border:0}
+.att-ok{color:#15803d;font-weight:700}.att-pending{color:#b45309;font-weight:700}.att-error{color:#b91c1c;font-weight:700}
 main{max-width:1280px;margin:18px auto;padding:0 14px 60px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
 .card h2{font-size:16px;margin-bottom:12px}
@@ -583,7 +592,7 @@ function employedInMonth(e,month){
 /* 導覽分成五大類,相似功能放一起 */
 const NAV_GROUPS=[
  ['grpSched','📅 排班',[['sched','排班表'],['themes','主題設定']]],
- ['grpAtt','🕐 打卡出勤',[['punch','打卡紀錄'],['line','LINE員工系統']]],
+ ['grpAtt','🕐 打卡出勤',[['punch','每日打卡總覽'],['attendance','個人月打卡'],['line','LINE員工系統']]],
  ['grpPay','💰 薪資計算',[['pay','薪資計算']]],
  ['grpPpl','👥 人員設定',[['emps','員工'],['skills','技能表'],['avail','可上班時間'],['admins','管理者帳號']]],
  ['grpSys','⚙️ 系統',[['data','資料備份與同步']]]
@@ -633,6 +642,7 @@ function render(){
   const banner=(tab==='sched'||tab==='pay')?renderAlertBanner():'';
   if(tab==='sched')v.innerHTML=banner+vSched();
   else if(tab==='punch')v.innerHTML=vPunch();
+  else if(tab==='attendance')v.innerHTML=vAttendance();
   else if(tab==='pay')v.innerHTML=banner+vPay();
   else if(tab==='emps')v.innerHTML=vEmps();
   else if(tab==='themes')v.innerHTML=vThemes();
@@ -1375,7 +1385,7 @@ async function writebackShift(){
 }
 
 /* ============ 打卡 ============ */
-let punchEmp='',punchMonth=monthStr();
+let punchEmp='',punchMonth=monthStr(),punchDay=todayStr();
 function lastPunch(empId){
   const p=S.punches.filter(x=>x.empId===empId&&!x.voidedAt).sort((a,b)=>a.ts.localeCompare(b.ts));
   return p[p.length-1]||null;
@@ -1386,11 +1396,11 @@ function vPunch(){
   const sel=punchEmp?emp(punchEmp):null;
   const lp=sel?lastPunch(punchEmp):null;
   const onDuty=lp&&lp.type==='in';
-  const td=todayStr();
+  const td=punchDay||todayStr();
   const todays=S.punches.filter(p=>p.ts.slice(0,10)===td).sort((a,b)=>b.ts.localeCompare(a.ts));
   const todayShifts=S.shifts.filter(s=>s.date===td).sort((a,b)=>a.start.localeCompare(b.start));
   return `<div class="card">
-    <h2>打卡</h2>
+    <h2>管理員代打卡</h2>
     <div class="row">
       <select onchange="punchEmp=this.value;render()" style="min-width:180px">
         <option value="">— 選擇員工 —</option>
@@ -1404,13 +1414,16 @@ function vPunch(){
       <button class="btn red" ${!onDuty?'disabled style="opacity:.4"':''} onclick="doPunch('out')">下班打卡</button>
     </div>`:'<p class="muted" style="margin-top:8px">請先選擇員工</p>'}
   </div>
-  <div class="card"><h2>今日班表(${td})</h2>
+  <div class="card"><div class="row"><div><h2 style="margin:0">每日全員打卡總覽</h2><p class="muted">派班、SimplyBook、訓練場、原始多段打卡、補卡與核准狀態會顯示在同一列。</p></div><span class="grow"></span><input type="date" value="${td}" onchange="punchDay=this.value;render()"><button class="btn gray sm" onclick="punchDay=todayStr();render()">今天</button></div>
+    ${dailyAttendanceOverview(td)}
+  </div>
+  <div class="card"><h2>當日班表(${td})</h2>
     ${todayShifts.length?`<table><tr><th>時間</th><th>店別</th><th>內容</th><th>人員</th></tr>${todayShifts.map(sh=>
       `<tr><td>${sh.start}–${sh.end}</td><td>${esc(store(sh.storeId)?.name||'')}</td><td>${esc(shiftLabel(sh))}</td>
       <td>${sh.assignments.filter(a=>a.empId).map(a=>{const ok=(S.shiftConfirmations||[]).some(x=>x.shiftId===sh.id&&x.empId===a.empId);return `${esc(emp(a.empId)?.name||'?')}(${a.role}) ${ok?'✅已確認':'⏳待確認'}`}).join('、')||'<i class="muted">未排人</i>'}</td></tr>`).join('')}</table>`
     :'<p class="muted">今日沒有班次</p>'}
   </div>
-  <div class="card"><h2>今日打卡紀錄</h2>
+  <div class="card"><h2>當日原始打卡紀錄</h2>
     ${todays.length?`<table><tr><th>時間</th><th>員工</th><th>類型</th><th>來源／驗證</th><th></th></tr>${todays.map(p=>
       `<tr><td>${p.ts.slice(11,16)}</td><td>${esc(emp(p.empId)?.name||'?')}</td>
       <td><span class="pill ${p.type==='in'?'in':'out'}">${p.type==='in'?'上班':'下班'}</span></td>
@@ -1492,6 +1505,94 @@ function pairPunches(empId,month){
   }
   if(open)rows.push({date:open.ts.slice(0,10),in:open.ts.slice(11,16),out:null,min:0,inPunch:open,outPunch:null});
   return rows;
+}
+function employeeDayAssignments(empId,date){
+  const rows=[],seen=new Set();
+  const add=(sh,role,linkedFrom)=>{
+    if(!sh||isCx(sh))return;const key=sh.id+'|'+role;if(seen.has(key))return;seen.add(key);
+    rows.push({sh,role,linkedFrom:linkedFrom||null});
+  };
+  for(const sh of S.shifts.filter(x=>x.date===date)){
+    for(const a of (sh.assignments||[]).filter(x=>x.empId===empId))add(sh,a.role,null);
+  }
+  for(const source of S.shifts.filter(x=>x.date===date)){
+    for(const link of (source.linkedThemeAssignments||[]).filter(x=>x.empId===empId))add(byId(S.shifts,link.shiftId),'場控',source.id);
+  }
+  return rows.sort((a,b)=>a.sh.start.localeCompare(b.sh.start));
+}
+function correctionSummary(empId,date){
+  const requests=(LINE.attendance||[]).filter(x=>x.emp_id===empId&&x.punch_date===date);
+  const corrected=S.punches.filter(p=>p.empId===empId&&p.ts.slice(0,10)===date&&!p.voidedAt&&(p.source==='admin_correction'||p.reviewState==='corrected'));
+  const parts=[];
+  for(const r of requests){
+    const type=r.request_type==='missing_in'?'補上班':r.request_type==='missing_out'?'補下班':r.request_type==='npc_checkin'?'補場次報到':'更正時段';
+    parts.push(`${type}・${r.status==='approved'?'已核准':r.status==='rejected'?'已拒絕':'待審'}`);
+  }
+  if(corrected.length)parts.push(`管理員補登 ${corrected.length} 筆`);
+  return {text:parts.join('<br>')||'—',ids:[...requests.map(x=>x.id),...corrected.map(x=>x.id)]};
+}
+function daySourceIds(empId,date,assignments,segments){
+  const ids=[...assignments.map(x=>x.sh.id),...segments.flatMap(x=>[x.inPunch?.id,x.outPunch?.id].filter(Boolean))];
+  const d=(LINE.daily||[]).find(x=>x.emp_id===empId&&x.work_date===date);if(d)ids.push(`attendance:${empId}:${date}`);
+  return [...new Set(ids)].join('、')||'—';
+}
+function dailyAttendanceOverview(date){
+  const month=date.slice(0,7),employees=S.employees.filter(e=>employedOn(e,date));
+  const rows=employees.map(e=>{
+    const assigned=employeeDayAssignments(e.id,date),segments=pairPunches(e.id,month).filter(x=>x.date===date);
+    const daily=(LINE.daily||[]).find(x=>x.emp_id===e.id&&x.work_date===date),correction=correctionSummary(e.id,date);
+    const manager=assigned.filter(x=>x.sh.kind!=='practice').map(x=>`${x.sh.start}–${x.sh.end} ${esc(shiftLabel(x.sh))}(${esc(x.role)})`).join('<br>')||'—';
+    const training=assigned.filter(x=>x.sh.kind==='practice').map(x=>`${x.sh.start}–${x.sh.end} ${esc(x.role)}`).join('<br>')||'—';
+    const sb=assigned.filter(x=>String(x.sh.id).startsWith('sb_')).map(x=>`${x.sh.start} ${esc(shiftLabel(x.sh))}`).join('<br>')||'—';
+    const punchText=segments.map((x,i)=>`<div class="att-segment">第${i+1}段 ${x.in||'<span class="att-error">缺上班</span>'}–${x.out||'<span class="att-error">缺下班</span>'}</div>`).join('')||'—';
+    const anomalies=[...(daily?.anomalies||[])];
+    for(const x of segments){for(const p of [x.inPunch,x.outPunch].filter(Boolean)){if(p.verification&&p.verification!=='line_location'&&p.verification!=='manager_entered')anomalies.push(p.verification)}}
+    const state=!daily?(assigned.length?'尚無打卡':'無班'):daily.status==='approved'?`已核准 ${fmtHr(Number(daily.payable_minutes)||0)}h`:daily.status==='rejected'?'不計薪':daily.status==='anomaly'?'異常待審':'待核准';
+    const cls=daily?.status==='approved'?'att-ok':daily?.status==='anomaly'||daily?.status==='rejected'?'att-error':'att-pending';
+    return `<tr><td>${employeeTag(e,e.name)}<br><small>${e.type==='full'?'正職':'兼職'}</small></td><td>${manager}</td><td>${training}</td><td>${sb}</td><td>${punchText}</td><td class="num">${daily?fmtHr(Number(daily.actual_minutes)||0)+'h':'—'}</td><td>${correction.text}</td><td>${anomalies.length?`<span class="att-error">${esc([...new Set(anomalies)].join('、'))}</span>`:'—'}</td><td><span class="${cls}">${state}</span></td><td><button class="btn gray sm" onclick="openAttendance('${e.id}','${month}')">查看月表</button><div class="att-source">${esc(daySourceIds(e.id,date,assigned,segments))}</div></td></tr>`;
+  }).join('');
+  return `<div style="overflow:auto"><table><tr><th>員工</th><th>管理員派班</th><th>正職安排訓練</th><th>SimplyBook主題</th><th>原始多段打卡</th><th>實際工時</th><th>補卡／修正</th><th>異常／定位</th><th>核准狀態</th><th>月表／來源</th></tr>${rows||'<tr><td colspan="10" class="muted">當日沒有在職員工</td></tr>'}</table></div>`;
+}
+let attendanceEmp='',attendanceMonth=monthStr();
+function openAttendance(empId,month){attendanceEmp=empId;attendanceMonth=month||monthStr();tab='attendance';renderNav();render()}
+function attendanceMonthCellData(empId,date){
+  const assignments=employeeDayAssignments(empId,date),segments=pairPunches(empId,date.slice(0,7)).filter(x=>x.date===date);
+  const daily=(LINE.daily||[]).find(x=>x.emp_id===empId&&x.work_date===date),correction=correctionSummary(empId,date);
+  const manager=assignments.filter(x=>x.sh.kind!=='practice').map(x=>`${x.sh.start}–${x.sh.end}<br>${esc(shiftLabel(x.sh))}(${esc(x.role)})`).join('<hr style="border:0;border-top:1px dotted #cbd5e1">')||'—';
+  const training=assignments.filter(x=>x.sh.kind==='practice').map(x=>`${x.sh.start}–${x.sh.end}<br>${esc(x.role)}`).join('<br>')||'—';
+  const sb=assignments.filter(x=>String(x.sh.id).startsWith('sb_')).map(x=>`${x.sh.start}<br>${esc(shiftLabel(x.sh))}`).join('<br>')||'—';
+  const roles=assignments.map(x=>esc(x.role)).join('、')||'—';
+  const checkins=assignments.filter(x=>x.sh.kind==='theme').map(x=>{const c=(S.sessionCheckins||[]).find(y=>y.empId===empId&&y.shiftId===x.sh.id);return `${esc(shiftLabel(x.sh))}：${c?`已報到 ${String(c.checkedInAt||'').slice(11,16)}`:'尚未報到'}`}).join('<br>')||'—';
+  const source=daySourceIds(empId,date,assignments,segments);
+  const anomaly=[...(daily?.anomalies||[])];
+  return {assignments,segments,daily,correction,manager,training,sb,roles,checkins,source,anomaly};
+}
+function attendanceMonthGrid(e,month){
+  const[y,m]=month.split('-').map(Number),days=new Date(y,m,0).getDate(),dates=Array.from({length:days},(_,i)=>month+'-'+String(i+1).padStart(2,'0'));
+  const data=Object.fromEntries(dates.map(d=>[d,attendanceMonthCellData(e.id,d)]));
+  const head=dates.map(d=>{const holiday=holidayName(d);return `<th style="${holiday?'background:#b91c1c;color:#fff':'background:#f8fafc'}">${holiday?'國定':'一般日'}<br>${Number(d.slice(8))}<br>週${WD[dateWD(d)]}${holiday?`<br><small>${esc(holiday)}</small>`:''}</th>`}).join('');
+  const row=(label,bg,fn)=>`<tr style="background:${bg}"><th class="row-label" style="background:${bg}">${label}</th>${dates.map(d=>`<td>${fn(data[d],d)}</td>`).join('')}</tr>`;
+  return `<div class="attendance-scroll"><table class="attendance-matrix" style="min-width:${Math.max(1200,days*112+145)}px"><thead><tr><th class="row-label" style="background:#fff3cd">項目</th>${head}</tr></thead><tbody>
+    ${row('管理員派班','#fff8d8',x=>x.manager)}
+    ${row('正職安排訓練','#fef3c7',x=>x.training)}
+    ${row('SimplyBook 主題','#fce7f3',x=>x.sb)}
+    ${row('工作角色','#ecfccb',x=>x.roles)}
+    ${row('主題場次報到','#dcfce7',x=>x.checkins)}
+    ${row('原始多段打卡','#e0f2fe',x=>x.segments.map((r,i)=>`<div class="att-segment">第${i+1}段<br>${r.in||'<span class="att-error">缺上班</span>'}–${r.out||'<span class="att-error">缺下班</span>'}</div>`).join('')||'—')}
+    ${row('原始實際工時','#dbeafe',x=>x.daily?fmtHr(Number(x.daily.actual_minutes)||0)+' 小時':'—')}
+    ${row('忘記打卡／補紀錄','#ffedd5',x=>x.correction.text)}
+    ${row('核准計薪工時','#dcfce7',x=>x.daily?.status==='approved'?`<span class="att-ok">${fmtHr(Number(x.daily.payable_minutes)||0)} 小時</span>`:'—')}
+    ${row('異常／定位','#fef3c7',x=>x.anomaly.length?`<span class="att-error">${esc([...new Set(x.anomaly)].join('、'))}</span>`:'—')}
+    ${row('審核狀態','#fef9c3',x=>!x.daily?'—':x.daily.status==='approved'?'<span class="att-ok">已核准</span>':x.daily.status==='rejected'?'<span class="att-error">不計薪</span>':x.daily.status==='anomaly'?'<span class="att-error">異常待審</span>':'<span class="att-pending">待核准</span>')}
+    ${row('來源紀錄 ID','#f1f5f9',x=>`<span class="att-source">${esc(x.source)}</span>`)}
+  </tbody></table></div>`;
+}
+function vAttendance(){
+  const employees=S.employees.filter(e=>employedInMonth(e,attendanceMonth));
+  if(!attendanceEmp||!employees.some(e=>e.id===attendanceEmp))attendanceEmp=employees[0]?.id||'';
+  const e=emp(attendanceEmp);
+  return `<div class="card"><div class="row"><div><h2 style="margin:0">個人月打卡與工作紀錄</h2><p class="muted">每位員工一張月表；日期在上方，派班、SimplyBook、訓練、原始打卡、補卡、核准與來源在左側。</p></div><span class="grow"></span><select onchange="attendanceEmp=this.value;render()">${employees.map(x=>`<option value="${x.id}" ${x.id===attendanceEmp?'selected':''}>${esc(x.name)}・${x.type==='full'?'正職':'兼職'}</option>`).join('')}</select><input type="month" value="${attendanceMonth}" onchange="attendanceMonth=this.value;render()"></div></div>
+    <div class="card">${e?`<div class="row" style="margin-bottom:10px"><h2 style="margin:0">${employeeTag(e,e.name)}・${attendanceMonth}</h2><span class="grow"></span><button class="btn gray sm" onclick="punchEmp='${e.id}';punchMonth='${attendanceMonth}';tab='punch';renderNav();render()">查看／補登原始打卡</button></div>${attendanceMonthGrid(e,attendanceMonth)}`:'<p class="muted">這個月份沒有在職員工</p>'}</div>`;
 }
 function employeeAttendanceDetail(empId,month){
   const rows=[];
@@ -1705,10 +1806,11 @@ function vPay(){
       <button class="btn gray sm" onclick="exportPayCSV()">匯出 CSV(含場次明細)</button>
     </div>
     <table>
-      <tr><th>員工</th><th>身分</th><th class="num">場控場次</th><th class="num">NPC場次</th><th class="num">正職總場／超過40場</th><th class="num">論場費</th><th class="num">核准時薪時數</th><th class="num">時薪費</th><th class="num">月薪</th><th class="num">打卡時數</th><th class="num">核准加班</th><th class="num">加班費</th><th class="num">合計</th></tr>
+      <tr><th>員工</th><th>身分</th><th>來源追蹤</th><th class="num">場控場次</th><th class="num">NPC場次</th><th class="num">正職總場／超過40場</th><th class="num">論場費</th><th class="num">核准時薪時數</th><th class="num">時薪費</th><th class="num">月薪</th><th class="num">打卡時數</th><th class="num">核准加班</th><th class="num">加班費</th><th class="num">合計</th></tr>
       ${rows.map(({e,ss,hm,hp,base,am,otHr,otPay,total})=>`<tr>
         <td><a href="#" onclick="showEmpDetail('${e.id}');return false" style="color:var(--accent);text-decoration:none;font-weight:600">${esc(e.name)}</a> <span class="muted" style="font-size:11px">明細▸</span></td>
         <td>${e.type==='part'?'兼職':'正職'}</td>
+        <td><button class="btn gray sm" onclick="openAttendance('${e.id}','${payMonth}')">個人月表</button><br><span class="att-source">場次：派班／SimplyBook<br>時數：LINE打卡＋每日核准<br>加班：核准紀錄</span></td>
         <td class="num">${ss.gm||'—'}</td><td class="num">${ss.npc||'—'}</td>
         <td class="num">${e.type==='full'?`${ss.total}／${ss.extra}`:'—'}</td>
         <td class="num">${ss.pay?ss.pay.toLocaleString():'—'}</td>
@@ -1719,14 +1821,14 @@ function vPay(){
         <td class="num">${otHr>0?otHr.toFixed(1):'—'}</td>
         <td class="num">${otPay?otPay.toLocaleString():'—'}</td>
         <td class="num"><b>${total.toLocaleString()}</b></td></tr>`).join('')}
-      <tr><td colspan="12" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
+      <tr><td colspan="13" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
     </table>
     <p class="muted" style="margin-top:8px">一般日包含平日與週六日；只有標示名稱的國定假日採固定日費率。兼職只有 NPC 論場，兼職場控／櫃台／清潔按個人時薪；訓練場時薪 $${S.settings.practiceHourlyRate||196}、駐店場控時薪 $${S.settings.floorHourlyRate||200}。正職以月薪含 ${S.settings.fullBaseSessions??40} 場，超過場次費率可依員工設定；加班僅採管理員核准分鐘，前2小時與後續時數分開計算。</p>
   </div>`;
 }
 function exportPayCSV(){
   const actives=S.employees.filter(e=>employedInMonth(e,payMonth));
-  let csv='﻿員工,身分,場控場次,NPC場次,正職總場,超過40場,論場費,核准時薪時數,時薪費,月薪,打卡時數,核准加班時數,加班費,合計,場次明細\n';
+  let csv='﻿員工,身分,薪資來源,場控場次,NPC場次,正職總場,超過40場,論場費,核准時薪時數,時薪費,月薪,打卡時數,核准加班時數,加班費,合計,場次明細\n';
   for(const e of actives){
     const ss=sessionStats(e.id,payMonth);
     const hourly=approvedHourlyBreakdown(e,payMonth),hm=hourly.minutes,hp=hourly.pay;
@@ -1734,7 +1836,7 @@ function exportPayCSV(){
     const am=actualMinutes(e.id,payMonth);
     const ot=e.type==='full'?approvedOvertimePay(e,payMonth):{minutes:0,pay:0};
     const detail=Object.entries(ss.detail).map(([k,n])=>k+'×'+n).join('、');
-    csv+=`${e.name},${e.type==='part'?'兼職':'正職'},${ss.gm},${ss.npc},${e.type==='full'?ss.total:''},${e.type==='full'?ss.extra:''},${ss.pay},${fmtHr(hm)},${hp},${base},${fmtHr(am)},${fmtHr(ot.minutes)},${ot.pay},${ss.pay+hp+base+ot.pay},"${detail}"\n`;
+    csv+=`${e.name},${e.type==='part'?'兼職':'正職'},"派班/SimplyBook + LINE打卡 + 管理員核准",${ss.gm},${ss.npc},${e.type==='full'?ss.total:''},${e.type==='full'?ss.extra:''},${ss.pay},${fmtHr(hm)},${hp},${base},${fmtHr(am)},${fmtHr(ot.minutes)},${ot.pay},${ss.pay+hp+base+ot.pay},"${detail}"\n`;
   }
   dl(csv,`薪資_${payMonth}.csv`,'text/csv');
 }
