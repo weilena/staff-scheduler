@@ -1,4 +1,4 @@
-import { cors, distanceMeters, eligibilityErrors, getContext, json, queueNotification, rankCandidatesByWorkload, serviceClient, toMinutes, verifyLineIdToken } from "../_shared/common.ts";
+import { cors, distanceMeters, eligibilityErrors, employedOn, getContext, json, queueNotification, rankCandidatesByWorkload, serviceClient, toMinutes, verifyLineIdToken } from "../_shared/common.ts";
 
 const DAY = 86_400_000;
 const dateText = (d: Date) => d.toISOString().slice(0, 10);
@@ -49,18 +49,37 @@ Deno.serve(async (req) => {
       ]);
       const publicEmployees = (cfg.employees ?? []).filter((e: any) => e.active).map((e: any) => ({ id: e.id, name: e.name }));
       const publicShifts = shifts.filter((s: any) => s.date >= from && s.date <= to).map((s: any) => {
+        const cancelled = String(s.status ?? "").startsWith("cancelled");
         const emptyRoles = (s.assignments ?? []).filter((a: any) => !a.empId).map((a: any) => String(a.role ?? ""));
         const eligible = emptyRoles.length ? (cfg.employees ?? []).filter((candidate: any) => candidate.active &&
           emptyRoles.some((role: string) => eligibilityErrors(candidate, s, role, shifts, cfg).length === 0)) : [];
         const ranked = rankCandidatesByWorkload(eligible, shifts, s.date, 99);
         const onSite = ranked.filter((candidate: any) => shifts.some((other: any) => other.id !== s.id && other.date === s.date &&
-          other.storeId === s.storeId && other.status !== "cancelled" && (other.assignments ?? []).some((a: any) => a.empId === candidate.id)));
+          other.storeId === s.storeId && !String(other.status ?? "").startsWith("cancelled") && (other.assignments ?? []).some((a: any) => a.empId === candidate.id)));
         const onSiteIds = new Set(onSite.map((candidate: any) => candidate.id));
+        const assignedToMe = (s.assignments ?? []).some((a: any) => a.empId === employee.id);
+        const counterOnDuty = s.kind === "theme" && shifts.some((other: any) => other.date === s.date && other.storeId === s.storeId &&
+          other.kind === "counter" && !String(other.status ?? "").startsWith("cancelled") && toMinutes(other.start) <= toMinutes(s.start) &&
+          toMinutes(other.end) >= toMinutes(s.end) && (other.assignments ?? []).some((a: any) => a.empId === employee.id));
+        const canSeeCustomer = account.role === "manager" || assignedToMe || counterOnDuty;
+        const replacementCandidates: Record<string, Array<{ id: string; name: string }>> = {};
+        if ((employee.type === "full" || account.role === "manager") && !cancelled) {
+          for (const assignment of (s.assignments ?? []).filter((a: any) => a.empId)) {
+            replacementCandidates[String(assignment.empId)] = (cfg.employees ?? []).filter((candidate: any) =>
+              candidate.id !== assignment.empId && employedOn(candidate, s.date) &&
+              !(s.assignments ?? []).some((a: any) => a.empId === candidate.id) &&
+              eligibilityErrors(candidate, s, assignment.role, shifts, cfg, [s.id]).length === 0
+            ).map((candidate: any) => ({ id: candidate.id, name: candidate.name }));
+          }
+        }
         return {
           id: s.id, date: s.date, storeId: s.storeId, kind: s.kind, themeId: s.themeId, start: s.start, end: s.end,
           status: s.status ?? "active", assignments: s.assignments ?? [],
           linkedThemeAssignments: s.linkedThemeAssignments ?? [],
           depositPaid: ["paid", "completed"].includes(String(s.payment?.depositStatus ?? "").toLowerCase()),
+          customer: canSeeCustomer && s.customer ? { name: s.customer.name ?? "", phone: s.customer.phone ?? "", email: s.customer.email ?? "", comment: s.customer.comment ?? "" } : null,
+          payment: canSeeCustomer && s.payment ? { depositAmount: s.payment.depositAmount ?? null, depositStatus: s.payment.depositStatus ?? "", system: s.payment.system ?? "", currency: s.payment.depositCurrency ?? s.payment.currency ?? "" } : null,
+          replacementCandidates,
           candidateGroups: emptyRoles.length ? {
             onSite: onSite.map((candidate: any) => candidate.name),
             available: ranked.filter((candidate: any) => !onSiteIds.has(candidate.id)).map((candidate: any) => candidate.name),
@@ -80,7 +99,7 @@ Deno.serve(async (req) => {
 
     if (action === "confirm-shift") {
       const shiftId = String(input.shiftId ?? "");
-      const shift = shifts.find((s: any) => String(s.id) === shiftId && s.status !== "cancelled");
+      const shift = shifts.find((s: any) => String(s.id) === shiftId && !String(s.status ?? "").startsWith("cancelled"));
       if (!shift || !(shift.assignments ?? []).some((a: any) => a.empId === employee.id)) return json({ error: "這個班次未指派給你，或已經取消。" }, 403);
       const { error } = await sb.from("shift_confirmations").upsert({ shift_id: shiftId, emp_id: employee.id, status: "confirmed", source: "line", confirmed_at: new Date().toISOString() });
       if (error) throw error;
@@ -124,7 +143,7 @@ Deno.serve(async (req) => {
     if (action === "session-report") {
       const shiftId = String(input.shiftId ?? ""), lat = Number(input.latitude), lng = Number(input.longitude), accuracy = Number(input.accuracy ?? 9999);
       if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(accuracy) || accuracy <= 0 || accuracy > 250) return json({ error: "定位精確度不足" }, 403);
-      const shift = shifts.find((s: any) => String(s.id) === shiftId && s.kind === "theme" && s.status !== "cancelled" &&
+      const shift = shifts.find((s: any) => String(s.id) === shiftId && s.kind === "theme" && !String(s.status ?? "").startsWith("cancelled") &&
         (s.assignments ?? []).some((a: any) => a.empId === employee.id));
       const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
       if (!shift || shift.date !== today) return json({ error: "只能回報今天指派給你的主題場次" }, 403);
@@ -156,7 +175,7 @@ Deno.serve(async (req) => {
       if (type === "in") {
         const requestedIds = Array.isArray(input.shiftIds) ? [...new Set(input.shiftIds.map(String))] : [];
         selectedShifts = shifts.filter((s: any) => requestedIds.includes(String(s.id)));
-        const invalidSelection = selectedShifts.some((s: any) => s.date !== today || s.storeId !== site.id || s.status === "cancelled" ||
+        const invalidSelection = selectedShifts.some((s: any) => s.date !== today || s.storeId !== site.id || String(s.status ?? "").startsWith("cancelled") ||
           !(s.assignments ?? []).some((a: any) => a.empId === employee.id));
         if (invalidSelection || selectedShifts.length !== requestedIds.length) return json({ error: "選取的場次不屬於你今天在這間店的班表，請重新整理後再試。" }, 409);
         if (selectedShifts.length) {
@@ -205,14 +224,21 @@ Deno.serve(async (req) => {
 
     if (action === "create-request") {
       if (employee.type !== "full" && account.role !== "manager") return json({ error: "換班申請只開放正職員工與管理員使用" }, 403);
-      const shiftId = String(input.shiftId), replacedEmpId = String(input.replacedEmpId ?? employee.id), reasonCode = String(input.reasonCode ?? ""), note = String(input.note ?? "").trim();
+      const shiftId = String(input.shiftId), replacedEmpId = String(input.replacedEmpId ?? employee.id), preferredEmpId = String(input.preferredEmpId ?? ""), reasonCode = String(input.reasonCode ?? ""), note = String(input.note ?? "").trim();
       const reasons: Record<string, string> = { extra: "臨時加場，人力調換", emergency: "緊急事故發生，人力調換", health: "員工個人身體有狀況，人力調換", other: "其他" };
       if (!reasons[reasonCode]) return json({ error: "請選擇換班原因" }, 400);
       const shift = shifts.find((s: any) => s.id === shiftId);
       const originalAssignment = (shift?.assignments ?? []).find((a: any) => a.empId === replacedEmpId);
       if (!shift || !originalAssignment) return json({ error: "所選班別或原排班人員不存在" }, 400);
       const shiftEnd = new Date(`${shift.date}T${shift.end}:00+08:00`).getTime();
-      if (shift.status === "cancelled" || shiftEnd <= Date.now()) return json({ error: "此班次已取消或已結束" }, 409);
+      if (String(shift.status ?? "").startsWith("cancelled") || shiftEnd <= Date.now()) return json({ error: "此班次已取消或已結束" }, 409);
+      if (preferredEmpId) {
+        const preferred = (cfg.employees ?? []).find((e: any) => e.id === preferredEmpId);
+        if (!preferred || !employedOn(preferred, shift.date)) return json({ error: "希望接替的人員目前不在職或不存在" }, 400);
+        if ((shift.assignments ?? []).some((a: any) => a.empId === preferredEmpId)) return json({ error: "希望接替的人員已在這個班次中" }, 409);
+        const errors = eligibilityErrors(preferred, shift, originalAssignment.role, shifts, cfg, [shift.id]);
+        if (errors.length) return json({ error: `此人目前不適合接替：${errors.join("、")}` }, 409);
+      }
       const { data: duplicate } = await sb.from("shift_requests").select("id").eq("shift_id", shiftId)
         .contains("details", { replacedEmpId })
         .in("status", ["open", "pending_manager"]).limit(1).maybeSingle();
@@ -220,12 +246,12 @@ Deno.serve(async (req) => {
       const deadline = new Date(Math.max(Date.now() + 5 * 60_000, shiftEnd)).toISOString();
       const { data: request, error } = await sb.from("shift_requests").insert({ request_type: "give", shift_id: shiftId,
         requester_emp_id: employee.id, deadline, status: "pending_manager", details: { note, reasonCode, reasonLabel: reasons[reasonCode],
-          replacedEmpId, replacedRole: originalAssignment.role, approval_flow: "manager_only" } }).select().single();
+          replacedEmpId, replacedRole: originalAssignment.role, preferredEmpId: preferredEmpId || null, approval_flow: "manager_only" } }).select().single();
       if (error) throw error;
       const { data: managers } = await sb.from("line_accounts").select("emp_id").eq("role", "manager").eq("active", true);
       for (const manager of managers ?? []) await queueNotification(sb, manager.emp_id, "shift_change_requested", {
         title: "正職員工提出換班",
-        text: `${employee.name}提出 ${shift.date} ${shift.start}–${shift.end} ${originalAssignment.role}（原排 ${((cfg.employees ?? []).find((e: any) => e.id === replacedEmpId)?.name ?? replacedEmpId)}）換班：${reasons[reasonCode]}。請至管理後台確認。`,
+        text: `${employee.name}提出 ${shift.date} ${shift.start}–${shift.end} ${originalAssignment.role}（原排 ${((cfg.employees ?? []).find((e: any) => e.id === replacedEmpId)?.name ?? replacedEmpId)}）換班${preferredEmpId ? `，希望由 ${((cfg.employees ?? []).find((e: any) => e.id === preferredEmpId)?.name ?? preferredEmpId)} 接替` : "，由管理員安排替補"}：${reasons[reasonCode]}。請至管理後台確認。`,
       }, false, `shift-change-manager:${request.id}:${manager.emp_id}`);
       return json({ ok: true, requestId: request.id, message: "已送交管理員確認，不會自動通知其他員工" });
     }
@@ -234,7 +260,7 @@ Deno.serve(async (req) => {
       const shiftId = String(input.shiftId ?? ""), customerType = String(input.customerType ?? "");
       const surname = String(input.surname ?? "").trim(), phone = String(input.phone ?? "").replace(/\s+/g, "");
       const partySize = Number(input.partySize), note = String(input.note ?? "").trim();
-      const shift = shifts.find((s: any) => String(s.id) === shiftId && s.status !== "cancelled");
+      const shift = shifts.find((s: any) => String(s.id) === shiftId && !String(s.status ?? "").startsWith("cancelled"));
       if (!shift || !(shift.assignments ?? []).some((a: any) => !a.empId)) return json({ error: "這個場次已排人、已取消或不存在" }, 409);
       if (!["walk_in", "reservation"].includes(customerType)) return json({ error: "請選擇現場客人或預約客人" }, 400);
       if (!surname || surname.length > 30) return json({ error: "請填寫客人姓氏" }, 400);
