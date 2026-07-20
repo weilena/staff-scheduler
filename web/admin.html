@@ -474,8 +474,9 @@ async function afterLogin(){
     if(s.id==='dz'&&(s.color==='#2563eb'||!s.color)){s.color='#111827';changed=true;}
     if(s.id==='ms'&&(s.color==='#7c3aed'||!s.color)){s.color='#e5e7eb';changed=true;}
   });if(changed)save();}
-  await ensureYijiaCounterSchedule();
-  await ensureMsCounterFromThemeControl();
+  // 自動櫃台班若出錯,記錄但不中斷後台載入(避免整個後台開不起來)
+  try{await ensureYijiaCounterSchedule()}catch(err){console.error('翊嘉固定櫃台班自動建立失敗',err)}
+  try{await ensureMsCounterFromThemeControl()}catch(err){console.error('謎先生櫃台自動連結失敗',err)}
   await loadLineAdmin();
   renderNav();render();
   startSyncHealthTicker();
@@ -739,6 +740,7 @@ async function ensureYijiaCounterSchedule(){
   // 從當月 1 日開始補齊，避免月中才開啟管理後台時，當月前半段的固定櫃台班漏失。
   // 未來仍預建 75 天；週四、公休、翊嘉請休及已有人工排班的日期都不會被覆蓋。
   const now=new Date(todayStr()+'T00:00:00'),start=new Date(now.getFullYear(),now.getMonth(),1),end=new Date(now);end.setDate(end.getDate()+75);
+  const rows=[]; // 收集待寫入的自動櫃台班(先前漏宣告會讓整個自動排班中斷)
   for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){
     const ds=fmtDate(d),hours=dzCounterDefaultTime(ds),availability=effectiveAvail(e,ds);if(!hours||!employedOn(e,ds)||!availability?.on)continue;
     const id='auto_dz_counter_'+ds.replaceAll('-',''),existingById=S.shifts.find(sh=>sh.id===id);
@@ -1725,6 +1727,7 @@ function attendanceMonthGrid(e,month){
   const head=dates.map(d=>{const holiday=holidayName(d);return `<th style="${holiday?'background:#b91c1c;color:#fff':'background:#f8fafc'}">${holiday?'國定':'一般日'}<br>${Number(d.slice(8))}<br>週${WD[dateWD(d)]}${holiday?`<br><small>${esc(holiday)}</small>`:''}</th>`}).join('');
   const row=(label,bg,fn)=>`<tr style="background:${bg}"><th class="row-label" style="background:${bg}">${label}</th>${dates.map(d=>`<td>${fn(data[d],d)}</td>`).join('')}</tr>`;
   return `<div class="attendance-scroll"><table class="attendance-matrix" style="min-width:${Math.max(1200,days*112+145)}px"><thead><tr><th class="row-label" style="background:#fff3cd">項目</th>${head}</tr></thead><tbody>
+    ${row('休假／請假','#fee2e2',(x,d)=>{if(S.closedDates.includes(d))return '<span class="muted">公休</span>';const a=effectiveAvail(e,d);if(a&&a.on===false)return '<span class="att-error">休假</span>';if(a&&a.on&&(a.start!=='09:00'||a.end!=='22:30'))return `<span class="muted">可 ${esc(a.start)}–${esc(a.end)}</span>`;return '—'})}
     ${row('管理員派班','#fff8d8',x=>x.manager)}
     ${row('正職安排訓練','#fef3c7',x=>x.training)}
     ${row('SimplyBook 主題','#fce7f3',x=>x.sb)}
@@ -2230,52 +2233,56 @@ function vAvail(){
   const e=availEmp?emp(availEmp):null;
   if(!actives.length)return `<div class="card"><h2>可上班時間</h2><p class="muted">請先到「員工」頁新增員工。</p></div>`;
   const xs=Object.entries(e.availX||{}).sort((a,b)=>a[0].localeCompare(b[0]));
-  return `<div class="card"><h2>可上班時間</h2>
-    <div class="row" style="margin-bottom:12px">
-      <select onchange="availEmp=this.value;render()">${actives.map(x=>`<option value="${x.id}" ${x.id===availEmp?'selected':''}>${esc(x.name)}</option>`).join('')}</select>
-      <span class="muted">改動即時儲存。判斷順序:特定日期回報 > 每週固定。</span></div>
-    <h3 style="margin:6px 0 8px">每週固定(基本盤)</h3>
-    <p class="muted" style="margin-bottom:8px">正職未填特定日期休假時，一律視為可上班；兼職依每週固定與下方逐日回報判斷。</p>
-    <table><tr><th>星期</th><th>可上班</th><th>從</th><th>到</th></tr>
-    ${[1,2,3,4,5,6,0].map(d=>{
-      const a=e.avail?.[d]||{on:false,start:'09:00',end:'22:00'};
-      return `<tr><td>週${WD[d]}</td>
-        <td><input type="checkbox" ${a.on?'checked':''} onchange="setAvail('${e.id}',${d},'on',this.checked)"></td>
-        <td><input type="time" value="${a.start}" onchange="setAvail('${e.id}',${d},'start',this.value)"></td>
-        <td><input type="time" value="${a.end}" onchange="setAvail('${e.id}',${d},'end',this.value)"></td></tr>`;
-    }).join('')}</table>
-    <h3 style="margin:16px 0 8px">特定日期回報(排休/例外)</h3>
+  return `<div class="card"><h2>📅 Google 行事曆（可上班時間的來源）</h2>
+    <p class="muted" style="margin-bottom:8px">員工把可上班／休假寫在「謎先生＆大忠店排班表」日曆(例：「1830後可以」「1700前」「❌」「休」)。系統<b>唯讀</b>抓取並一鍵解析成排班用的可上班時段,不會更動你的日曆。正職休假可在「打卡出勤 → 個人月打卡」的休假列查看。</p>
     <div class="row" style="margin-bottom:8px">
-      <input type="date" id="axDate">
-      <select id="axOn"><option value="1">可上班</option><option value="0">排休/不可</option></select>
-      <input type="time" id="axStart" value="09:00">
-      <input type="time" id="axEnd" value="22:00">
-      <button class="btn sm" onclick="addAvailX()">新增/更新</button>
-    </div>
-    ${xs.length?`<table><tr><th>日期</th><th>狀態</th><th>時段</th><th></th></tr>
-      ${xs.map(([d,a])=>`<tr><td>${d}(週${WD[dateWD(d)]})</td>
-        <td>${a.on?'<span class="pill in">可上班</span>':'<span class="pill out">排休</span>'}</td>
-        <td>${a.on?a.start+'–'+a.end:'—'}</td>
-        <td><button class="btn gray sm" onclick="delAvailX('${d}')">刪除</button></td></tr>`).join('')}</table>`
-    :'<p class="muted">尚無特定日期回報</p>'}
-  </div>
-  <div class="card"><h2>📅 Google 行事曆核對</h2>
-    <p class="muted" style="margin-bottom:8px">把「謎先生＆大忠店排班表」日曆的<b>私人 iCal 網址</b>貼進來(Google 日曆 → 該日曆設定 → 整合日曆 → 「密鑰格式的私人網址」,.ics 結尾)。系統會唯讀抓取,和上方回報並排核對,不會更動你的日曆。</p>
-    <div class="row" style="margin-bottom:8px">
-      <input id="icalUrl" class="grow" placeholder="https://calendar.google.com/calendar/ical/.../private-xxxx/basic.ics" value="${esc(S.icalUrl||'')}">
+      <input id="icalUrl" class="grow" placeholder="貼上 Google 日曆的私人 iCal 網址(.ics 結尾)" value="${esc(S.icalUrl||'')}">
       <button class="btn gray sm" onclick="saveIcalUrl()">儲存網址</button>
       <input type="month" id="icalMonth" value="${monthStr()}">
       <button class="btn gray sm" onclick="loadIcal(false)">抓取核對</button>
-      <button class="btn sm" onclick="loadIcal(true)">解析並匯入為可上班時間</button>
+      <button class="btn" onclick="loadIcal(true)">解析並匯入為可上班時間</button>
     </div>
-    <div id="icalResult"><p class="muted">「抓取核對」只顯示;「解析並匯入」會自動把日曆的回報(如「1830後可以」「❌」「1700前」)轉成該月各員工可上班時段。</p></div>
-    <h3 style="margin:18px 0 8px">管理員週行事曆</h3>
-    <p class="muted" style="margin-bottom:8px">以下為既有的 Google 排班日曆唯讀畫面，方便和員工回報直接核對。若 Google 顯示需要權限，請先用有日曆權限的帳號登入。</p>
+    <div id="icalResult"><p class="muted">「抓取核對」只顯示日曆內容;「解析並匯入」把日曆回報轉成該月各員工可上班時段。</p></div>
+    <h3 style="margin:18px 0 8px">日曆檢視(唯讀)</h3>
     <div class="row" style="margin-bottom:8px">
       <input id="gcalEmbedId" class="grow" value="${esc(S.googleCalendarId||DEFAULT_GOOGLE_CALENDAR_ID)}" placeholder="Google Calendar ID">
       <button class="btn gray sm" onclick="saveGoogleCalendarId()">儲存日曆</button>
     </div>
     <iframe title="Google 排班日曆" src="${googleCalendarEmbedUrl()}" style="width:100%;height:680px;border:1px solid #e2e8f0;border-radius:10px" loading="lazy"></iframe>
+  </div>
+  <div class="card">
+    <details>
+      <summary style="cursor:pointer;font-weight:600;font-size:15px">⚙️ 進階：手動微調可上班時間(平常用不到,日曆匯入抓錯時才用)</summary>
+      <div style="margin-top:12px">
+        <div class="row" style="margin-bottom:12px">
+          <select onchange="availEmp=this.value;render()">${actives.map(x=>`<option value="${x.id}" ${x.id===availEmp?'selected':''}>${esc(x.name)}</option>`).join('')}</select>
+          <span class="muted">改動即時儲存。判斷順序:特定日期回報 > 每週固定。</span></div>
+        <h3 style="margin:6px 0 8px">每週固定(基本盤)</h3>
+        <p class="muted" style="margin-bottom:8px">正職未填特定日期休假時，一律視為可上班；兼職依每週固定與逐日回報判斷。</p>
+        <table><tr><th>星期</th><th>可上班</th><th>從</th><th>到</th></tr>
+        ${[1,2,3,4,5,6,0].map(d=>{
+          const a=e.avail?.[d]||{on:false,start:'09:00',end:'22:00'};
+          return `<tr><td>週${WD[d]}</td>
+            <td><input type="checkbox" ${a.on?'checked':''} onchange="setAvail('${e.id}',${d},'on',this.checked)"></td>
+            <td><input type="time" value="${a.start}" onchange="setAvail('${e.id}',${d},'start',this.value)"></td>
+            <td><input type="time" value="${a.end}" onchange="setAvail('${e.id}',${d},'end',this.value)"></td></tr>`;
+        }).join('')}</table>
+        <h3 style="margin:16px 0 8px">特定日期回報(排休/例外)</h3>
+        <div class="row" style="margin-bottom:8px">
+          <input type="date" id="axDate">
+          <select id="axOn"><option value="1">可上班</option><option value="0">排休/不可</option></select>
+          <input type="time" id="axStart" value="09:00">
+          <input type="time" id="axEnd" value="22:00">
+          <button class="btn sm" onclick="addAvailX()">新增/更新</button>
+        </div>
+        ${xs.length?`<table><tr><th>日期</th><th>狀態</th><th>時段</th><th></th></tr>
+          ${xs.map(([d,a])=>`<tr><td>${d}(週${WD[dateWD(d)]})</td>
+            <td>${a.on?'<span class="pill in">可上班</span>':'<span class="pill out">排休</span>'}</td>
+            <td>${a.on?a.start+'–'+a.end:'—'}</td>
+            <td><button class="btn gray sm" onclick="delAvailX('${d}')">刪除</button></td></tr>`).join('')}</table>`
+        :'<p class="muted">尚無特定日期回報</p>'}
+      </div>
+    </details>
   </div>`;
 }
 function approvedOvertimePay(e,month){
