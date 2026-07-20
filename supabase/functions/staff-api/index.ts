@@ -197,9 +197,11 @@ Deno.serve(async (req) => {
           verification = "line_location_unassigned";
         }
       } else {
-        const { data: latest } = await sb.from("punches").select("type,worksite_id,shift_ids,raw").eq("emp_id", employee.id)
+        const { data: latest } = await sb.from("punches").select("type,ts,worksite_id,shift_ids,raw").eq("emp_id", employee.id)
           .is("voided_at", null).order("ts", { ascending: false }).limit(1).maybeSingle();
-        if (!latest || latest.type !== "in") return json({ error: "目前沒有尚未下班的上班卡。" }, 409);
+        if (!latest || latest.type !== "in" || String(latest.ts ?? "").slice(0, 10) !== today) {
+          return json({ error: "今天沒有尚未下班的上班卡；過去缺卡請使用補卡申請。" }, 409);
+        }
         selectedShifts = shifts.filter((s: any) => (latest.shift_ids ?? []).includes(s.id));
         workItem = latest.raw?.work_item ?? null;
         if (latest.raw?.verification === "line_location_unassigned") verification = "line_location_unassigned";
@@ -224,9 +226,11 @@ Deno.serve(async (req) => {
 
     if (action === "create-request") {
       if (employee.type !== "full" && account.role !== "manager") return json({ error: "換班申請只開放正職員工與管理員使用" }, 403);
-      const shiftId = String(input.shiftId), replacedEmpId = String(input.replacedEmpId ?? employee.id), preferredEmpId = String(input.preferredEmpId ?? ""), reasonCode = String(input.reasonCode ?? ""), note = String(input.note ?? "").trim();
+      const shiftId = String(input.shiftId), replacedEmpId = String(input.replacedEmpId ?? employee.id), preferredEmpId = String(input.preferredEmpId ?? ""), preferredName = String(input.preferredName ?? "").trim(), reasonCode = String(input.reasonCode ?? ""), note = String(input.note ?? "").trim();
       const reasons: Record<string, string> = { extra: "臨時加場，人力調換", emergency: "緊急事故發生，人力調換", health: "員工個人身體有狀況，人力調換", other: "其他" };
       if (!reasons[reasonCode]) return json({ error: "請選擇換班原因" }, 400);
+      if (!preferredEmpId && !preferredName) return json({ error: "請選擇接替人員，或填寫其他接替者姓名" }, 400);
+      if (preferredName.length > 30) return json({ error: "其他接替者姓名請勿超過 30 個字" }, 400);
       const shift = shifts.find((s: any) => s.id === shiftId);
       const originalAssignment = (shift?.assignments ?? []).find((a: any) => a.empId === replacedEmpId);
       if (!shift || !originalAssignment) return json({ error: "所選班別或原排班人員不存在" }, 400);
@@ -246,12 +250,12 @@ Deno.serve(async (req) => {
       const deadline = new Date(Math.max(Date.now() + 5 * 60_000, shiftEnd)).toISOString();
       const { data: request, error } = await sb.from("shift_requests").insert({ request_type: "give", shift_id: shiftId,
         requester_emp_id: employee.id, deadline, status: "pending_manager", details: { note, reasonCode, reasonLabel: reasons[reasonCode],
-          replacedEmpId, replacedRole: originalAssignment.role, preferredEmpId: preferredEmpId || null, approval_flow: "manager_only" } }).select().single();
+          replacedEmpId, replacedRole: originalAssignment.role, preferredEmpId: preferredEmpId || null, preferredName: preferredName || null, approval_flow: "manager_only" } }).select().single();
       if (error) throw error;
       const { data: managers } = await sb.from("line_accounts").select("emp_id").eq("role", "manager").eq("active", true);
       for (const manager of managers ?? []) await queueNotification(sb, manager.emp_id, "shift_change_requested", {
         title: "正職員工提出換班",
-        text: `${employee.name}提出 ${shift.date} ${shift.start}–${shift.end} ${originalAssignment.role}（原排 ${((cfg.employees ?? []).find((e: any) => e.id === replacedEmpId)?.name ?? replacedEmpId)}）換班${preferredEmpId ? `，希望由 ${((cfg.employees ?? []).find((e: any) => e.id === preferredEmpId)?.name ?? preferredEmpId)} 接替` : "，由管理員安排替補"}：${reasons[reasonCode]}。請至管理後台確認。`,
+        text: `${employee.name}提出 ${shift.date} ${shift.start}–${shift.end} ${originalAssignment.role}（原排 ${((cfg.employees ?? []).find((e: any) => e.id === replacedEmpId)?.name ?? replacedEmpId)}）換班，希望由 ${preferredEmpId ? ((cfg.employees ?? []).find((e: any) => e.id === preferredEmpId)?.name ?? preferredEmpId) : preferredName} 接替：${reasons[reasonCode]}。請至管理後台確認。`,
       }, false, `shift-change-manager:${request.id}:${manager.emp_id}`);
       return json({ ok: true, requestId: request.id, message: "已送交管理員確認，不會自動通知其他員工" });
     }

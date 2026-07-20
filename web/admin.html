@@ -1788,8 +1788,9 @@ function attendTable(month){
 }
 
 /* ============ 薪資 ============ */
-let payMonth=previousMonthStr(),dailyReviewSelected=new Set();
+let payMonth=previousMonthStr(),payReviewMonth=monthStr(),dailyReviewSelected=new Set();
 function setPayMonth(v){payMonth=v;dailyReviewSelected.clear();render()}
+function setPayReviewMonth(v){payReviewMonth=v;dailyReviewSelected.clear();render()}
 function dailyReviewKey(empId,date){return empId+'|'+date}
 function updateDailyReviewToolbar(){
   const n=dailyReviewSelected.size,approve=document.getElementById('dailyReviewApprove'),reject=document.getElementById('dailyReviewReject');
@@ -1956,6 +1957,7 @@ function exportEmpDetailCSV(){
 }
 function vPay(){
   const actives=S.employees.filter(e=>employedInMonth(e,payMonth));
+  const reviewEmployees=S.employees.filter(e=>employedInMonth(e,payReviewMonth));
   const rows=actives.map(e=>{
     const ss=sessionStats(e.id,payMonth);
     const hourly=approvedHourlyBreakdown(e,payMonth),hm=hourly.minutes,hp=hourly.pay;
@@ -1967,21 +1969,21 @@ function vPay(){
     return{e,ss,hm,hp,hourlyRates:hourly.rates||[],base,am,otHr,otPay,total:ss.pay+hp+base+otPay};
   });
   const total=rows.reduce((s,r)=>s+r.total,0);
-  const pendingMonth=(LINE.daily||[]).filter(r=>String(r.work_date).slice(0,7)===payMonth&&(r.status==='pending'||r.status==='anomaly'));
+  const pendingMonth=(LINE.daily||[]).filter(r=>String(r.work_date).slice(0,7)===payReviewMonth&&(r.status==='pending'||r.status==='anomaly'));
   return `<div class="card">
     <div class="row" style="margin-bottom:10px"><div><h2 style="margin:0">每日排班／多段打卡</h2><p class="muted">依日期橫向核對管理員排班、實際上下班與計薪審核。</p></div>
-      <span class="grow"></span><label style="margin:0">薪資月份</label><input type="month" value="${payMonth}" onchange="setPayMonth(this.value)">
-      <button class="btn gray sm" ${pendingMonth.length?'':'disabled'} onclick="selectPendingDaily('${payMonth}')">全選待審（${pendingMonth.length}）</button>
+      <span class="grow"></span><label style="margin:0">出勤月份</label><input type="month" value="${payReviewMonth}" onchange="setPayReviewMonth(this.value)">
+      <button class="btn gray sm" ${pendingMonth.length?'':'disabled'} onclick="selectPendingDaily('${payReviewMonth}')">全選待審（${pendingMonth.length}）</button>
       <button id="dailyReviewApprove" class="btn sm" ${dailyReviewSelected.size?'':'disabled'} onclick="reviewSelectedDaily('approved')">核准勾選（${dailyReviewSelected.size}）</button>
       <button id="dailyReviewReject" class="btn red sm" ${dailyReviewSelected.size?'':'disabled'} onclick="reviewSelectedDaily('rejected')">不計薪勾選</button>
     </div>
-    ${rows.map((r,i)=>payrollDayGrid(r.e,payMonth,i===0)).join('')||'<p class="muted">這個月份尚無在職員工</p>'}
+    ${reviewEmployees.map((e,i)=>payrollDayGrid(e,payReviewMonth,i===0)).join('')||'<p class="muted">這個月份尚無在職員工</p>'}
   </div>
   <div class="card">
-    <h2>薪資試算</h2>
     <div class="row" style="margin-bottom:10px">
-      <span class="muted">${payMonth.slice(0,4)} 年 ${Number(payMonth.slice(5,7))} 月</span>
+      <div><h2 style="margin:0">薪資試算</h2><span class="muted">${payMonth.slice(0,4)} 年 ${Number(payMonth.slice(5,7))} 月</span></div>
       <span class="grow"></span>
+      <label style="margin:0">薪資月份</label><input type="month" value="${payMonth}" onchange="setPayMonth(this.value)">
       <button class="btn gray sm" onclick="exportPayCSV()">匯出 CSV(含場次明細)</button>
     </div>
     <table>
@@ -2435,7 +2437,7 @@ function vLineAdmin(){
   <div class="card"><h2>兩間店定位</h2><p class="muted">請在店內用手機地圖確認緯度、經度。半徑建議先設200公尺，測試後再縮小。</p>
     <table><tr><th>店別</th><th>緯度</th><th>經度</th><th>允許半徑</th><th></th></tr>${LINE.worksites.map(w=>`<tr><td>${esc(w.name)}</td><td><input id="lat_${w.id}" value="${w.latitude??''}" placeholder="25.xxxxxx"></td><td><input id="lng_${w.id}" value="${w.longitude??''}" placeholder="121.xxxxxx"></td><td><input id="rad_${w.id}" type="number" value="${w.radius_m||200}" min="20" max="2000" style="width:90px"> 公尺</td><td><button class="btn sm" onclick="saveWorksite('${w.id}')">儲存</button></td></tr>`).join('')}</table></div>
   <div class="card"><h2>加場候選（${pendingReq.length}）</h2>${pendingReq.map(r=>{const sh=byId(S.shifts,r.shift_id);const accepted=LINE.responses.filter(x=>x.request_id===r.id&&x.response==='accept');return `<div style="padding:10px 0;border-bottom:1px solid #e5e7eb"><b>${sh?`${sh.date} ${sh.start} ${esc(shiftLabel(sh))}`:esc(r.shift_id)}</b><br><span class="muted">願意接班：</span>${accepted.map(x=>`<button class="btn sm" style="margin:5px" onclick="selectExtra('${r.id}','${x.emp_id}')">選 ${esc(emp(x.emp_id)?.name||x.emp_id)}</button>`).join('')||'<span class="warn">目前無人</span>'}</div>`}).join('')||'<p class="muted">目前沒有待選加場</p>'}</div>
-  <div class="card"><h2>正職換班待確認（${pendingChanges.length}）</h2><p class="muted">正職可回報今日所有場次班別並指定希望接替者；最終仍由管理員確認。</p>${pendingChanges.map(r=>{const sh=byId(S.shifts,r.shift_id),cands=sh?managerChangeCandidates(r,sh):[],replaced=r.details?.replacedEmpId||r.requester_emp_id,preferred=r.details?.preferredEmpId||'';return `<div style="padding:10px 0;border-bottom:1px solid #e5e7eb"><b>回報：${esc(emp(r.requester_emp_id)?.name||r.requester_emp_id)}・原排：${esc(emp(replaced)?.name||replaced)}（${esc(r.details?.replacedRole||'')}）</b><br><span class="muted">${sh?`${sh.date} ${sh.start}–${sh.end} ${esc(shiftLabel(sh))}`:esc(r.shift_id)}<br>希望接替：${preferred?esc(emp(preferred)?.name||preferred):'交由管理員安排'}<br>原因：${esc(r.details?.reasonLabel||'其他')}${r.details?.note?`；${esc(r.details.note)}`:''}</span><div class="row" style="margin-top:8px"><select id="change_${r.id}" style="width:auto;min-width:150px"><option value="">選擇替補人員</option>${cands.map(e=>`<option value="${e.id}" ${preferred===e.id?'selected':''}>${esc(e.name)}</option>`).join('')}</select><button class="btn sm" onclick="reviewShiftChange('${r.id}','approved')" ${cands.length?'':'disabled'}>核准換人</button><button class="btn red sm" onclick="reviewShiftChange('${r.id}','rejected')">拒絕</button></div></div>`}).join('')||'<p class="muted">目前沒有待確認換班</p>'}</div>
+  <div class="card"><h2>正職換班待確認（${pendingChanges.length}）</h2><p class="muted">正職可回報今日所有場次班別並指定希望接替者；最終仍由管理員確認。</p>${pendingChanges.map(r=>{const sh=byId(S.shifts,r.shift_id),cands=sh?managerChangeCandidates(r,sh):[],replaced=r.details?.replacedEmpId||r.requester_emp_id,preferred=r.details?.preferredEmpId||'',preferredName=r.details?.preferredName||'',suggested=preferred||(preferredName?cands.find(e=>e.name===preferredName)?.id||'':'');return `<div style="padding:10px 0;border-bottom:1px solid #e5e7eb"><b>回報：${esc(emp(r.requester_emp_id)?.name||r.requester_emp_id)}・原排：${esc(emp(replaced)?.name||replaced)}（${esc(r.details?.replacedRole||'')}）</b><br><span class="muted">${sh?`${sh.date} ${sh.start}–${sh.end} ${esc(shiftLabel(sh))}`:esc(r.shift_id)}<br>希望接替：${preferred?esc(emp(preferred)?.name||preferred):esc(preferredName||'未填寫')}<br>原因：${esc(r.details?.reasonLabel||'其他')}${r.details?.note?`；${esc(r.details.note)}`:''}</span><div class="row" style="margin-top:8px"><select id="change_${r.id}" style="width:auto;min-width:150px"><option value="">選擇替補人員</option>${cands.map(e=>`<option value="${e.id}" ${suggested===e.id?'selected':''}>${esc(e.name)}</option>`).join('')}</select><button class="btn sm" onclick="reviewShiftChange('${r.id}','approved')" ${cands.length?'':'disabled'}>核准換人</button><button class="btn red sm" onclick="reviewShiftChange('${r.id}','rejected')">拒絕</button></div></div>`}).join('')||'<p class="muted">目前沒有待確認換班</p>'}</div>
   <div class="card"><h2>客人回報待處理（${pendingGuests.length}）</h2><p class="muted">請先回到 SimplyBook 建立／確認預約與訂金，再確認帶場人員，最後在此回覆員工。</p>${pendingGuests.map(r=>{const sh=byId(S.shifts,r.shift_id);return `<div style="padding:10px 0;border-bottom:1px solid #e5e7eb"><b>${r.customer_type==='walk_in'?'現場客人':'預約客人'}・${esc(r.surname)}・${r.party_size}人</b><br><span class="muted">電話：${esc(r.phone)}<br>場次：${sh?`${sh.date} ${sh.start}–${sh.end} ${esc(shiftLabel(sh))}`:esc(r.shift_id)}<br>回報者：${esc(emp(r.emp_id)?.name||r.emp_id)}${r.note?`<br>補充：${esc(r.note)}`:''}</span><label>回覆內容</label><input id="guestReply_${r.id}" placeholder="例如：已建立 SimplyBook，訂金已確認，由庭瑋帶場"><div class="row" style="margin-top:8px"><button class="btn sm" onclick="reviewGuestReport('${r.id}','confirmed')">完成並回覆</button><button class="btn red sm" onclick="reviewGuestReport('${r.id}','rejected')">無法受理</button></div></div>`}).join('')||'<p class="muted">目前沒有待處理客人回報</p>'}</div>
   <div class="card"><h2>近期管理員換班紀錄</h2>${completedTrades.slice(0,20).map(r=>`<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>換人・${esc(emp(r.requester_emp_id)?.name||r.requester_emp_id)} → ${esc(emp(r.selected_emp_id)?.name||r.selected_emp_id)}</b><br><span class="muted">${esc(byId(S.shifts,r.shift_id)?.date||'')} ${esc(byId(S.shifts,r.shift_id)?.start||'')}</span></span><button class="btn red sm" onclick="revertTrade('${r.id}')">撤銷並還原</button></div>`).join('')||'<p class="muted">尚無已完成換班</p>'}</div>
   <div class="card"><h2>補卡申請（${pendingAtt.length}）</h2>${pendingAtt.map(r=>{const label=r.request_type==='missing_in'?'補上班卡':r.request_type==='missing_out'?'補下班卡':r.request_type==='npc_checkin'?'NPC 補場次報到':'補／更正完整場次',times=r.request_type==='correction'?`${r.requested?.inTime||'?'}–${r.requested?.outTime||'?'}`:(r.requested?.time||'?'),work=(r.requested?.workItem?.labels||[]).join('、')||'未填工作項目';return `<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${esc(emp(r.emp_id)?.name||r.emp_id)}・${r.punch_date}・${label} ${times}</b><br><span class="muted">工作：${esc(work)}<br>原因：${esc(r.reason)}</span></span><button class="btn sm" onclick="reviewAttendance('${r.id}','approved')">核准並補登</button><button class="btn red sm" onclick="reviewAttendance('${r.id}','rejected')">拒絕</button></div>`}).join('')||'<p class="muted">目前沒有待審補卡</p>'}</div>
