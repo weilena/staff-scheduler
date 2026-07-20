@@ -719,10 +719,12 @@ function employeeTag(e,label){
   const bg=employeeColor(e)||'#cbd5e1';
   return `<span class="emp-tag" style="background:${bg};color:${textOn(bg)}">${esc(label||e.name)}</span>`;
 }
+/* 櫃台/駐店班可為每人設定個別時段;未設定時沿用整個班別時間 */
+function asgWindow(sh,a){return{start:(a&&a.start)||sh.start,end:(a&&a.end)||sh.end}}
 function assignedTags(sh,withRole=true){
-  const direct=(sh.assignments||[]).filter(a=>a.empId).map(a=>({empId:a.empId,role:a.role}));
+  const direct=(sh.assignments||[]).filter(a=>a.empId).map(a=>({empId:a.empId,role:a.role,start:a.start,end:a.end}));
   const linked=sh.kind==='theme'?S.shifts.flatMap(src=>(src.linkedThemeAssignments||[]).filter(x=>x.shiftId===sh.id&&x.empId).map(x=>({empId:x.empId,role:'場控'}))):[];
-  const seen=new Set();return [...direct,...linked].filter(a=>{const k=a.empId+'|'+a.role;if(seen.has(k))return false;seen.add(k);return true}).map(a=>{const e=emp(a.empId);return employeeTag(e,(e?.name||'?')+(withRole?`(${a.role})`:''));}).join(' ');
+  const seen=new Set();return [...direct,...linked].filter(a=>{const k=a.empId+'|'+a.role;if(seen.has(k))return false;seen.add(k);return true}).map(a=>{const e=emp(a.empId);const t=(a.start||a.end)?` ${a.start||sh.start}–${a.end||sh.end}`:'';return employeeTag(e,(e?.name||'?')+(withRole?`(${a.role}${t})`:t));}).join(' ');
 }
 function shiftRolePeople(sh,role){
   const direct=(sh.assignments||[]).filter(a=>a.empId&&a.role===role).map(a=>a.empId);
@@ -1197,7 +1199,7 @@ function openShift(id,presetDate,preset){
   if(sh){
     document.getElementById('sfStart').value=sh.start;
     document.getElementById('sfEnd').value=sh.end;
-    dlgSlotsArr=sh.assignments.map(a=>({role:a.role,empId:a.empId}));
+    dlgSlotsArr=sh.assignments.map(a=>({role:a.role,empId:a.empId,start:a.start||'',end:a.end||''}));
   }else if(preset){
     document.getElementById('sfStart').value=preset.start||'';
     document.getElementById('sfEnd').value=preset.end||'';
@@ -1329,16 +1331,28 @@ function addSlot(){
 function rmSlot(i){dlgSlotsArr.splice(i,1);renderSlots();renderLinkedThemeOptions()}
 function slotRole(i,v){dlgSlotsArr[i].role=v;renderSlots();renderLinkedThemeOptions()}
 function slotEmp(i,v){dlgSlotsArr[i].empId=v;suggestLinkedThemeControllers();renderLinkedThemeOptions()}
+function slotTime(i,k,v){dlgSlotsArr[i][k]=v;renderSlots()} // 櫃台/駐店:每人個別時段
 function linkedThemeCandidates(){
   const date=document.getElementById('sfDate').value,storeId=document.getElementById('sfStore').value;
   return S.shifts.filter(sh=>sh.id!==editShiftId&&sh.date===date&&sh.storeId===storeId&&sh.kind==='theme'&&!isCx(sh)&&themeAllows(theme(sh.themeId),'場控')).sort((a,b)=>(a.start+a.storeId).localeCompare(b.start+b.storeId));
 }
 function themeHasController(sh){return shiftRolePeople(sh,'場控').length>0}
 function toggleLinkedTheme(shiftId,on){
-  if(!on){dlgLinkedThemeArr=dlgLinkedThemeArr.filter(x=>x.shiftId!==shiftId);renderLinkedThemeOptions();return}
+  if(!on){dlgLinkedThemeArr=dlgLinkedThemeArr.filter(x=>x.shiftId!==shiftId);syncTimesFromLinked();renderLinkedThemeOptions();return}
   const people=[...new Set(dlgSlotsArr.map(x=>x.empId).filter(Boolean))];
   if(!dlgLinkedThemeArr.some(x=>x.shiftId===shiftId))dlgLinkedThemeArr.push({shiftId,empId:people.length===1?people[0]:''});
-  renderLinkedThemeOptions();
+  syncTimesFromLinked();renderLinkedThemeOptions();
+}
+/* 勾選對應場控後,班別時間自動=最早勾選場次開始~最晚勾選場次結束(老闆指定行為) */
+function syncTimesFromLinked(){
+  const kind=document.getElementById('sfKind').value;
+  if(kind!=='counter'&&kind!=='floor')return;
+  const linked=dlgLinkedThemeArr.map(x=>byId(S.shifts,x.shiftId)).filter(Boolean);
+  if(!linked.length)return;
+  const starts=linked.map(sh=>sh.start).sort(),ends=linked.map(sh=>sh.end).sort();
+  document.getElementById('sfStart').value=starts[0];
+  document.getElementById('sfEnd').value=ends[ends.length-1];
+  refreshSlotOptions();
 }
 function setLinkedThemeEmp(shiftId,empId){const row=dlgLinkedThemeArr.find(x=>x.shiftId===shiftId);if(row)row.empId=empId}
 function suggestLinkedThemeControllers(){
@@ -1357,6 +1371,7 @@ function autoLinkThemeControllers(){
   const people=[...new Set(dlgSlotsArr.map(x=>x.empId).filter(Boolean))];
   if(people.length!==1)return alert(people.length?'有兩位以上人員，請逐場選擇實際場控。':'請先選擇櫃台／駐店人員。');
   const added=suggestLinkedThemeControllers();
+  syncTimesFromLinked();
   renderLinkedThemeOptions();if(!added)alert('目前班內沒有尚未安排場控的同店主題場次。');
 }
 function renderLinkedThemeOptions(){
@@ -1401,14 +1416,16 @@ function empWarnings(e,date,start,end,storeId,role){
   if(s==null||en==null)return w;
   for(const sh of S.shifts){
     if(sh.id===editShiftId||sh.date!==date||isCx(sh))continue;
-    if(!sh.assignments.some(a=>a.empId===e.id))continue;
-    const s2=toMin(sh.start)-prep, e2=toMin(sh.end);
+    const mine=sh.assignments.find(a=>a.empId===e.id);
+    if(!mine)continue;
+    const mw=asgWindow(sh,mine); // 櫃台/駐店個別時段:只算此人自己的時段
+    const s2=toMin(mw.start)-prep, e2=toMin(mw.end);
     const sameStore=sh.storeId===storeId;
     const gap=sameStore?0:travel;
     if(s<e2+gap&&en+gap>s2){
       w.push(sameStore
-        ?`衝堂:${sh.start}–${sh.end} ${shiftLabel(sh)}`
-        :`跨店路程不足${travel}分:${store(sh.storeId)?.name||''} ${sh.start}–${sh.end} ${shiftLabel(sh)}`);
+        ?`衝堂:${mw.start}–${mw.end} ${shiftLabel(sh)}`
+        :`跨店路程不足${travel}分:${store(sh.storeId)?.name||''} ${mw.start}–${mw.end} ${shiftLabel(sh)}`);
     }
   }
   if(role==='NPC'){
@@ -1432,8 +1449,9 @@ function renderSlots(){
     const cur=sl.empId&&!cands.some(c=>c.id===sl.empId)?emp(sl.empId):null;
     const list=cur?[cur,...cands]:cands;
     const good=[],bad=[];
+    const slotStart=sl.start||start,slotEnd=sl.end||end; // 每人可有個別時段
     for(const e of list){
-      const w=empWarnings(e,date,start,end,storeId,sl.role);
+      const w=empWarnings(e,date,slotStart,slotEnd,storeId,sl.role);
       if(sl.role==='櫃台'&&!(e.counters||[]).includes(storeId))w.push('未設此店櫃台(儲存時自動加入)');
       else if(kind==='theme'&&(sl.role==='場控'||sl.role==='NPC')&&!(e.skills?.[themeId]||[]).includes(sl.role))w.push(`未勾此主題${sl.role}技能(儲存時自動勾選)`);
       (w.length?bad:good).push({e,w});
@@ -1442,9 +1460,13 @@ function renderSlots(){
     const opts=`<option value="">(未指定)</option>`
       +(good.length?`<optgroup label="✓ 可排(無碰撞)">${good.map(opt).join('')}</optgroup>`:'')
       +(bad.length?`<optgroup label="⚠ 有狀況(仍可強制選)">${bad.map(opt).join('')}</optgroup>`:'');
+    const timeInputs=(kind==='counter'||kind==='floor')
+      ?`<input type="time" value="${slotStart||''}" onchange="slotTime(${i},'start',this.value)" title="此人開始時間" style="width:auto"><span class="muted">–</span><input type="time" value="${slotEnd||''}" onchange="slotTime(${i},'end',this.value)" title="此人結束時間" style="width:auto">`
+      :'';
     return `<div class="slot">
       <select onchange="slotRole(${i},this.value)">${roleChoices.map(r=>`<option ${r===sl.role?'selected':''}>${r}</option>`).join('')}</select>
       <select class="grow" onchange="slotEmp(${i},this.value)">${opts}</select>
+      ${timeInputs}
       <button class="btn gray sm" onclick="rmSlot(${i})">✕</button>
     </div>`;
   }).join('')||'<span class="muted">尚無人員欄位</span>';
@@ -1482,9 +1504,18 @@ function saveShift(){
     id:editShiftId||uid(),date,storeId:document.getElementById('sfStore').value,kind,
     themeId:kind==='theme'?document.getElementById('sfTheme').value:null,
     start,end,note:document.getElementById('sfNote').value.trim(),
-    assignments:dlgSlotsArr.map(s=>({role:s.role,empId:s.empId})),linkedThemeAssignments,
+    assignments:dlgSlotsArr.map(s=>({role:s.role,empId:s.empId,...(s.start?{start:s.start}:{}),...(s.end?{end:s.end}:{})})),linkedThemeAssignments,
     status:isCancel?statusVal:'active'
   };
+  // 櫃台/駐店:班別時間自動涵蓋所有人的個別時段,不會遺漏任何人的班
+  if(kind==='counter'||kind==='floor'){
+    const ws=obj.assignments.filter(a=>a.empId).map(a=>asgWindow(obj,a));
+    if(ws.length){
+      const s0=ws.map(x=>x.start).sort()[0],e0=ws.map(x=>x.end).sort().pop();
+      if(s0&&s0<obj.start)obj.start=s0;
+      if(e0&&e0>obj.end)obj.end=e0;
+    }
+  }
   // 保留 SimplyBook 同步來的客人/付款資訊
   if(prev){if(prev.customer)obj.customer=prev.customer;if(prev.payment)obj.payment=prev.payment;if(prev.sourceUpdatedAt)obj.sourceUpdatedAt=prev.sourceUpdatedAt;}
   // 取消/改期資訊
@@ -1530,10 +1561,13 @@ function deleteShift(){
 /* 回寫 SimplyBook:單筆手動,按了才改;可能觸發 SimplyBook 寄通知信給客人 */
 async function writebackShift(){
   if(!editShiftId||String(editShiftId).indexOf('sb_')!==0)return;
-  const sel=dlgSlotsArr.find(s=>s.empId);
-  if(!sel)return alert('請先選好負責人並「儲存」後再回寫');
+  // 回寫對象=該主題在 SimplyBook 的供應者角色(payNPC>0 → NPC,否則場控);詭獄只送 NPC 欄位的人
+  const t=theme(document.getElementById('sfTheme').value);
+  const primaryRole=t&&(Number(t.payNPC)||0)>0?'NPC':'場控';
+  const sel=dlgSlotsArr.find(s=>s.empId&&s.role===primaryRole);
+  if(!sel)return alert('SimplyBook 這個主題的服務供應者是「'+primaryRole+'」,請先在'+primaryRole+'欄位選人並「儲存」後再回寫');
   const e=emp(sel.empId);
-  if(!confirm('把此場次的負責人「'+(e?e.name:'?')+'」回寫到 SimplyBook?\n\n注意:SimplyBook 可能會依其通知設定寄信給客人。'))return;
+  if(!confirm('把此場次的 '+primaryRole+'「'+(e?e.name:'?')+'」回寫到 SimplyBook 的服務供應者?\n\n注意:SimplyBook 可能會依其通知設定寄信給客人。'))return;
   const btn=document.getElementById('sfWriteback');
   btn.disabled=true;btn.textContent='回寫中…';
   try{
@@ -1855,8 +1889,10 @@ function hourlyMinutes(empId,month){
   let m=0;
   for(const sh of S.shifts){
     if(isCx(sh)||sh.date.slice(0,7)!==month||sh.kind==='theme'||sh.kind==='practice')continue;
-    if(!sh.assignments.some(a=>a.empId===empId))continue;
-    m+=Math.max(0,toMin(sh.end)-toMin(sh.start));
+    const a=sh.assignments.find(x=>x.empId===empId);
+    if(!a)continue;
+    const w=asgWindow(sh,a); // 用此人的個別時段計時數
+    m+=Math.max(0,toMin(w.end)-toMin(w.start));
   }
   return m;
 }
@@ -1907,7 +1943,7 @@ function approvedHourlyBreakdown(e,month){
     const controllerUnion=mergedRangeMinutes(allControllerRanges);
     const dayCollision=Math.max(0,dayControllerMinutes-controllerUnion);
     const otherMinutes=others.length?Math.max(0,payable-Math.min(payable,controllerUnion)):0;
-    const weighted=others.map(x=>({m:Math.max(0,toMin(x.sh.end)-toMin(x.sh.start)),rate:hourlyRateForShift(e,x.sh,x.role)}));
+    const weighted=others.map(x=>{const a=(x.sh.assignments||[]).find(y=>y.empId===e.id);const w=asgWindow(x.sh,a);return{m:Math.max(0,toMin(w.end)-toMin(w.start)),rate:hourlyRateForShift(e,x.sh,x.role)}});
     weighted.forEach(x=>{if(x.rate)rates.add(x.rate)});
     const scheduled=weighted.reduce((n,x)=>n+x.m,0);
     let otherPay=0;

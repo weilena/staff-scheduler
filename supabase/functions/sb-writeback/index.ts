@@ -46,11 +46,22 @@ Deno.serve(async (req) => {
     const { data: row } = await supa.from("shifts").select("data").eq("id", shiftId).single();
     if (!row) return Response.json({ error: "查無此場次" }, { status: 404 });
     const shift = row.data;
-    const empId = shift.assignments?.find((a: any) => a.empId)?.empId;
-    if (!empId) return Response.json({ error: "此場次尚未指定負責人" }, { status: 400 });
 
     const { data: cfgRow } = await supa.from("config").select("data").eq("id", 1).single();
-    const employee = cfgRow!.data.employees.find((e: any) => e.id === empId);
+    const cfg = cfgRow!.data;
+    // SimplyBook 的服務供應者角色:payNPC>0 的主題(詭廁/詭獄/加場/詭店)= NPC;其餘 = 場控。
+    // 詭獄同時有場控+NPC 欄位時,回寫「只取 NPC」那格,絕不誤送場控(老闆規則)。
+    const themeRow = cfg.themes?.find((t: any) => t.id === shift.themeId);
+    const primaryRole = themeRow && (Number(themeRow.payNPC) || 0) > 0 ? "NPC" : "場控";
+    const primary = shift.assignments?.find((a: any) => a.empId && a.role === primaryRole);
+    if (!primary) {
+      return Response.json({
+        error: `此場次尚未指定「${primaryRole}」人員`,
+        hint: `SimplyBook 這個主題的服務供應者對應的是${primaryRole};請先在場次的${primaryRole}欄位選人再回寫。`,
+      }, { status: 400 });
+    }
+    const empId = primary.empId;
+    const employee = cfg.employees.find((e: any) => e.id === empId);
     if (!employee) return Response.json({ error: "查無此員工" }, { status: 400 });
 
     // 2. SimplyBook 管理 API
