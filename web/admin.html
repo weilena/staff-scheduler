@@ -1756,7 +1756,8 @@ function vAttendance(){
   const employees=S.employees.filter(e=>employedInMonth(e,attendanceMonth));
   if(!attendanceEmp||!employees.some(e=>e.id===attendanceEmp))attendanceEmp=employees[0]?.id||'';
   const e=emp(attendanceEmp);
-  return `<div class="card"><div class="row"><div><h2 style="margin:0">個人月打卡與工作紀錄</h2><p class="muted">每位員工一張月表；日期在上方，派班、SimplyBook、訓練、原始打卡、補卡、核准與來源在左側。</p></div><span class="grow"></span><select onchange="attendanceEmp=this.value;render()">${employees.map(x=>`<option value="${x.id}" ${x.id===attendanceEmp?'selected':''}>${esc(x.name)}・${x.type==='full'?'正職':'兼職'}</option>`).join('')}</select><input type="month" value="${attendanceMonth}" onchange="attendanceMonth=this.value;render()"></div></div>
+  return `<div class="card"><div class="row"><div><h2 style="margin:0">個人月打卡與工作紀錄</h2><p class="muted">每位員工一張月表；日期在上方，派班、SimplyBook、訓練、原始打卡、補卡、核准與來源在左側。</p></div><span class="grow"></span><input type="month" value="${attendanceMonth}" onchange="attendanceMonth=this.value;render()"></div>
+    <div class="row" style="margin-top:10px;gap:7px;flex-wrap:wrap">${employees.map(x=>`<button class="btn ${x.id===attendanceEmp?'':'gray'} sm" onclick="attendanceEmp='${x.id}';render()">${esc(x.name)}・${x.type==='full'?'正職':'兼職'}</button>`).join('')||'<span class="muted">這個月份沒有在職員工</span>'}</div></div>
     <div class="card">${e?`<div class="row" style="margin-bottom:10px"><h2 style="margin:0">${employeeTag(e,e.name)}・${attendanceMonth}</h2><span class="grow"></span><button class="btn gray sm" onclick="punchEmp='${e.id}';punchMonth='${attendanceMonth}';tab='punch';renderNav();render()">查看／補登原始打卡</button></div>${attendanceMonthGrid(e,attendanceMonth)}`:'<p class="muted">這個月份沒有在職員工</p>'}</div>`;
 }
 function employeeAttendanceDetail(empId,month){
@@ -2044,6 +2045,12 @@ function vPay(){
       <button class="btn gray sm" ${pendingMonth.length?'':'disabled'} onclick="selectPendingDaily('${payReviewMonth}')">全選待審（${pendingMonth.length}）</button>
       <button id="dailyReviewApprove" class="btn sm" ${dailyReviewSelected.size?'':'disabled'} onclick="reviewSelectedDaily('approved')">核准勾選（${dailyReviewSelected.size}）</button>
       <button id="dailyReviewReject" class="btn red sm" ${dailyReviewSelected.size?'':'disabled'} onclick="reviewSelectedDaily('rejected')">不計薪勾選</button>
+    </div>
+    <div style="margin:0 0 12px;padding:10px 12px;border:1px solid #dbe3ee;border-radius:10px;background:#f8fafc">
+      <b>個人月打卡與工作紀錄</b>
+      <div class="row" style="margin-top:8px;gap:7px;flex-wrap:wrap">
+        ${reviewEmployees.map(e=>`<button class="btn gray sm" onclick="openAttendance('${e.id}','${payReviewMonth}')">${esc(e.name)}</button>`).join('')||'<span class="muted">這個月份尚無在職員工</span>'}
+      </div>
     </div>
     ${reviewEmployees.map((e,i)=>payrollDayGrid(e,payReviewMonth,i===0)).join('')||'<p class="muted">這個月份尚無在職員工</p>'}
   </div>
@@ -2381,10 +2388,15 @@ function payrollDayGrid(e,month,opened){
   const[y,m]=month.split('-').map(Number),days=new Date(y,m,0).getDate();
   const cols=Array.from({length:days},(_,i)=>month+'-'+String(i+1).padStart(2,'0'));
   const schedule=d=>S.shifts.filter(s=>s.date===d&&!isCx(s)&&(s.assignments||[]).some(a=>a.empId===e.id));
+  const relations=payrollSequenceRelations(e.id,month),pendingCount=(LINE.daily||[]).filter(r=>r.emp_id===e.id&&String(r.work_date).slice(0,7)===month&&(r.status==='pending'||r.status==='anomaly')).length;
+  const relationCell=d=>{const rs=relations.filter(r=>r.date===d);if(!rs.length)return '—';return rs.map(r=>r.type==='collision'
+    ?`<div style="padding:5px;border-left:4px solid #dc2626;background:#fee2e2"><b class="warn">⚠ 撞場</b><br>${r.a.sh.start}–${r.a.sh.end} ${esc(shiftLabel(r.a.sh))}<br>${r.b.sh.start}–${r.b.sh.end} ${esc(shiftLabel(r.b.sh))}<br><small>重疊 ${r.minutes} 分鐘</small></div>`
+    :`<div style="padding:5px;border-left:4px solid #7c3aed;background:#ede9fe"><b style="color:#6d28d9">↔ 滾場</b><br>${r.a.sh.start}–${r.a.sh.end} ${esc(shiftLabel(r.a.sh))}<br>${r.b.sh.start}–${r.b.sh.end} ${esc(shiftLabel(r.b.sh))}<br><small>空檔 ${r.minutes} 分鐘</small></div>`).join('<div style="height:4px"></div>')};
   const head=cols.map(d=>{const holiday=holidayName(d);return `<th style="text-align:center;min-width:100px;position:sticky;top:0;z-index:1;${holiday?'background:#b91c1c;color:#fff':'background:#f8fafc'}">${holiday?'國定':'一般日'}<br>${Number(d.slice(8))}<br>週${WD[dateWD(d)]}${holiday?`<br><small>${holiday}</small>`:''}</th>`}).join('');
   const reviewCell=d=>{const r=(LINE.daily||[]).find(x=>x.emp_id===e.id&&x.work_date===d);if(!r)return '<span class="muted">無工時</span>';if(r.status==='approved')return `<b style="color:#15803d">已核准<br>${fmtHr(Number(r.payable_minutes)||0)} 小時</b><br><button class="btn gray sm" style="margin-top:4px" onclick="reviewDaily('${e.id}','${d}','pending')">撤回待審</button>`;if(r.status==='rejected')return `<b class="warn">不計薪</b><br><button class="btn gray sm" style="margin-top:4px" onclick="reviewDaily('${e.id}','${d}','pending')">撤回待審</button>`;const id=`paygrid_${e.id}_${d}`,checked=dailyReviewSelected.has(dailyReviewKey(e.id,d));return `<label class="cklab"><input type="checkbox" ${checked?'checked':''} onchange="toggleDailyReview('${e.id}','${d}',this.checked)">選取</label><br><input id="${id}" type="number" min="0" max="1440" value="${r.payable_minutes??r.actual_minutes}" style="width:66px;padding:5px"> 分<br><button class="btn sm" style="margin-top:4px" onclick="reviewDaily('${e.id}','${d}','approved','${id}')">單筆核准</button> <button class="btn red sm" style="margin-top:4px" onclick="reviewDaily('${e.id}','${d}','rejected','${id}')">不計薪</button>`};
-  return `<details ${opened?'open':''} style="margin-top:10px"><summary style="cursor:pointer;font-weight:700;padding:8px 4px">${esc(e.name)}・${e.type==='part'?'兼職':'正職'}</summary><div style="overflow:auto;max-width:100%;max-height:62vh;margin-top:4px;overscroll-behavior:contain"><table style="min-width:${Math.max(980,days*105)}px;border-collapse:collapse"><tr><th style="position:sticky;left:0;top:0;z-index:3;background:#fff3cd;min-width:125px">項目</th>${head}</tr>
+  return `<details ${opened?'open':''} style="margin-top:10px"><summary style="cursor:pointer;font-weight:700;padding:8px 4px">${esc(e.name)}・${e.type==='part'?'兼職':'正職'} <button class="btn sm" style="margin-left:8px" ${pendingCount?'':'disabled'} onclick="event.preventDefault();event.stopPropagation();approveEmployeeMonth('${e.id}','${month}')">本月全部核准（${pendingCount}）</button></summary><div style="overflow:auto;max-width:100%;max-height:62vh;margin-top:4px;overscroll-behavior:contain"><table style="min-width:${Math.max(980,days*105)}px;border-collapse:collapse"><tr><th style="position:sticky;left:0;top:0;z-index:3;background:#fff3cd;min-width:125px">項目</th>${head}</tr>
   <tr style="background:#fff8d8"><th style="position:sticky;left:0;background:#fff3cd;z-index:2">管理員排班</th>${cols.map(d=>`<td>${schedule(d).map(s=>`${s.start}–${s.end}<br>${esc(shiftLabel(s))}`).join('<hr style="border:0;border-top:1px dotted #cbd5e1">')||'—'}</td>`).join('')}</tr>
+  <tr style="background:#f5f3ff"><th style="position:sticky;left:0;background:#ddd6fe;z-index:2">撞場／滾場時段</th>${cols.map(d=>`<td>${relationCell(d)}</td>`).join('')}</tr>
   <tr style="background:#e0f2fe"><th style="position:sticky;left:0;background:#bae6fd;z-index:2">實際多段打卡</th>${cols.map(d=>{const rs=pairPunches(e.id,month).filter(r=>r.date===d);return `<td>${rs.map((r,i)=>`第${i+1}段<br>${r.in||'<span class="warn">缺卡</span>'}–${r.out||'<span class="warn">缺卡</span>'}`).join('<hr style="border:0;border-top:1px dotted #94a3b8">')||'—'}</td>`}).join('')}</tr>
   <tr style="background:#dcfce7"><th style="position:sticky;left:0;background:#bbf7d0;z-index:2">計薪審核</th>${cols.map(d=>`<td>${reviewCell(d)}</td>`).join('')}</tr></table></div></details>`;
 }
@@ -2584,6 +2596,19 @@ async function reviewSelectedDaily(status){
     const failed=results.find(x=>x.error||!x.data?.ok);if(failed){await refreshLineAdmin();render();return alert(`已完成 ${completed} 筆，後續審核失敗：${failed.error?.message||failed.data?.msg||'未知錯誤'}`)}completed+=batch.length;
   }
   dailyReviewSelected.clear();await refreshLineAdmin();render();alert(`已完成 ${completed} 筆工時${action}`);
+}
+async function approveEmployeeMonth(empId,month){
+  const employee=emp(empId),rows=(LINE.daily||[]).filter(r=>r.emp_id===empId&&String(r.work_date).slice(0,7)===month&&(r.status==='pending'||r.status==='anomaly'));
+  if(!rows.length)return alert(`${employee?.name||'這位員工'}本月沒有待核准工時`);
+  const anomalies=rows.filter(r=>r.status==='anomaly'||r.anomalies?.length).length;
+  if(!confirm(`確定核准 ${employee?.name||'這位員工'} ${month} 的 ${rows.length} 筆工時？${anomalies?`\n其中 ${anomalies} 筆有異常標記，請確認已核對。`:''}`))return;
+  const note=prompt('本月全部核准備註（可留空）','')||'';let completed=0;
+  for(let i=0;i<rows.length;i+=10){
+    const batch=rows.slice(i,i+10),results=await Promise.all(batch.map(r=>{const input=document.getElementById(`paygrid_${r.emp_id}_${r.work_date}`),payable=Math.max(0,Number(input?.value??r.payable_minutes??r.actual_minutes)||0);return sbc.rpc('review_attendance_day',{p_emp:r.emp_id,p_date:r.work_date,p_status:'approved',p_payable:payable,p_note:note||'員工本月全部核准'})}));
+    const failed=results.find(x=>x.error||!x.data?.ok);if(failed){await refreshLineAdmin();render();return alert(`已完成 ${completed} 筆，後續核准失敗：${failed.error?.message||failed.data?.msg||'未知錯誤'}`)}completed+=batch.length;
+  }
+  for(const r of rows)dailyReviewSelected.delete(dailyReviewKey(r.emp_id,r.work_date));
+  await refreshLineAdmin();render();alert(`${employee?.name||'員工'}本月 ${completed} 筆工時已核准`);
 }
 async function approveAllDaily(month){
   const rows=(LINE.daily||[]).filter(r=>String(r.work_date).slice(0,7)===month&&(r.status==='pending'||r.status==='anomaly'));
