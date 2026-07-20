@@ -462,6 +462,7 @@ async function afterLogin(){
     }
   });
   if(S.settings.practiceHourlyRate==null){S.settings.practiceHourlyRate=196;payrollDefaultsChanged=true}
+  if(S.settings.controllerHourlyRate==null){S.settings.controllerHourlyRate=196;payrollDefaultsChanged=true}
   if(S.settings.floorHourlyRate==null){S.settings.floorHourlyRate=200;payrollDefaultsChanged=true}
   if(payrollDefaultsChanged)setTimeout(save,0);
   // 只修正排班系統手動建立的舊詭廁場次；SimplyBook 場次仍以來源資料為準。
@@ -1862,27 +1863,54 @@ function approvedHourlyMinutes(empId,month){
   return (LINE.daily||[]).filter(x=>x.emp_id===empId&&String(x.work_date).slice(0,7)===month&&x.status==='approved')
     .reduce((n,x)=>n+Math.max(0,Number(x.payable_minutes)||0),0);
 }
-function hourlyRateForShift(e,sh){
+function hourlyRateForShift(e,sh,role){
   const personal=Number(e.hourlyRate)||0;if(personal>0)return personal;
+  if(sh?.kind==='theme'&&role==='場控')return Number(S.settings.controllerHourlyRate)||196;
   if(sh?.kind==='practice')return Number(S.settings.practiceHourlyRate)||196;
   if(sh?.kind==='floor')return Number(S.settings.floorHourlyRate)||200;
-  return 0;
+  return 196;
+}
+function mergedRangeMinutes(ranges){
+  const sorted=ranges.filter(x=>x.end>x.start).sort((a,b)=>a.start-b.start),merged=[];
+  for(const r of sorted){const last=merged[merged.length-1];if(last&&r.start<=last.end)last.end=Math.max(last.end,r.end);else merged.push({...r})}
+  return merged.reduce((n,x)=>n+x.end-x.start,0);
+}
+function punchRangesForDay(empId,date){
+  return pairPunches(empId,date.slice(0,7)).filter(x=>x.date===date&&x.in&&x.out).map(x=>({start:toMin(x.in),end:toMin(x.out)})).filter(x=>x.end>x.start);
+}
+function shiftPunchRanges(sh,punches){
+  const start=toMin(sh.start),end=toMin(sh.end);
+  return punches.map(p=>({start:Math.max(start,p.start),end:Math.min(end,p.end)})).filter(x=>x.end>x.start);
 }
 function approvedHourlyBreakdown(e,month){
-  let minutes=0,pay=0;const rates=new Set();
+  let minutes=0,pay=0,collisionMinutes=0,controllerMinutes=0;const rates=new Set();
   for(const d of (LINE.daily||[]).filter(x=>x.emp_id===e.id&&String(x.work_date).slice(0,7)===month&&x.status==='approved')){
     const payable=Math.max(0,Number(d.payable_minutes)||0);if(!payable)continue;
-    const shifts=S.shifts.filter(sh=>{
-      if(isCx(sh)||sh.date!==d.work_date)return false;
-      const a=(sh.assignments||[]).find(x=>x.empId===e.id);if(!a)return false;
-      if(sh.kind==='theme')return e.type==='part'&&a.role!=='NPC';
-      return e.type==='part';
-    });
-    const weighted=shifts.map(sh=>({m:Math.max(0,toMin(sh.end)-toMin(sh.start)),rate:hourlyRateForShift(e,sh)}));weighted.forEach(x=>{if(x.rate)rates.add(x.rate)});
-    const scheduled=weighted.reduce((n,x)=>n+x.m,0);minutes+=payable;
-    if(scheduled)pay+=weighted.reduce((n,x)=>n+(payable*x.m/scheduled)/60*x.rate,0);else{const rate=Number(e.hourlyRate)||0;if(rate)rates.add(rate);pay+=payable/60*rate}
+    if(e.type!=='part')continue;
+    const assignments=employeeDayAssignments(e.id,d.work_date).filter(x=>x.role!=='NPC');
+    const controllers=assignments.filter(x=>x.sh.kind==='theme'&&x.role==='場控');
+    const others=assignments.filter(x=>!(x.sh.kind==='theme'&&x.role==='場控'));
+    const punches=punchRangesForDay(e.id,d.work_date),allControllerRanges=[];
+    let dayControllerMinutes=0,dayControllerPay=0;
+    for(const x of controllers){
+      const ranges=shiftPunchRanges(x.sh,punches);allControllerRanges.push(...ranges);
+      const credited=Math.min(120,ranges.reduce((n,r)=>n+r.end-r.start,0));
+      const rate=hourlyRateForShift(e,x.sh,x.role);if(rate)rates.add(rate);
+      dayControllerMinutes+=credited;dayControllerPay+=credited/60*rate;
+    }
+    const controllerUnion=mergedRangeMinutes(allControllerRanges);
+    const dayCollision=Math.max(0,dayControllerMinutes-controllerUnion);
+    const otherMinutes=others.length?Math.max(0,payable-Math.min(payable,controllerUnion)):0;
+    const weighted=others.map(x=>({m:Math.max(0,toMin(x.sh.end)-toMin(x.sh.start)),rate:hourlyRateForShift(e,x.sh,x.role)}));
+    weighted.forEach(x=>{if(x.rate)rates.add(x.rate)});
+    const scheduled=weighted.reduce((n,x)=>n+x.m,0);
+    let otherPay=0;
+    if(scheduled)otherPay=weighted.reduce((n,x)=>n+(otherMinutes*x.m/scheduled)/60*x.rate,0);
+    else if(!controllers.length){const rate=Number(e.hourlyRate)||196;rates.add(rate);otherPay=payable/60*rate}
+    const dayMinutes=controllers.length?otherMinutes+dayControllerMinutes:payable;
+    minutes+=dayMinutes;controllerMinutes+=dayControllerMinutes;collisionMinutes+=dayCollision;pay+=otherPay+dayControllerPay;
   }
-  return{minutes,pay:Math.round(pay),rates:[...rates].sort((a,b)=>a-b)};
+  return{minutes,pay:Math.round(pay),rates:[...rates].sort((a,b)=>a-b),controllerMinutes,collisionMinutes};
 }
 function approvedOvertimeMinutes(empId,month){
   return (LINE.overtime||[]).filter(x=>x.emp_id===empId&&String(x.work_date).slice(0,7)===month&&x.status==='approved')
@@ -1966,7 +1994,7 @@ function vPay(){
     // 正職加班只採管理員核准分鐘，不讓缺卡或異常長工時自動進薪資。
     const ot=e.type==='full'?approvedOvertimePay(e,payMonth):{minutes:0,pay:0};
     let otHr=ot.minutes/60,otPay=ot.pay;
-    return{e,ss,hm,hp,hourlyRates:hourly.rates||[],base,am,otHr,otPay,total:ss.pay+hp+base+otPay};
+    return{e,ss,hm,hp,hourlyRates:hourly.rates||[],collisionMinutes:hourly.collisionMinutes||0,base,am,otHr,otPay,total:ss.pay+hp+base+otPay};
   });
   const total=rows.reduce((s,r)=>s+r.total,0);
   const pendingMonth=(LINE.daily||[]).filter(r=>String(r.work_date).slice(0,7)===payReviewMonth&&(r.status==='pending'||r.status==='anomaly'));
@@ -1988,14 +2016,14 @@ function vPay(){
     </div>
     <table>
       <tr><th>員工</th><th>身分</th><th>來源追蹤</th><th class="num">場控場次</th><th class="num">NPC場次</th><th class="num">正職總場／超過40場</th><th class="num">論場費</th><th class="num">核准時薪時數</th><th class="num">時薪費</th><th class="num">月薪</th><th class="num">打卡時數</th><th class="num">核准加班</th><th class="num">加班費</th><th class="num">合計</th></tr>
-      ${rows.map(({e,ss,hm,hp,hourlyRates,base,am,otHr,otPay,total})=>`<tr>
+      ${rows.map(({e,ss,hm,hp,hourlyRates,collisionMinutes,base,am,otHr,otPay,total})=>`<tr>
         <td><a href="#" onclick="showEmpDetail('${e.id}');return false" style="color:var(--accent);text-decoration:none;font-weight:600">${esc(e.name)}</a> <span class="muted" style="font-size:11px">明細▸</span></td>
         <td>${e.type==='part'?'兼職':'正職'}</td>
         <td><button class="btn gray sm" onclick="openAttendance('${e.id}','${payMonth}')">個人月表</button><br><span class="att-source">場次：派班／SimplyBook<br>時數：LINE打卡＋每日核准${hourlyRates.length?`（$${hourlyRates.join('／$')}）`:''}<br>加班：核准紀錄</span></td>
         <td class="num">${ss.gm||'—'}</td><td class="num">${ss.npc||'—'}</td>
         <td class="num">${e.type==='full'?`${ss.total}／${ss.extra}`:'—'}</td>
         <td class="num">${ss.pay?ss.pay.toLocaleString():'—'}</td>
-        <td class="num">${hm?fmtHr(hm):'—'}</td>
+        <td class="num">${hm?fmtHr(hm):'—'}${collisionMinutes?`<br><small class="warn">含撞場加算 ${fmtHr(collisionMinutes)}</small>`:''}</td>
         <td class="num">${hp?hp.toLocaleString():'—'}</td>
         <td class="num">${base?base.toLocaleString():'—'}</td>
         <td class="num">${am?fmtHr(am):'—'}</td>
@@ -2004,7 +2032,7 @@ function vPay(){
         <td class="num"><b>${total.toLocaleString()}</b></td></tr>`).join('')}
       <tr><td colspan="13" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
     </table>
-    <p class="muted" style="margin-top:8px">一般日包含平日與週六日；只有標示名稱的國定假日採固定日費率。兼職只有 NPC 論場，兼職場控／櫃台／清潔按時薪；員工有設定個人時薪時一律優先，未設定才採訓練場 $${S.settings.practiceHourlyRate||196} 或駐店場控 $${S.settings.floorHourlyRate||200} 的預設時薪。正職以月薪含 ${S.settings.fullBaseSessions??40} 場，超過場次費率可依員工設定；加班僅採管理員核准分鐘，前2小時與後續時數分開計算。</p>
+    <p class="muted" style="margin-top:8px">一般日包含平日與週六日；只有標示名稱的國定假日採固定日費率。兼職 NPC 按主題場次費；兼職主題場控按時薪（預設 $${S.settings.controllerHourlyRate||196}），每場依實際打卡重疊時間、最多 2 小時，兩個撞場仍分場累加。兼職櫃台／清潔／訓練等也按時薪；員工有設定個人時薪時一律優先。正職以月薪含 ${S.settings.fullBaseSessions??40} 場，超過場次費率可依員工設定；加班僅採管理員核准分鐘，前2小時與後續時數分開計算。</p>
   </div>`;
 }
 function exportPayCSV(){
@@ -2124,6 +2152,9 @@ function vThemes(){
     <div class="row" style="margin-top:8px">
       <span>NPC 連場上限</span><input type="number" style="width:60px" value="${S.settings.npcMaxChain}" min="0" onchange="setSetting('npcMaxChain',this.value)"><span>場,場間空檔小於</span>
       <input type="number" style="width:60px" value="${S.settings.npcRestMin}" min="0" onchange="setSetting('npcRestMin',this.value)"><span>分鐘視為連場(場控不受限;上限填 0 =關閉檢查)</span>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <span>兼職主題場控預設時薪</span><input type="number" style="width:80px" value="${S.settings.controllerHourlyRate||196}" min="0" onchange="setSetting('controllerHourlyRate',this.value)"><span>元（員工有個人時薪時，仍以個人時薪優先）</span>
     </div>
     <p class="muted" style="margin-top:6px">排班時的碰撞檢查會套用這些數字。</p>
     <div class="row" style="margin-top:10px">
