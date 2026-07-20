@@ -257,10 +257,30 @@ Deno.serve(async (req) => {
     }
 
     if (action === "guest-booking-report") {
-      const shiftId = String(input.shiftId ?? ""), customerType = String(input.customerType ?? "");
+      let shiftId = String(input.shiftId ?? ""); const customerType = String(input.customerType ?? "");
       const surname = String(input.surname ?? "").trim(), phone = String(input.phone ?? "").replace(/\s+/g, "");
       const partySize = Number(input.partySize), note = String(input.note ?? "").trim();
-      const shift = shifts.find((s: any) => String(s.id) === shiftId && !String(s.status ?? "").startsWith("cancelled"));
+      let shift = shifts.find((s: any) => String(s.id) === shiftId && !String(s.status ?? "").startsWith("cancelled"));
+      if (!shift && input.slot) {
+        const slot = input.slot, date = String(slot.date ?? ""), themeId = String(slot.themeId ?? ""), storeId = String(slot.storeId ?? ""), start = String(slot.start ?? "");
+        const targetTheme = (cfg.themes ?? []).find((t: any) => t.id === themeId && t.active !== false && t.storeId === storeId && (t.slots ?? []).includes(start));
+        const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Taipei" });
+        if (!targetTheme || !/^\d{4}-\d{2}-\d{2}$/.test(date) || date < today) return json({ error: "這不是目前可開放的標準空場" }, 409);
+        const matching = shifts.find((s: any) => s.date === date && s.kind === "theme" && s.themeId === themeId && s.start === start && !String(s.status ?? "").startsWith("cancelled"));
+        if (matching) {
+          shift = matching; shiftId = String(matching.id);
+        } else {
+          const endMinutes = toMinutes(start) + Number(targetTheme.dur ?? 0), end = `${String(Math.floor(endMinutes / 60) % 24).padStart(2, "0")}:${String(endMinutes % 60).padStart(2, "0")}`;
+          const assignments: any[] = [];
+          for (let i = 0; i < Number(targetTheme.needGM ?? 0); i++) assignments.push({ role: "場控", empId: "" });
+          for (let i = 0; i < Number(targetTheme.needNPC ?? 0); i++) assignments.push({ role: "NPC", empId: "" });
+          if (!assignments.length) assignments.push({ role: "工作人員", empId: "" });
+          shiftId = `line_slot_${date.replaceAll("-", "")}_${themeId.replace(/[^a-zA-Z0-9_-]/g, "")}_${start.replace(":", "")}`;
+          shift = { id: shiftId, date, storeId, kind: "theme", themeId, start, end, status: "active", assignments, createdBy: employee.id, createdVia: "line_empty_slot_report" };
+          const { error: shiftError } = await sb.from("shifts").upsert({ id: shiftId, date, source: "manual", data: shift });
+          if (shiftError) throw shiftError;
+        }
+      }
       if (!shift || !(shift.assignments ?? []).some((a: any) => !a.empId)) return json({ error: "這個場次已排人、已取消或不存在" }, 409);
       if (!["walk_in", "reservation"].includes(customerType)) return json({ error: "請選擇現場客人或預約客人" }, 400);
       if (!surname || surname.length > 30) return json({ error: "請填寫客人姓氏" }, 400);
