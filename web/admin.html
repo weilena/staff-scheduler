@@ -365,7 +365,7 @@ function seedConfig(){
   return {
     stores:[{id:'dz',name:'勃根地大忠店',color:'#111827'},{id:'ms',name:'謎先生',color:'#e5e7eb'}],
     themes:seedThemes(),
-    settings:{prepMin:10,travelMin:12,npcMaxChain:2,npcRestMin:30},
+    settings:{prepMin:10,travelMin:12,npcMaxChain:2,npcRestMin:30,rollingGapMin:30},
     closedDates:[],
     employees:[]
   };
@@ -464,6 +464,7 @@ async function afterLogin(){
   if(S.settings.practiceHourlyRate==null){S.settings.practiceHourlyRate=196;payrollDefaultsChanged=true}
   if(S.settings.controllerHourlyRate==null){S.settings.controllerHourlyRate=196;payrollDefaultsChanged=true}
   if(S.settings.floorHourlyRate==null){S.settings.floorHourlyRate=200;payrollDefaultsChanged=true}
+  if(S.settings.rollingGapMin==null){S.settings.rollingGapMin=30;payrollDefaultsChanged=true}
   if(payrollDefaultsChanged)setTimeout(save,0);
   // 只修正排班系統手動建立的舊詭廁場次；SimplyBook 場次仍以來源資料為準。
   const legacyToiletShifts=S.shifts.filter(function(sh){
@@ -1950,6 +1951,31 @@ function empSessions(empId,month){
   }
   return rows.sort((x,y)=>(x.date+x.start).localeCompare(y.date+y.start));
 }
+/* 薪資核對用：同日主題場次重疊為撞場；前場結束後指定分鐘內接下一場為滾場。 */
+function payrollSequenceRelations(empId,month){
+  const limit=Math.max(0,Number(S.settings.rollingGapMin??30)),dates=[...new Set(
+    S.shifts.filter(sh=>!isCx(sh)&&sh.kind==='theme'&&sh.date.slice(0,7)===month).map(sh=>sh.date)
+  )].sort(),rows=[];
+  for(const date of dates){
+    const perShift=new Map();
+    for(const x of employeeDayAssignments(empId,date).filter(x=>x.sh.kind==='theme')){
+      const old=perShift.get(x.sh.id);
+      if(!old||x.role==='場控')perShift.set(x.sh.id,x);
+    }
+    const shifts=[...perShift.values()].sort((a,b)=>toMin(a.sh.start)-toMin(b.sh.start)||toMin(a.sh.end)-toMin(b.sh.end));
+    for(let i=0;i<shifts.length;i++)for(let j=i+1;j<shifts.length;j++){
+      const a=shifts[i],b=shifts[j],aStart=toMin(a.sh.start),aEnd=toMin(a.sh.end),bStart=toMin(b.sh.start),bEnd=toMin(b.sh.end);
+      const overlap=Math.max(0,Math.min(aEnd,bEnd)-Math.max(aStart,bStart));
+      if(overlap>0){
+        rows.push({date,type:'collision',minutes:overlap,a,b});
+      }else{
+        const gap=bStart-aEnd;
+        if(gap>=0&&gap<=limit)rows.push({date,type:'rolling',minutes:gap,a,b});
+      }
+    }
+  }
+  return rows;
+}
 let detailEmpId=null;
 function showEmpDetail(empId){
   detailEmpId=empId;
@@ -1959,6 +1985,8 @@ function showEmpDetail(empId){
   const npc=rows.filter(r=>r.kind==='theme'&&r.role==='NPC'&&!r.cancelled);
   const other=rows.filter(r=>r.kind!=='theme');
   const cx=rows.filter(r=>r.cancelled);
+  const sequence=payrollSequenceRelations(empId,payMonth);
+  const collisions=sequence.filter(r=>r.type==='collision'),rolling=sequence.filter(r=>r.type==='rolling');
   document.getElementById('dlgDetailTitle').textContent=e.name+'|'+payMonth+' 場次明細';
   const tbl=(title,list,showFee)=>list.length?`<h3 style="margin:10px 0 6px">${title}(${list.length})</h3>
     <table><tr><th>日期</th><th>時間</th><th>主題/類型</th><th>店</th><th>角色</th>${showFee?'<th class="num">場次費</th>':'<th class="num">時數</th>'}</tr>
@@ -1966,6 +1994,14 @@ function showEmpDetail(empId){
       <td>${esc(r.label)}${r.cancelled?' <span class="warn">'+esc(r.cx)+'</span>':''}</td><td>${esc(r.store)}</td><td>${r.role}</td>
       ${showFee?`<td class="num">${r.fee?'$'+r.fee:'—'}</td>`:`<td class="num">${fmtHr(toMin(r.end)-toMin(r.start))}h</td>`}</tr>`).join('')}</table>`:'';
   const npcFee=npc.reduce((s,r)=>s+r.fee,0),gmFee=gm.reduce((s,r)=>s+r.fee,0);
+  const sequenceTable=sequence.length?`<h3 style="margin:10px 0 6px">場次關係（撞場 ${collisions.length} 組／滾場 ${rolling.length} 組）</h3>
+    <table><tr><th>日期</th><th>判定</th><th>前場</th><th>後場</th><th>重疊／空檔</th><th>薪資處理</th></tr>
+    ${sequence.map(r=>`<tr><td>${r.date}（週${WD[dateWD(r.date)]}）</td>
+      <td>${r.type==='collision'?'<span class="warn">⚠ 撞場</span>':'滾場'}</td>
+      <td>${r.a.sh.start}–${r.a.sh.end} ${esc(shiftLabel(r.a.sh))}（${r.a.role}）</td>
+      <td>${r.b.sh.start}–${r.b.sh.end} ${esc(shiftLabel(r.b.sh))}（${r.b.role}）</td>
+      <td>${r.minutes} 分鐘</td>
+      <td>${r.type==='collision'?'場控各場獨立計算；實際加算依打卡與管理員核准':'僅標記連續場次，不重複加算'}</td></tr>`).join('')}</table>`:'';
   document.getElementById('dlgDetailBody').innerHTML=
     `<div class="row" style="gap:16px;flex-wrap:wrap">
        <b>場控 ${gm.length} 場 = $${gmFee.toLocaleString()}</b>
@@ -1973,7 +2009,7 @@ function showEmpDetail(empId){
        <b>櫃台/駐店/訓練 ${other.length} 筆</b>
        ${cx.length?`<span class="warn">取消 ${cx.length} 筆(不計費)</span>`:''}
      </div>`
-    +tbl('場控場次',gm,true)+tbl('NPC 場次',npc,true)+tbl('櫃台/駐店/訓練場',other,false)+tbl('已取消',cx,true);
+    +sequenceTable+tbl('場控場次',gm,true)+tbl('NPC 場次',npc,true)+tbl('櫃台/駐店/訓練場',other,false)+tbl('已取消',cx,true);
   dlgDetail.showModal();
 }
 function exportEmpDetailCSV(){
@@ -1994,7 +2030,8 @@ function vPay(){
     // 正職加班只採管理員核准分鐘，不讓缺卡或異常長工時自動進薪資。
     const ot=e.type==='full'?approvedOvertimePay(e,payMonth):{minutes:0,pay:0};
     let otHr=ot.minutes/60,otPay=ot.pay;
-    return{e,ss,hm,hp,hourlyRates:hourly.rates||[],collisionMinutes:hourly.collisionMinutes||0,base,am,otHr,otPay,total:ss.pay+hp+base+otPay};
+    const sequence=payrollSequenceRelations(e.id,payMonth);
+    return{e,ss,hm,hp,hourlyRates:hourly.rates||[],collisionMinutes:hourly.collisionMinutes||0,sequence,base,am,otHr,otPay,total:ss.pay+hp+base+otPay};
   });
   const total=rows.reduce((s,r)=>s+r.total,0);
   const pendingMonth=(LINE.daily||[]).filter(r=>String(r.work_date).slice(0,7)===payReviewMonth&&(r.status==='pending'||r.status==='anomaly'));
@@ -2011,15 +2048,17 @@ function vPay(){
     <div class="row" style="margin-bottom:10px">
       <div><h2 style="margin:0">薪資試算</h2><span class="muted">${payMonth.slice(0,4)} 年 ${Number(payMonth.slice(5,7))} 月</span></div>
       <span class="grow"></span>
+      <label style="margin:0">滾場空檔</label><input type="number" style="width:72px" min="0" value="${S.settings.rollingGapMin??30}" onchange="setSetting('rollingGapMin',this.value)"><span class="muted">分鐘</span>
       <label style="margin:0">薪資月份</label><input type="month" value="${payMonth}" onchange="setPayMonth(this.value)">
       <button class="btn gray sm" onclick="exportPayCSV()">匯出 CSV(含場次明細)</button>
     </div>
     <table>
-      <tr><th>員工</th><th>身分</th><th>來源追蹤</th><th class="num">場控場次</th><th class="num">NPC場次</th><th class="num">正職總場／超過40場</th><th class="num">論場費</th><th class="num">核准時薪時數</th><th class="num">時薪費</th><th class="num">月薪</th><th class="num">打卡時數</th><th class="num">核准加班</th><th class="num">加班費</th><th class="num">合計</th></tr>
-      ${rows.map(({e,ss,hm,hp,hourlyRates,collisionMinutes,base,am,otHr,otPay,total})=>`<tr>
+      <tr><th>員工</th><th>身分</th><th>來源追蹤</th><th>場次關係</th><th class="num">場控場次</th><th class="num">NPC場次</th><th class="num">正職總場／超過40場</th><th class="num">論場費</th><th class="num">核准時薪時數</th><th class="num">時薪費</th><th class="num">月薪</th><th class="num">打卡時數</th><th class="num">核准加班</th><th class="num">加班費</th><th class="num">合計</th></tr>
+      ${rows.map(({e,ss,hm,hp,hourlyRates,collisionMinutes,sequence,base,am,otHr,otPay,total})=>`<tr>
         <td><a href="#" onclick="showEmpDetail('${e.id}');return false" style="color:var(--accent);text-decoration:none;font-weight:600">${esc(e.name)}</a> <span class="muted" style="font-size:11px">明細▸</span></td>
         <td>${e.type==='part'?'兼職':'正職'}</td>
         <td><button class="btn gray sm" onclick="openAttendance('${e.id}','${payMonth}')">個人月表</button><br><span class="att-source">場次：派班／SimplyBook<br>時數：LINE打卡＋每日核准${hourlyRates.length?`（$${hourlyRates.join('／$')}）`:''}<br>加班：核准紀錄</span></td>
+        <td><span class="warn">撞場 ${sequence.filter(r=>r.type==='collision').length}</span><br>滾場 ${sequence.filter(r=>r.type==='rolling').length}${collisionMinutes?`<br><small>已核准加算 ${fmtHr(collisionMinutes)}</small>`:''}</td>
         <td class="num">${ss.gm||'—'}</td><td class="num">${ss.npc||'—'}</td>
         <td class="num">${e.type==='full'?`${ss.total}／${ss.extra}`:'—'}</td>
         <td class="num">${ss.pay?ss.pay.toLocaleString():'—'}</td>
@@ -2030,22 +2069,23 @@ function vPay(){
         <td class="num">${otHr>0?otHr.toFixed(1):'—'}</td>
         <td class="num">${otPay?otPay.toLocaleString():'—'}</td>
         <td class="num"><b>${total.toLocaleString()}</b></td></tr>`).join('')}
-      <tr><td colspan="13" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
+      <tr><td colspan="14" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
     </table>
     <p class="muted" style="margin-top:8px">一般日包含平日與週六日；只有標示名稱的國定假日採固定日費率。兼職 NPC 按主題場次費；兼職主題場控按時薪（預設 $${S.settings.controllerHourlyRate||196}），每場依實際打卡重疊時間、最多 2 小時，兩個撞場仍分場累加。兼職櫃台／清潔／訓練等也按時薪；員工有設定個人時薪時一律優先。正職以月薪含 ${S.settings.fullBaseSessions??40} 場，超過場次費率可依員工設定；加班僅採管理員核准分鐘，前2小時與後續時數分開計算。</p>
   </div>`;
 }
 function exportPayCSV(){
   const actives=S.employees.filter(e=>employedInMonth(e,payMonth));
-  let csv='﻿員工,身分,薪資來源,場控場次,NPC場次,正職總場,超過40場,論場費,核准時薪時數,時薪費,月薪,打卡時數,核准加班時數,加班費,合計,場次明細\n';
+  let csv='﻿員工,身分,薪資來源,撞場組數,滾場組數,已核准撞場加算時數,場控場次,NPC場次,正職總場,超過40場,論場費,核准時薪時數,時薪費,月薪,打卡時數,核准加班時數,加班費,合計,場次明細\n';
   for(const e of actives){
     const ss=sessionStats(e.id,payMonth);
     const hourly=approvedHourlyBreakdown(e,payMonth),hm=hourly.minutes,hp=hourly.pay;
     const base=e.type==='full'?(e.monthlySalary||0):0;
     const am=actualMinutes(e.id,payMonth);
     const ot=e.type==='full'?approvedOvertimePay(e,payMonth):{minutes:0,pay:0};
+    const sequence=payrollSequenceRelations(e.id,payMonth),collisionCount=sequence.filter(r=>r.type==='collision').length,rollingCount=sequence.filter(r=>r.type==='rolling').length;
     const detail=Object.entries(ss.detail).map(([k,n])=>k+'×'+n).join('、');
-    csv+=`${e.name},${e.type==='part'?'兼職':'正職'},"派班/SimplyBook + LINE打卡 + 管理員核准",${ss.gm},${ss.npc},${e.type==='full'?ss.total:''},${e.type==='full'?ss.extra:''},${ss.pay},${fmtHr(hm)},${hp},${base},${fmtHr(am)},${fmtHr(ot.minutes)},${ot.pay},${ss.pay+hp+base+ot.pay},"${detail}"\n`;
+    csv+=`${e.name},${e.type==='part'?'兼職':'正職'},"派班/SimplyBook + LINE打卡 + 管理員核准",${collisionCount},${rollingCount},${fmtHr(hourly.collisionMinutes||0)},${ss.gm},${ss.npc},${e.type==='full'?ss.total:''},${e.type==='full'?ss.extra:''},${ss.pay},${fmtHr(hm)},${hp},${base},${fmtHr(am)},${fmtHr(ot.minutes)},${ot.pay},${ss.pay+hp+base+ot.pay},"${detail}"\n`;
   }
   dl(csv,`薪資_${payMonth}.csv`,'text/csv');
 }
