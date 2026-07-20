@@ -332,7 +332,12 @@ const THEME_ROLE_RULES={
   '詭店':['NPC'],
   '孤兒怨':['場控'],'屎力全開':['場控'],'越獄者':['場控'],'外婆':['場控']
 };
+/* 必須排滿才算完整的角色(未列出的主題=與可排角色相同)。
+   詭獄／詭獄加場:場控「可排但不強制」——櫃台接場控時可掛,但沒掛不算缺人,才不會整片黃底。
+   ※ 這是老闆確認的規則,調整前請先確認。 */
+const THEME_REQUIRED_ROLES={'詭獄':['NPC'],'詭獄加場':['NPC']};
 function allowedThemeRoles(t){return t?(THEME_ROLE_RULES[t.name]||[]):[]}
+function requiredThemeRoles(t){return t?(THEME_REQUIRED_ROLES[t.name]||allowedThemeRoles(t)):[]}
 function themeAllows(t,role){return allowedThemeRoles(t).includes(role)}
 const ADMIN_WORK_ITEMS={grandma:'外婆',haunted_shop:'詭店',haunted_prison:'詭獄',shit_power:'屎力全開',haunted_toilet:'詭廁',escapee:'越獄者',orphan:'孤兒怨',mr_mystery_counter:'謎先生櫃台',burgundy_counter:'桌遊大忠店櫃台',weekly_cleaning:'每週大清潔',practice:'訓練場',floor_support:'場控／現場支援'};
 function adminWorkOptions(){return '<option value="">— 選擇本次工作 —</option>'+Object.entries(ADMIN_WORK_ITEMS).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}
@@ -431,7 +436,7 @@ async function afterLogin(){
   let payrollDefaultsChanged=false;
   S.themes.forEach(function(t){
     if(!Array.isArray(t.slots))t.slots=[];if(t.payGM==null)t.payGM=300;if(t.payNPC==null)t.payNPC=0;
-    const allowed=allowedThemeRoles(t),needGM=allowed.includes('場控')?1:0,needNPC=allowed.includes('NPC')?1:0;
+    const required=requiredThemeRoles(t),needGM=required.includes('場控')?1:0,needNPC=required.includes('NPC')?1:0;
     if(t.needGM!==needGM){t.needGM=needGM;payrollDefaultsChanged=true}
     if(t.needNPC!==needNPC){t.needNPC=needNPC;payrollDefaultsChanged=true}
     if((t.id==='gc'||t.name==='詭廁')&&t.slots.includes('20:20')){
@@ -726,7 +731,7 @@ function isShiftUnstaffed(sh){
   if(isCx(sh))return false;
   if(sh.kind!=='theme')return !(sh.assignments||[]).some(a=>a.empId);
   const t=theme(sh.themeId);if(!t)return true;
-  return allowedThemeRoles(t).some(role=>shiftRolePeople(sh,role).length<Number(role==='場控'?t.needGM:t.needNPC));
+  return requiredThemeRoles(t).some(role=>shiftRolePeople(sh,role).length<Number(role==='場控'?t.needGM:t.needNPC));
 }
 function activeCounterShifts(ds,storeId){return S.shifts.filter(sh=>sh.date===ds&&sh.storeId===storeId&&sh.kind==='counter'&&!isCx(sh)).sort((a,b)=>a.start.localeCompare(b.start))}
 function dzCounterDefaultTime(ds){
