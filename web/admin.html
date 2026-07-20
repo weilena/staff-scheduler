@@ -1829,8 +1829,8 @@ function actualMinutes(empId,month){
 }
 /* 場次統計：兼職 NPC 論場；兼職場控改按核准工時；正職計總場與超過40場加給。 */
 function sessionStats(empId,month){
-  const e=emp(empId);let pay=0,gm=0,npc=0;const detail={},counted=new Set();
-  const addSession=(sh,t,role)=>{if(!themeAllows(t,role))return;const key=sh.id+'|'+role;if(counted.has(key))return;counted.add(key);let r=0;if(role==='NPC'){npc++;r=e?.type==='part'?themeSessionRate(t,role,sh.date):0}else if(role==='場控'){gm++;r=0}else return;pay+=r;const k=`${t.name}${role}`;detail[k]=(detail[k]||0)+1};
+  const e=emp(empId);let pay=0,gm=0,npc=0;const detail={},payItems=[],counted=new Set();
+  const addSession=(sh,t,role)=>{if(!themeAllows(t,role))return;const key=sh.id+'|'+role;if(counted.has(key))return;counted.add(key);let r=0;if(role==='NPC'){npc++;r=e?.type==='part'?themeSessionRate(t,role,sh.date):0}else if(role==='場控'){gm++;r=0}else return;pay+=r;if(r)payItems.push({date:sh.date,label:t.name,role,rate:r,holiday:isHolidayRate(sh.date)});const k=`${t.name}${role}`;detail[k]=(detail[k]||0)+1};
   for(const sh of S.shifts){
     if(isCx(sh)||sh.date.slice(0,7)!==month||sh.kind!=='theme')continue;
     const t=theme(sh.themeId);if(!t)continue;
@@ -1848,7 +1848,7 @@ function sessionStats(empId,month){
   }
   const total=gm+npc,baseSessions=Number(S.settings.fullBaseSessions??40),extra=e?.type==='full'?Math.max(0,total-baseSessions):0;
   const extraPay=e?.type==='full'?Math.round(extra*Number(e.extraSessionRate||S.settings.fullExtraSessionRate||0)):0;
-  return{pay:pay+extraPay,gm,npc,total,extra,extraPay,baseSessions,detail};
+  return{pay:pay+extraPay,gm,npc,total,extra,extraPay,baseSessions,detail,payItems};
 }
 /* 櫃台/駐店班時數(時薪計;不含訓練場)*/
 function hourlyMinutes(empId,month){
@@ -1885,7 +1885,8 @@ function shiftPunchRanges(sh,punches){
   return punches.map(p=>({start:Math.max(start,p.start),end:Math.min(end,p.end)})).filter(x=>x.end>x.start);
 }
 function approvedHourlyBreakdown(e,month){
-  let minutes=0,pay=0,collisionMinutes=0,controllerMinutes=0;const rates=new Set();
+  let minutes=0,pay=0,collisionMinutes=0,controllerMinutes=0;const rates=new Set(),componentMap=new Map();
+  const addComponent=(date,rate,componentMinutes)=>{if(!rate||componentMinutes<=0)return;const holiday=isHolidayRate(date),key=`${holiday?'holiday':'regular'}|${rate}`,old=componentMap.get(key)||{holiday,rate,minutes:0,pay:0};old.minutes+=componentMinutes;old.pay+=componentMinutes/60*rate;componentMap.set(key,old)};
   for(const d of (LINE.daily||[]).filter(x=>x.emp_id===e.id&&String(x.work_date).slice(0,7)===month&&x.status==='approved')){
     const payable=Math.max(0,Number(d.payable_minutes)||0);if(!payable)continue;
     if(e.type!=='part')continue;
@@ -1901,7 +1902,7 @@ function approvedHourlyBreakdown(e,month){
       const ranges=shiftPunchRanges(x.sh,punches);allControllerRanges.push(...ranges);
       const credited=Math.min(120,ranges.reduce((n,r)=>n+r.end-r.start,0));
       const rate=hourlyRateForShift(e,x.sh,x.role);if(rate)rates.add(rate);
-      dayControllerMinutes+=credited;dayControllerPay+=credited/60*rate;
+      dayControllerMinutes+=credited;dayControllerPay+=credited/60*rate;addComponent(d.work_date,rate,credited);
     }
     const controllerUnion=mergedRangeMinutes(allControllerRanges);
     const dayCollision=Math.max(0,dayControllerMinutes-controllerUnion);
@@ -1910,12 +1911,12 @@ function approvedHourlyBreakdown(e,month){
     weighted.forEach(x=>{if(x.rate)rates.add(x.rate)});
     const scheduled=weighted.reduce((n,x)=>n+x.m,0);
     let otherPay=0;
-    if(scheduled)otherPay=weighted.reduce((n,x)=>n+(otherMinutes*x.m/scheduled)/60*x.rate,0);
-    else if(!controllers.length){const rate=Number(e.hourlyRate)||196;rates.add(rate);otherPay=payable/60*rate}
+    if(scheduled)otherPay=weighted.reduce((n,x)=>{const allocated=otherMinutes*x.m/scheduled;addComponent(d.work_date,x.rate,allocated);return n+allocated/60*x.rate},0);
+    else if(!controllers.length){const rate=Number(e.hourlyRate)||196;rates.add(rate);otherPay=payable/60*rate;addComponent(d.work_date,rate,payable)}
     const dayMinutes=controllers.length?otherMinutes+dayControllerMinutes:payable;
     minutes+=dayMinutes;controllerMinutes+=dayControllerMinutes;collisionMinutes+=dayCollision;pay+=otherPay+dayControllerPay;
   }
-  return{minutes,pay:Math.round(pay),rates:[...rates].sort((a,b)=>a-b),controllerMinutes,collisionMinutes};
+  return{minutes,pay:Math.round(pay),rates:[...rates].sort((a,b)=>a-b),controllerMinutes,collisionMinutes,components:[...componentMap.values()].sort((a,b)=>Number(a.holiday)-Number(b.holiday)||a.rate-b.rate)};
 }
 function approvedOvertimeMinutes(empId,month){
   return (LINE.overtime||[]).filter(x=>x.emp_id===empId&&String(x.work_date).slice(0,7)===month&&x.status==='approved')
@@ -2023,6 +2024,20 @@ function exportEmpDetailCSV(){
   for(const r of rows)csv+=`${r.date},${WD[dateWD(r.date)]},${r.start},${r.end},${r.label},${r.store},${r.role},${r.fee||''},${r.cancelled?r.cx:'正常'}\n`;
   dl(csv,`${e.name}_${payMonth}_場次明細.csv`,'text/csv');
 }
+function formulaHours(minutes){return String(Number((Math.max(0,Number(minutes)||0)/60).toFixed(2)))}
+function payrollFormulaParts(row){
+  const {e,ss,hourlyComponents=[],base,ot}=row,parts=[];
+  if(base)parts.push(`基本月薪 $${Number(base).toLocaleString()}`);
+  const npcGroups=new Map();
+  for(const x of (ss.payItems||[])){const key=`${x.holiday?'國定':'一般'}|${x.rate}`,old=npcGroups.get(key)||{holiday:x.holiday,rate:x.rate,count:0};old.count++;npcGroups.set(key,old)}
+  for(const x of npcGroups.values())parts.push(`${x.holiday?'國定':'一般日'} NPC ${x.count}場×$${x.rate}＝$${(x.count*x.rate).toLocaleString()}`);
+  if(e.type==='full'&&ss.extra)parts.push(`超過${ss.baseSessions}場 ${ss.extra}場×$${Number(e.extraSessionRate||S.settings.fullExtraSessionRate||0)}＝$${ss.extraPay.toLocaleString()}`);
+  for(const x of hourlyComponents)parts.push(`${x.holiday?'國定':'平日'}時薪 ${formulaHours(x.minutes)}小時×$${x.rate}＝$${Math.round(x.pay).toLocaleString()}`);
+  if(ot?.firstMinutes)parts.push(`加班前2小時 ${formulaHours(ot.firstMinutes)}小時×$${Number(ot.baseRate).toFixed(2)}×4/3`);
+  if(ot?.afterMinutes)parts.push(`加班後續 ${formulaHours(ot.afterMinutes)}小時×$${Number(ot.baseRate).toFixed(2)}×5/3`);
+  return parts;
+}
+function payrollFormulaHtml(row){const parts=payrollFormulaParts(row);return `${parts.map(x=>`<div style="white-space:nowrap">${esc(x)}</div>`).join('')||'<span class="muted">無計薪項目</span>'}<div style="margin-top:5px;padding-top:5px;border-top:1px solid #cbd5e1;white-space:nowrap"><b>＝ $${Math.round(row.total).toLocaleString()}</b></div>`}
 function vPay(){
   const actives=S.employees.filter(e=>employedInMonth(e,payMonth));
   const reviewEmployees=S.employees.filter(e=>employedInMonth(e,payReviewMonth));
@@ -2035,7 +2050,7 @@ function vPay(){
     const ot=e.type==='full'?approvedOvertimePay(e,payMonth):{minutes:0,pay:0};
     let otHr=ot.minutes/60,otPay=ot.pay;
     const sequence=payrollSequenceRelations(e.id,payMonth);
-    return{e,ss,hm,hp,hourlyRates:hourly.rates||[],collisionMinutes:hourly.collisionMinutes||0,sequence,base,am,otHr,otPay,total:ss.pay+hp+base+otPay};
+    return{e,ss,hm,hp,hourlyRates:hourly.rates||[],hourlyComponents:hourly.components||[],collisionMinutes:hourly.collisionMinutes||0,sequence,base,am,ot,otHr,otPay,total:ss.pay+hp+base+otPay};
   });
   const total=rows.reduce((s,r)=>s+r.total,0);
   const pendingMonth=(LINE.daily||[]).filter(r=>String(r.work_date).slice(0,7)===payReviewMonth&&(r.status==='pending'||r.status==='anomaly'));
@@ -2063,8 +2078,8 @@ function vPay(){
       <button class="btn gray sm" onclick="exportPayCSV()">匯出 CSV(含場次明細)</button>
     </div>
     <table>
-      <tr><th>員工</th><th>身分</th><th>來源追蹤</th><th>場次關係</th><th class="num">場控場次</th><th class="num">NPC場次</th><th class="num">正職總場／超過40場</th><th class="num">論場費</th><th class="num">核准時薪時數</th><th class="num">時薪費</th><th class="num">月薪</th><th class="num">打卡時數</th><th class="num">核准加班</th><th class="num">加班費</th><th class="num">合計</th></tr>
-      ${rows.map(({e,ss,hm,hp,hourlyRates,collisionMinutes,sequence,base,am,otHr,otPay,total})=>`<tr>
+      <tr><th>員工</th><th>身分</th><th>來源追蹤</th><th>場次關係</th><th class="num">場控場次</th><th class="num">NPC場次</th><th class="num">正職總場／超過40場</th><th class="num">論場費</th><th class="num">核准時薪時數</th><th class="num">時薪費</th><th class="num">月薪</th><th class="num">打卡時數</th><th class="num">核准加班</th><th class="num">加班費</th><th>薪資加總公式</th><th class="num">合計</th></tr>
+      ${rows.map(row=>{const {e,ss,hm,hp,hourlyRates,collisionMinutes,sequence,base,am,otHr,otPay,total}=row;return `<tr>
         <td><a href="#" onclick="showEmpDetail('${e.id}');return false" style="color:var(--accent);text-decoration:none;font-weight:600">${esc(e.name)}</a> <span class="muted" style="font-size:11px">明細▸</span></td>
         <td>${e.type==='part'?'兼職':'正職'}</td>
         <td><button class="btn gray sm" onclick="openAttendance('${e.id}','${payMonth}')">個人月表</button><br><span class="att-source">場次：派班／SimplyBook<br>時數：LINE打卡＋每日核准${hourlyRates.length?`（$${hourlyRates.join('／$')}）`:''}<br>加班：核准紀錄</span></td>
@@ -2078,15 +2093,16 @@ function vPay(){
         <td class="num">${am?fmtHr(am):'—'}</td>
         <td class="num">${otHr>0?otHr.toFixed(1):'—'}</td>
         <td class="num">${otPay?otPay.toLocaleString():'—'}</td>
-        <td class="num"><b>${total.toLocaleString()}</b></td></tr>`).join('')}
-      <tr><td colspan="14" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
+        <td>${payrollFormulaHtml(row)}</td>
+        <td class="num"><b>${total.toLocaleString()}</b></td></tr>`}).join('')}
+      <tr><td colspan="15" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
     </table>
     <p class="muted" style="margin-top:8px">一般日包含平日與週六日；只有標示名稱的國定假日採固定日費率。兼職 NPC 按主題場次費；兼職主題場控按時薪（預設 $${S.settings.controllerHourlyRate||196}），每場依實際打卡重疊時間、最多 2 小時，兩個撞場仍分場累加。兼職櫃台／清潔／訓練等也按時薪；員工有設定個人時薪時一律優先。正職以月薪含 ${S.settings.fullBaseSessions??40} 場，超過場次費率可依員工設定；加班僅採管理員核准分鐘，前2小時與後續時數分開計算。</p>
   </div>`;
 }
 function exportPayCSV(){
   const actives=S.employees.filter(e=>employedInMonth(e,payMonth));
-  let csv='﻿員工,身分,薪資來源,撞場組數,滾場組數,已核准撞場加算時數,場控場次,NPC場次,正職總場,超過40場,論場費,核准時薪時數,時薪費,月薪,打卡時數,核准加班時數,加班費,合計,場次明細\n';
+  let csv='﻿員工,身分,薪資來源,撞場組數,滾場組數,已核准撞場加算時數,場控場次,NPC場次,正職總場,超過40場,論場費,核准時薪時數,時薪費,月薪,打卡時數,核准加班時數,加班費,薪資加總公式,合計,場次明細\n';
   for(const e of actives){
     const ss=sessionStats(e.id,payMonth);
     const hourly=approvedHourlyBreakdown(e,payMonth),hm=hourly.minutes,hp=hourly.pay;
@@ -2095,7 +2111,8 @@ function exportPayCSV(){
     const ot=e.type==='full'?approvedOvertimePay(e,payMonth):{minutes:0,pay:0};
     const sequence=payrollSequenceRelations(e.id,payMonth),collisionCount=sequence.filter(r=>r.type==='collision').length,rollingCount=sequence.filter(r=>r.type==='rolling').length;
     const detail=Object.entries(ss.detail).map(([k,n])=>k+'×'+n).join('、');
-    csv+=`${e.name},${e.type==='part'?'兼職':'正職'},"派班/SimplyBook + LINE打卡 + 管理員核准",${collisionCount},${rollingCount},${fmtHr(hourly.collisionMinutes||0)},${ss.gm},${ss.npc},${e.type==='full'?ss.total:''},${e.type==='full'?ss.extra:''},${ss.pay},${fmtHr(hm)},${hp},${base},${fmtHr(am)},${fmtHr(ot.minutes)},${ot.pay},${ss.pay+hp+base+ot.pay},"${detail}"\n`;
+    const row={e,ss,hourlyComponents:hourly.components||[],base,ot,total:ss.pay+hp+base+ot.pay},formula=payrollFormulaParts(row).join(' + ');
+    csv+=`${e.name},${e.type==='part'?'兼職':'正職'},"派班/SimplyBook + LINE打卡 + 管理員核准",${collisionCount},${rollingCount},${fmtHr(hourly.collisionMinutes||0)},${ss.gm},${ss.npc},${e.type==='full'?ss.total:''},${e.type==='full'?ss.extra:''},${ss.pay},${fmtHr(hm)},${hp},${base},${fmtHr(am)},${fmtHr(ot.minutes)},${ot.pay},"${formula}",${row.total},"${detail}"\n`;
   }
   dl(csv,`薪資_${payMonth}.csv`,'text/csv');
 }
@@ -2377,12 +2394,12 @@ function vAvail(){
   </div>`;
 }
 function approvedOvertimePay(e,month){
-  const baseRate=Number(e.otRate||((e.monthlySalary||0)/240)||e.hourlyRate||0);let minutes=0,pay=0;
+  const baseRate=Number(e.otRate||((e.monthlySalary||0)/240)||e.hourlyRate||0);let minutes=0,firstMinutes=0,afterMinutes=0,pay=0;
   for(const row of (LINE.overtime||[]).filter(x=>x.emp_id===e.id&&String(x.work_date).slice(0,7)===month&&x.status==='approved')){
     const m=Math.max(0,Number(row.approved_minutes)||0),first=Math.min(120,m),after=Math.max(0,m-120);
-    minutes+=m;pay+=first/60*baseRate*4/3+after/60*baseRate*5/3;
+    minutes+=m;firstMinutes+=first;afterMinutes+=after;pay+=first/60*baseRate*4/3+after/60*baseRate*5/3;
   }
-  return{minutes,pay:Math.round(pay),baseRate};
+  return{minutes,firstMinutes,afterMinutes,pay:Math.round(pay),baseRate};
 }
 function payrollDayGrid(e,month,opened){
   const[y,m]=month.split('-').map(Number),days=new Date(y,m,0).getDate();
