@@ -143,18 +143,22 @@ Deno.serve(async (req) => {
     if (action === "session-report") {
       const shiftId = String(input.shiftId ?? ""), lat = Number(input.latitude), lng = Number(input.longitude), accuracy = Number(input.accuracy ?? 9999);
       if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(accuracy) || accuracy <= 0 || accuracy > 250) return json({ error: "定位精確度不足" }, 403);
-      const shift = shifts.find((s: any) => String(s.id) === shiftId && s.kind === "theme" && !String(s.status ?? "").startsWith("cancelled") &&
-        (s.assignments ?? []).some((a: any) => a.empId === employee.id));
+      const shift = shifts.find((s: any) => String(s.id) === shiftId && ["theme", "practice"].includes(String(s.kind)) && !String(s.status ?? "").startsWith("cancelled"));
       const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-      if (!shift || shift.date !== today) return json({ error: "只能回報今天指派給你的主題場次" }, 403);
+      const directRole = (shift?.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "";
+      const linkedRole = shift && shifts.some((source: any) => (source.linkedThemeAssignments ?? []).some((link: any) => link.empId === employee.id && String(link.shiftId) === String(shift.id))) ? "場控" : "";
+      const role = directRole || linkedRole;
+      if (!shift || shift.date !== today || !role) return json({ error: "只能確認今天指派給你的 NPC、場控或訓練場" }, 403);
+      const { data: latestPunch } = await sb.from("punches").select("type,ts").eq("emp_id", employee.id).is("voided_at", null)
+        .order("ts", { ascending: false }).limit(1).maybeSingle();
+      if (!latestPunch || latestPunch.type !== "in" || String(latestPunch.ts ?? "").slice(0, 10) !== today) return json({ error: "請先完成今天的上班定位打卡，再確認本場工作" }, 409);
       const { data: sites } = await sb.from("worksites").select("*").eq("enabled", true).not("latitude", "is", null);
       const ranked = (sites ?? []).map((s: any) => ({ ...s, distance: distanceMeters(lat, lng, Number(s.latitude), Number(s.longitude)) })).sort((a: any, b: any) => a.distance - b.distance);
       const site = ranked[0];
       if (!site || site.id !== shift.storeId || site.distance > site.radius_m + Math.min(accuracy, 50)) return json({ error: "目前不在這個場次的店家打卡範圍內" }, 403);
       const checkedInAt = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date()).replace(" ", "T");
-      const role = (shift.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "";
       const { error } = await sb.from("session_checkins").insert({ emp_id: employee.id, shift_id: shift.id, checked_in_at: checkedInAt,
-        worksite_id: site.id, latitude: lat, longitude: lng, accuracy_m: accuracy, verification: "line_location", source: "line", note: `${role}場次回報` });
+        worksite_id: site.id, latitude: lat, longitude: lng, accuracy_m: accuracy, verification: "line_location", source: "line", note: `${role}${shift.kind === "practice" ? "確認" : "場次完成"}` });
       if (error) return json({ error: error.code === "23505" ? "這個場次已經回報過" : error.message }, error.code === "23505" ? 409 : 500);
       return json({ ok: true, ts: checkedInAt, site: site.name, role });
     }
@@ -174,26 +178,27 @@ Deno.serve(async (req) => {
       let verification = "line_location";
       if (type === "in") {
         const requestedIds = Array.isArray(input.shiftIds) ? [...new Set(input.shiftIds.map(String))] : [];
-        selectedShifts = shifts.filter((s: any) => requestedIds.includes(String(s.id)));
+        selectedShifts = requestedIds.length ? shifts.filter((s: any) => requestedIds.includes(String(s.id))) : shifts.filter((s: any) =>
+          s.date === today && s.storeId === site.id && !String(s.status ?? "").startsWith("cancelled") &&
+          (s.assignments ?? []).some((a: any) => a.empId === employee.id));
         const invalidSelection = selectedShifts.some((s: any) => s.date !== today || s.storeId !== site.id || String(s.status ?? "").startsWith("cancelled") ||
           !(s.assignments ?? []).some((a: any) => a.empId === employee.id));
-        if (invalidSelection || selectedShifts.length !== requestedIds.length) return json({ error: "選取的場次不屬於你今天在這間店的班表，請重新整理後再試。" }, 409);
+        if (invalidSelection || (requestedIds.length && selectedShifts.length !== requestedIds.length)) return json({ error: "排定工作不屬於你今天在這間店的班表，請重新整理後再試。" }, 409);
         if (selectedShifts.length) {
-          const roles = selectedShifts.map((s: any) => (s.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "");
-          const npcOnly = roles.length > 0 && roles.every((role: string) => role.toUpperCase() === "NPC");
-          const mixedNpc = roles.some((role: string) => role.toUpperCase() === "NPC") && !npcOnly;
-          if (mixedNpc) return json({ error: "NPC 場次與需要上下班打卡的工作請分開操作。" }, 400);
-          workItem = { source: "scheduled", attendance_mode: npcOnly ? "session_checkin" : "clock_range", labels: selectedShifts.map((s: any) => {
+          workItem = { source: "scheduled", attendance_mode: "clock_range", labels: selectedShifts.map((s: any) => {
             const theme = (cfg.themes ?? []).find((t: any) => t.id === s.themeId)?.name;
             const label = s.kind === "theme" ? theme : s.kind === "counter" ? (s.storeId === "ms" ? "謎先生櫃台" : "桌遊大忠店櫃台") :
               s.kind === "cleaning" ? "每週大清潔" : s.kind === "practice" ? "訓練場" : s.kind === "floor" ? "場控／現場支援" : "其他工作";
             const role = (s.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "";
             return `${s.start}–${s.end} ${label}${role ? `（${role}）` : ""}`;
           }) };
-        } else {
+        } else if (String(input.workItemCode ?? "")) {
           const code = String(input.workItemCode ?? "");
           if (!MANUAL_WORK_ITEMS[code]) return json({ error: "請先選擇今天要執行的主題、櫃台或訓練場。" }, 400);
           workItem = { source: "temporary_support", code, labels: [MANUAL_WORK_ITEMS[code]] };
+          verification = "line_location_unassigned";
+        } else {
+          workItem = { source: "unassigned_clock", attendance_mode: "clock_range", labels: ["臨時支援（工作項目待管理員確認）"] };
           verification = "line_location_unassigned";
         }
       } else {
@@ -206,15 +211,6 @@ Deno.serve(async (req) => {
         workItem = latest.raw?.work_item ?? null;
         if (latest.raw?.verification === "line_location_unassigned") verification = "line_location_unassigned";
         else if (latest.worksite_id !== site.id) verification = "line_location_cross_site";
-      }
-      if (type === "in" && workItem?.attendance_mode === "session_checkin") {
-        const checkedInAt = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit",
-          hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date()).replace(" ", "T");
-        const rows = selectedShifts.map((s: any) => ({ emp_id: employee.id, shift_id: s.id, checked_in_at: checkedInAt,
-          worksite_id: site.id, latitude: lat, longitude: lng, accuracy_m: accuracy, verification, source: "line" }));
-        const { error: checkinError } = await sb.from("session_checkins").insert(rows);
-        if (checkinError) return json({ error: checkinError.code === "23505" ? "這個 NPC 場次已經完成報到" : checkinError.message }, checkinError.code === "23505" ? 409 : 500);
-        return json({ ok: true, mode: "session_checkin", ts: checkedInAt, site: site.name, distance: Math.round(site.distance), workItem });
       }
       const { data, error } = await sb.rpc("record_line_punch", { p_emp: employee.id, p_type: type, p_worksite: site.id,
         p_lat: lat, p_lng: lng, p_accuracy: accuracy, p_verification: verification, p_shift_ids: selectedShifts.map((s: any) => s.id),

@@ -1888,7 +1888,10 @@ function approvedHourlyBreakdown(e,month){
   for(const d of (LINE.daily||[]).filter(x=>x.emp_id===e.id&&String(x.work_date).slice(0,7)===month&&x.status==='approved')){
     const payable=Math.max(0,Number(d.payable_minutes)||0);if(!payable)continue;
     if(e.type!=='part')continue;
-    const assignments=employeeDayAssignments(e.id,d.work_date).filter(x=>x.role!=='NPC');
+    const allAssignments=employeeDayAssignments(e.id,d.work_date);
+    // 純 NPC 當天仍保留上下班紀錄供稽核，但薪資只算 NPC 場次費，不再重複算時薪。
+    if(allAssignments.length&&allAssignments.every(x=>String(x.role).toUpperCase()==='NPC'))continue;
+    const assignments=allAssignments.filter(x=>String(x.role).toUpperCase()!=='NPC');
     const controllers=assignments.filter(x=>x.sh.kind==='theme'&&x.role==='場控');
     const others=assignments.filter(x=>!(x.sh.kind==='theme'&&x.role==='場控'));
     const punches=punchRangesForDay(e.id,d.work_date),allControllerRanges=[];
