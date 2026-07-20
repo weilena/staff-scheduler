@@ -855,7 +855,8 @@ function staffLoad(from,to){
     if(isCx(source)||source.date<from||source.date>to)continue;
     for(const link of source.linkedThemeAssignments||[]){const target=byId(S.shifts,link.shiftId);if(link.empId&&target&&!isCx(target))add(link.empId,target,'場控')}
   }
-  const arr=Object.values(map).map(x=>({...x,total:x.gm+x.npc+x.other,displayTotal:x.e.type==='full'?x.gm+x.npc:x.npc}));
+  // 累積場數:兼職與正職一律計「場控＋NPC」
+  const arr=Object.values(map).map(x=>({...x,total:x.gm+x.npc+x.other,displayTotal:x.gm+x.npc}));
   arr.sort((a,b)=>b.displayTotal-a.displayTotal);
   const active=arr.filter(x=>x.displayTotal>0);
   const avg=active.length?active.reduce((s,x)=>s+x.displayTotal,0)/active.length:0;
@@ -875,14 +876,14 @@ function staffLoadPanel(){
   const open=window.innerWidth>640?' open':'';
   return `<details class="loadpanel"${open}>
     <summary>👥 ${y}年${m}月 累積場數</summary><div class="loadpanel-body">
-    <p class="muted" style="font-size:11.5px;margin-bottom:8px">正職顯示總場次；兼職只顯示 NPC 場次</p>
+    <p class="muted" style="font-size:11.5px;margin-bottom:8px">兼職與正職一律計「場控＋NPC」總場數</p>
     ${arr.map(x=>{
       const heavy=x.displayTotal>0&&avg>0&&x.displayTotal>=avg*1.4&&x.displayTotal>=3;
       const pct=maxT?Math.round(x.displayTotal/maxT*100):0;
       return `<div class="loadrow ${heavy?'heavy':''}" onclick="filterEmp='${x.e.id}';render()" title="點擊只看此人">
-        <div class="loadname">${heavy?'🔴 ':''}${employeeTag(x.e,x.e.name)}<span class="muted" style="float:right">${x.e.type==='full'?'總場 '+x.displayTotal:'NPC '+x.displayTotal}</span></div>
+        <div class="loadname">${heavy?'🔴 ':''}${employeeTag(x.e,x.e.name)}<span class="muted" style="float:right">總場 ${x.displayTotal}</span></div>
         <div class="loadbar"><div style="width:${pct}%"></div></div>
-        <div class="muted" style="font-size:11px">${x.e.type==='full'?`場控 ${x.gm}・NPC ${x.npc}`:'論場只計 NPC'} </div>
+        <div class="muted" style="font-size:11px">場控 ${x.gm}・NPC ${x.npc}</div>
       </div>`;
     }).join('')}
     ${arr.some(x=>x.total>=avg*1.4&&x.total>=3)?'<p class="muted" style="font-size:11px;margin-top:6px;color:#b45309">🔴 標示者場數偏多,可考慮改排他人平衡人力。</p>':''}
@@ -1060,7 +1061,7 @@ function dayManpower(ds){
     const assigned=S.shifts.filter(s=>s.date===ds&&!isCx(s)&&(s.assignments||[]).some(a=>a.empId===e.id));
     const a=effectiveAvail(e,ds),stat=load.find(x=>x.e.id===e.id),bg=(assigned.length||(a&&a.on))?(employeeColor(e)||'#cbd5e1'):'#e5e7eb';
     const clashes=assigned.some((x,i)=>assigned.slice(i+1).some(y=>x.storeId!==y.storeId&&toMin(x.end)+(S.settings.travelMin||12)>toMin(y.start)&&toMin(y.end)+(S.settings.travelMin||12)>toMin(x.start)));
-    return `<span class="person-day" style="background:${bg};color:${textOn(bg)}">${clashes?'⚠ ':''}${esc(e.name)}<br>${a&&a.on?`${a.start}–${a.end}`:'休假／無班'}・${e.type==='full'?`總場 ${stat?.displayTotal||0}`:`NPC ${stat?.displayTotal||0}`}</span>`;
+    return `<span class="person-day" style="background:${bg};color:${textOn(bg)}">${clashes?'⚠ ':''}${esc(e.name)}<br>${a&&a.on?`${a.start}–${a.end}`:'休假／無班'}・總場 ${stat?.displayTotal||0}</span>`;
   }).join('')}</div></div>`;
 }
 /* ---- 日場次 ---- */
@@ -1308,9 +1309,11 @@ function defaultSlots(){
   const kind=document.getElementById('sfKind').value;
   dlgSlotsArr=[];
   if(kind==='theme'){
-    const t=theme(document.getElementById('sfTheme').value);
-    for(let i=0;i<(t?t.needGM:1);i++)dlgSlotsArr.push({role:'場控',empId:''});
-    for(let i=0;i<(t?t.needNPC:0);i++)dlgSlotsArr.push({role:'NPC',empId:''});
+    // 依「可排角色」開出欄位(例:詭獄同時開場控+NPC),空著不算缺人的由 requiredThemeRoles 判斷
+    const t=theme(document.getElementById('sfTheme').value),allowed=allowedThemeRoles(t);
+    const slotsFor=role=>Math.max(role==='場控'?(t?.needGM||0):(t?.needNPC||0), allowed.includes(role)?1:0);
+    for(let i=0;i<slotsFor('場控');i++)dlgSlotsArr.push({role:'場控',empId:''});
+    for(let i=0;i<slotsFor('NPC');i++)dlgSlotsArr.push({role:'NPC',empId:''});
   }else if(kind==='practice')dlgSlotsArr.push({role:'訓練場',empId:''},{role:'陪練',empId:''});
   else if(kind==='floor'||kind==='cleaning')dlgSlotsArr.push({role:'場控',empId:''});
   else dlgSlotsArr.push({role:'櫃台',empId:''});
