@@ -97,6 +97,42 @@ Deno.serve(async (req) => {
         attendanceDays, attendanceRequests, sessionCheckins, shiftConfirmations, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
 
+    if (action === "monthly-summary") {
+      const month = String(input.month ?? "");
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: "月份格式錯誤" }, 400);
+      const [year, monthNo] = month.split("-").map(Number);
+      const nextMonth = dateText(new Date(Date.UTC(year, monthNo, 1))).slice(0, 7);
+      const [{ data: checkins, error: checkinError }, { data: attendance, error: attendanceError }] = await Promise.all([
+        sb.from("session_checkins").select("shift_id,checked_in_at").eq("emp_id", employee.id)
+          .gte("checked_in_at", `${month}-01T00:00:00`).lt("checked_in_at", `${nextMonth}-01T00:00:00`),
+        sb.from("attendance_daily").select("work_date,actual_minutes,payable_minutes,status").eq("emp_id", employee.id)
+          .gte("work_date", `${month}-01`).lt("work_date", `${nextMonth}-01`),
+      ]);
+      if (checkinError) throw checkinError;
+      if (attendanceError) throw attendanceError;
+      const completed = new Set((checkins ?? []).map((row: any) => String(row.shift_id)));
+      const seen = new Set<string>(), scheduled = { gm: 0, npc: 0 }, done = { gm: 0, npc: 0 };
+      const add = (shift: any, role: string) => {
+        const normalized = String(role).toUpperCase() === "NPC" ? "npc" : role === "場控" ? "gm" : "";
+        if (!normalized || String(shift.status ?? "").startsWith("cancelled") || String(shift.date ?? "").slice(0, 7) !== month) return;
+        const key = `${shift.id}|${normalized}`;
+        if (seen.has(key)) return;
+        seen.add(key); scheduled[normalized as "gm" | "npc"]++;
+        if (completed.has(String(shift.id))) done[normalized as "gm" | "npc"]++;
+      };
+      for (const shift of shifts) for (const assignment of shift.assignments ?? []) if (assignment.empId === employee.id) add(shift, assignment.role);
+      for (const source of shifts) for (const link of source.linkedThemeAssignments ?? []) {
+        if (link.empId !== employee.id) continue;
+        const target = shifts.find((shift: any) => String(shift.id) === String(link.shiftId));
+        if (target) add(target, "場控");
+      }
+      const rows = attendance ?? [];
+      const approvedMinutes = rows.filter((row: any) => row.status === "approved").reduce((sum: number, row: any) => sum + Math.max(0, Number(row.payable_minutes) || 0), 0);
+      const pendingMinutes = rows.filter((row: any) => row.status === "pending" || row.status === "anomaly").reduce((sum: number, row: any) => sum + Math.max(0, Number(row.actual_minutes) || 0), 0);
+      const actualMinutes = rows.reduce((sum: number, row: any) => sum + Math.max(0, Number(row.actual_minutes) || 0), 0);
+      return json({ month, scheduled, done, approvedMinutes, pendingMinutes, actualMinutes });
+    }
+
     if (action === "confirm-shift") {
       const shiftId = String(input.shiftId ?? "");
       const shift = shifts.find((s: any) => String(s.id) === shiftId && !String(s.status ?? "").startsWith("cancelled"));
