@@ -1671,7 +1671,7 @@ function vPunch(){
   <div class="card"><h2>當日班表(${td})</h2>
     ${todayShifts.length?`<table><tr><th>時間</th><th>店別</th><th>內容</th><th>人員</th></tr>${todayShifts.map(sh=>
       `<tr><td>${sh.start}–${sh.end}</td><td>${esc(store(sh.storeId)?.name||'')}</td><td>${esc(shiftLabel(sh))}</td>
-      <td>${sh.assignments.filter(a=>a.empId).map(a=>{const ok=(S.shiftConfirmations||[]).some(x=>x.shiftId===sh.id&&x.empId===a.empId);return `${esc(emp(a.empId)?.name||'?')}(${a.role}) ${ok?'✅已確認':'⏳待確認'}`}).join('、')||'<i class="muted">未排人</i>'}</td></tr>`).join('')}</table>`
+      <td>${sh.assignments.filter(a=>a.empId).map(a=>{const ok=(S.shiftConfirmations||[]).some(x=>x.shiftId===sh.id&&x.empId===a.empId);const t=(a.start||a.end)?` ${a.start||sh.start}–${a.end||sh.end}`:'';return `${esc(emp(a.empId)?.name||'?')}(${a.role}${t}) ${ok?'✅已確認':'⏳待確認'}`}).join('、')||'<i class="muted">未排人</i>'}</td></tr>`).join('')}</table>`
     :'<p class="muted">今日沒有班次</p>'}
   </div>
   <div class="card"><h2>當日原始打卡紀錄</h2>
@@ -1759,17 +1759,18 @@ function pairPunches(empId,month){
 }
 function employeeDayAssignments(empId,date){
   const rows=[],seen=new Set();
-  const add=(sh,role,linkedFrom)=>{
+  // win = 這個人在該班的實際時段(櫃台/駐店個別時段;其餘等於班別時間),全系統顯示與計算共用
+  const add=(sh,role,linkedFrom,asg)=>{
     if(!sh||isCx(sh))return;const key=sh.id+'|'+role;if(seen.has(key))return;seen.add(key);
-    rows.push({sh,role,linkedFrom:linkedFrom||null});
+    rows.push({sh,role,linkedFrom:linkedFrom||null,win:asgWindow(sh,asg)});
   };
   for(const sh of S.shifts.filter(x=>x.date===date)){
-    for(const a of (sh.assignments||[]).filter(x=>x.empId===empId))add(sh,a.role,null);
+    for(const a of (sh.assignments||[]).filter(x=>x.empId===empId))add(sh,a.role,null,a);
   }
   for(const source of S.shifts.filter(x=>x.date===date)){
-    for(const link of (source.linkedThemeAssignments||[]).filter(x=>x.empId===empId))add(byId(S.shifts,link.shiftId),'場控',source.id);
+    for(const link of (source.linkedThemeAssignments||[]).filter(x=>x.empId===empId))add(byId(S.shifts,link.shiftId),'場控',source.id,null);
   }
-  return rows.sort((a,b)=>a.sh.start.localeCompare(b.sh.start));
+  return rows.sort((a,b)=>a.win.start.localeCompare(b.win.start));
 }
 function correctionSummary(empId,date){
   const requests=(LINE.attendance||[]).filter(x=>x.emp_id===empId&&x.punch_date===date);
@@ -1792,9 +1793,9 @@ function dailyAttendanceOverview(date){
   const rows=employees.map(e=>{
     const assigned=employeeDayAssignments(e.id,date),segments=pairPunches(e.id,month).filter(x=>x.date===date);
     const daily=(LINE.daily||[]).find(x=>x.emp_id===e.id&&x.work_date===date),correction=correctionSummary(e.id,date);
-    const manager=assigned.filter(x=>x.sh.kind!=='practice').map(x=>`${x.sh.start}–${x.sh.end} ${esc(shiftLabel(x.sh))}(${esc(x.role)})`).join('<br>')||'—';
-    const training=assigned.filter(x=>x.sh.kind==='practice').map(x=>`${x.sh.start}–${x.sh.end} ${esc(x.role)}`).join('<br>')||'—';
-    const sb=assigned.filter(x=>String(x.sh.id).startsWith('sb_')).map(x=>`${x.sh.start} ${esc(shiftLabel(x.sh))}`).join('<br>')||'—';
+    const manager=assigned.filter(x=>x.sh.kind!=='practice').map(x=>`${x.win.start}–${x.win.end} ${esc(shiftLabel(x.sh))}(${esc(x.role)})`).join('<br>')||'—';
+    const training=assigned.filter(x=>x.sh.kind==='practice').map(x=>`${x.win.start}–${x.win.end} ${esc(x.role)}`).join('<br>')||'—';
+    const sb=assigned.filter(x=>String(x.sh.id).startsWith('sb_')).map(x=>`${x.win.start} ${esc(shiftLabel(x.sh))}`).join('<br>')||'—';
     const punchText=segments.map((x,i)=>`<div class="att-segment">第${i+1}段 ${x.in||'<span class="att-error">缺上班</span>'}–${x.out||'<span class="att-error">缺下班</span>'}</div>`).join('')||'—';
     const anomalies=[...(daily?.anomalies||[])];
     for(const x of segments){for(const p of [x.inPunch,x.outPunch].filter(Boolean)){if(p.verification&&p.verification!=='line_location'&&p.verification!=='manager_entered')anomalies.push(p.verification)}}
@@ -1809,9 +1810,9 @@ function openAttendance(empId,month){attendanceEmp=empId;attendanceMonth=month||
 function attendanceMonthCellData(empId,date){
   const assignments=employeeDayAssignments(empId,date),segments=pairPunches(empId,date.slice(0,7)).filter(x=>x.date===date);
   const daily=(LINE.daily||[]).find(x=>x.emp_id===empId&&x.work_date===date),correction=correctionSummary(empId,date);
-  const manager=assignments.filter(x=>x.sh.kind!=='practice').map(x=>`${x.sh.start}–${x.sh.end}<br>${esc(shiftLabel(x.sh))}(${esc(x.role)})`).join('<hr style="border:0;border-top:1px dotted #cbd5e1">')||'—';
-  const training=assignments.filter(x=>x.sh.kind==='practice').map(x=>`${x.sh.start}–${x.sh.end}<br>${esc(x.role)}`).join('<br>')||'—';
-  const sb=assignments.filter(x=>String(x.sh.id).startsWith('sb_')).map(x=>`${x.sh.start}<br>${esc(shiftLabel(x.sh))}`).join('<br>')||'—';
+  const manager=assignments.filter(x=>x.sh.kind!=='practice').map(x=>`${x.win.start}–${x.win.end}<br>${esc(shiftLabel(x.sh))}(${esc(x.role)})`).join('<hr style="border:0;border-top:1px dotted #cbd5e1">')||'—';
+  const training=assignments.filter(x=>x.sh.kind==='practice').map(x=>`${x.win.start}–${x.win.end}<br>${esc(x.role)}`).join('<br>')||'—';
+  const sb=assignments.filter(x=>String(x.sh.id).startsWith('sb_')).map(x=>`${x.win.start}<br>${esc(shiftLabel(x.sh))}`).join('<br>')||'—';
   const roles=assignments.map(x=>esc(x.role)).join('、')||'—';
   const checkins=assignments.filter(x=>x.sh.kind==='theme').map(x=>{const c=(S.sessionCheckins||[]).find(y=>y.empId===empId&&y.shiftId===x.sh.id);return `${esc(shiftLabel(x.sh))}：${c?`已報到 ${String(c.checkedInAt||'').slice(11,16)}`:'尚未報到'}`}).join('<br>')||'—';
   const source=daySourceIds(empId,date,assignments,segments);
@@ -2031,7 +2032,8 @@ function empSessions(empId,month){
     const t=sh.kind==='theme'?theme(sh.themeId):null;
     let fee=0;
     if(!isCx(sh)&&t&&e?.type==='part'&&a.role==='NPC'){fee=themeSessionRate(t,a.role,sh.date);}
-    rows.push({date:sh.date,start:sh.start,end:sh.end,
+    const w=asgWindow(sh,a); // 櫃台/駐店個別時段
+    rows.push({date:sh.date,start:w.start,end:w.end,
       kind:sh.kind,label:shiftLabel(sh),role:a.role,
       store:store(sh.storeId)?.name||'',fee,cancelled:isCx(sh),cx:cxLabel(sh)});
     if(sh.kind==='theme')themeKeys.add(sh.id+'|'+a.role);
@@ -2501,7 +2503,7 @@ function payrollDayGrid(e,month,opened){
   const head=cols.map(d=>{const holiday=holidayName(d);return `<th style="text-align:center;min-width:100px;position:sticky;top:0;z-index:1;${holiday?'background:#b91c1c;color:#fff':'background:#f8fafc'}">${holiday?'國定':'一般日'}<br>${Number(d.slice(8))}<br>週${WD[dateWD(d)]}${holiday?`<br><small>${holiday}</small>`:''}</th>`}).join('');
   const reviewCell=d=>{const r=(LINE.daily||[]).find(x=>x.emp_id===e.id&&x.work_date===d);if(!r)return '<span class="muted">無工時</span>';if(r.status==='approved')return `<b style="color:#15803d">已核准<br>${fmtHr(Number(r.payable_minutes)||0)} 小時</b><br><button class="btn gray sm" style="margin-top:4px" onclick="reviewDaily('${e.id}','${d}','pending')">撤回待審</button>`;if(r.status==='rejected')return `<b class="warn">不計薪</b><br><button class="btn gray sm" style="margin-top:4px" onclick="reviewDaily('${e.id}','${d}','pending')">撤回待審</button>`;const id=`paygrid_${e.id}_${d}`,checked=dailyReviewSelected.has(dailyReviewKey(e.id,d));return `<label class="cklab"><input type="checkbox" ${checked?'checked':''} onchange="toggleDailyReview('${e.id}','${d}',this.checked)">選取</label><br><input id="${id}" type="number" min="0" max="1440" value="${r.payable_minutes??r.actual_minutes}" style="width:66px;padding:5px"> 分<br><button class="btn sm" style="margin-top:4px" onclick="reviewDaily('${e.id}','${d}','approved','${id}')">單筆核准</button> <button class="btn red sm" style="margin-top:4px" onclick="reviewDaily('${e.id}','${d}','rejected','${id}')">不計薪</button>`};
   return `<details ${opened?'open':''} style="margin-top:10px"><summary style="cursor:pointer;font-weight:700;padding:8px 4px">${esc(e.name)}・${e.type==='part'?'兼職':'正職'} <button class="btn sm" style="margin-left:8px" ${pendingCount?'':'disabled'} onclick="event.preventDefault();event.stopPropagation();approveEmployeeMonth('${e.id}','${month}')">本月全部核准（${pendingCount}）</button></summary><div style="overflow:auto;max-width:100%;max-height:62vh;margin-top:4px;overscroll-behavior:contain"><table style="min-width:${Math.max(980,days*105)}px;border-collapse:collapse"><tr><th style="position:sticky;left:0;top:0;z-index:3;background:#fff3cd;min-width:125px">項目</th>${head}</tr>
-  <tr style="background:#fff8d8"><th style="position:sticky;left:0;background:#fff3cd;z-index:2">管理員排班</th>${cols.map(d=>`<td>${schedule(d).map(s=>`${s.start}–${s.end}<br>${esc(shiftLabel(s))}`).join('<hr style="border:0;border-top:1px dotted #cbd5e1">')||'—'}</td>`).join('')}</tr>
+  <tr style="background:#fff8d8"><th style="position:sticky;left:0;background:#fff3cd;z-index:2">管理員排班</th>${cols.map(d=>`<td>${schedule(d).map(s=>{const w=asgWindow(s,(s.assignments||[]).find(a=>a.empId===e.id));return `${w.start}–${w.end}<br>${esc(shiftLabel(s))}`}).join('<hr style="border:0;border-top:1px dotted #cbd5e1">')||'—'}</td>`).join('')}</tr>
   <tr style="background:#f5f3ff"><th style="position:sticky;left:0;background:#ddd6fe;z-index:2">撞場／滾場時段</th>${cols.map(d=>`<td>${relationCell(d)}</td>`).join('')}</tr>
   <tr style="background:#e0f2fe"><th style="position:sticky;left:0;background:#bae6fd;z-index:2">實際多段打卡</th>${cols.map(d=>{const rs=pairPunches(e.id,month).filter(r=>r.date===d);return `<td>${rs.map((r,i)=>`第${i+1}段<br>${r.in||'<span class="warn">缺卡</span>'}–${r.out||'<span class="warn">缺卡</span>'}`).join('<hr style="border:0;border-top:1px dotted #94a3b8">')||'—'}</td>`}).join('')}</tr>
   <tr style="background:#dcfce7"><th style="position:sticky;left:0;background:#bbf7d0;z-index:2">計薪審核</th>${cols.map(d=>`<td>${reviewCell(d)}</td>`).join('')}</tr></table></div></details>`;
