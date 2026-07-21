@@ -102,16 +102,19 @@ Deno.serve(async (req) => {
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: "月份格式錯誤" }, 400);
       const [year, monthNo] = month.split("-").map(Number);
       const nextMonth = dateText(new Date(Date.UTC(year, monthNo, 1))).slice(0, 7);
-      const [{ data: checkins, error: checkinError }, { data: attendance, error: attendanceError }] = await Promise.all([
+      const [{ data: checkins, error: checkinError }, { data: attendance, error: attendanceError }, { data: punches, error: punchError }] = await Promise.all([
         sb.from("session_checkins").select("shift_id,checked_in_at").eq("emp_id", employee.id)
           .gte("checked_in_at", `${month}-01T00:00:00`).lt("checked_in_at", `${nextMonth}-01T00:00:00`),
         sb.from("attendance_daily").select("work_date,actual_minutes,payable_minutes,status").eq("emp_id", employee.id)
           .gte("work_date", `${month}-01`).lt("work_date", `${nextMonth}-01`),
+        sb.from("punches").select("ts,type,worksite_id").eq("emp_id", employee.id).is("voided_at", null)
+          .gte("ts", `${month}-01T00:00:00`).lt("ts", `${nextMonth}-01T00:00:00`).order("ts", { ascending: true }),
       ]);
       if (checkinError) throw checkinError;
       if (attendanceError) throw attendanceError;
+      if (punchError) throw punchError;
       const completed = new Set((checkins ?? []).map((row: any) => String(row.shift_id)));
-      const seen = new Set<string>(), scheduled = { gm: 0, npc: 0 }, done = { gm: 0, npc: 0 };
+      const seen = new Set<string>(), detailSeen = new Set<string>(), scheduled = { gm: 0, npc: 0 }, done = { gm: 0, npc: 0 }, workItems: any[] = [];
       const add = (shift: any, role: string) => {
         const normalized = String(role).toUpperCase() === "NPC" ? "npc" : role === "場控" ? "gm" : "";
         if (!normalized || String(shift.status ?? "").startsWith("cancelled") || String(shift.date ?? "").slice(0, 7) !== month) return;
@@ -120,17 +123,153 @@ Deno.serve(async (req) => {
         seen.add(key); scheduled[normalized as "gm" | "npc"]++;
         if (completed.has(String(shift.id))) done[normalized as "gm" | "npc"]++;
       };
-      for (const shift of shifts) for (const assignment of shift.assignments ?? []) if (assignment.empId === employee.id) add(shift, assignment.role);
+      const addDetail = (shift: any, role: string, linked = false) => {
+        if (String(shift.status ?? "").startsWith("cancelled") || String(shift.date ?? "").slice(0, 7) !== month) return;
+        const key = `${shift.id}|${role}`; if (detailSeen.has(key)) return; detailSeen.add(key);
+        const requiresReport = shift.kind === "practice" || (shift.kind === "theme" && ["NPC", "場控"].includes(String(role).toUpperCase() === "NPC" ? "NPC" : role));
+        workItems.push({ id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind,
+          themeId: shift.themeId ?? null, role, linked, requiresReport, completed: completed.has(String(shift.id)) });
+      };
+      for (const shift of shifts) for (const assignment of shift.assignments ?? []) if (assignment.empId === employee.id) { add(shift, assignment.role); addDetail(shift, assignment.role); }
       for (const source of shifts) for (const link of source.linkedThemeAssignments ?? []) {
         if (link.empId !== employee.id) continue;
         const target = shifts.find((shift: any) => String(shift.id) === String(link.shiftId));
-        if (target) add(target, "場控");
+        if (target) { add(target, "場控"); addDetail(target, "場控", true); }
       }
       const rows = attendance ?? [];
       const approvedMinutes = rows.filter((row: any) => row.status === "approved").reduce((sum: number, row: any) => sum + Math.max(0, Number(row.payable_minutes) || 0), 0);
       const pendingMinutes = rows.filter((row: any) => row.status === "pending" || row.status === "anomaly").reduce((sum: number, row: any) => sum + Math.max(0, Number(row.actual_minutes) || 0), 0);
       const actualMinutes = rows.reduce((sum: number, row: any) => sum + Math.max(0, Number(row.actual_minutes) || 0), 0);
-      return json({ month, scheduled, done, approvedMinutes, pendingMinutes, actualMinutes });
+      const punchDays = new Map<string, any[]>();
+      for (const row of punches ?? []) { const date = String(row.ts).slice(0, 10); if (!punchDays.has(date)) punchDays.set(date, []); punchDays.get(date)!.push(row); }
+      const segments = new Map<string, any[]>();
+      for (const [date, dayPunches] of punchDays) {
+        const list: any[] = []; let open: any = null;
+        for (const punch of dayPunches) { if (punch.type === "in") { if (open) list.push({ in: String(open.ts).slice(11, 16), out: null, worksiteId: open.worksite_id }); open = punch; } else if (open) { list.push({ in: String(open.ts).slice(11, 16), out: String(punch.ts).slice(11, 16), worksiteId: open.worksite_id }); open = null; } else list.push({ in: null, out: String(punch.ts).slice(11, 16), worksiteId: punch.worksite_id }); }
+        if (open) list.push({ in: String(open.ts).slice(11, 16), out: null, worksiteId: open.worksite_id }); segments.set(date, list);
+      }
+      const attendanceByDate = new Map(rows.map((row: any) => [String(row.work_date), row]));
+      const dates = new Set<string>([...workItems.map(item => item.date), ...segments.keys(), ...attendanceByDate.keys()]);
+      const days = [...dates].sort().map(date => { const attendanceRow: any = attendanceByDate.get(date); return { date, segments: segments.get(date) ?? [],
+        attendance: attendanceRow ? { actualMinutes: attendanceRow.actual_minutes, payableMinutes: attendanceRow.payable_minutes, status: attendanceRow.status } : null,
+        workItems: workItems.filter(item => item.date === date).sort((a, b) => String(a.start).localeCompare(String(b.start))) }; });
+      return json({ month, scheduled, done, approvedMinutes, pendingMinutes, actualMinutes, days });
+    }
+
+    if (action === "manager-dashboard") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以查看全體員工資料" }, 403);
+      const month = String(input.month ?? "");
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: "月份格式錯誤" }, 400);
+      const [year, monthNo] = month.split("-").map(Number);
+      const nextMonth = dateText(new Date(Date.UTC(year, monthNo, 1))).slice(0, 7);
+      const [{ data: daily, error: dailyError }, { data: attendanceRequests, error: attendanceRequestError }, { data: shiftRequests, error: shiftRequestError }] = await Promise.all([
+        sb.from("attendance_daily").select("emp_id,work_date,scheduled_minutes,actual_minutes,payable_minutes,status,note,anomalies").gte("work_date", `${month}-01`).lt("work_date", `${nextMonth}-01`).order("work_date", { ascending: true }),
+        sb.from("attendance_requests").select("id,emp_id,punch_date,request_type,requested,reason,status,created_at").eq("status", "pending").order("created_at", { ascending: true }),
+        sb.from("shift_requests").select("id,request_type,shift_id,requester_emp_id,status,details,created_at").eq("status", "pending_manager").order("created_at", { ascending: true }),
+      ]);
+      if (dailyError) throw dailyError;
+      if (attendanceRequestError) throw attendanceRequestError;
+      if (shiftRequestError) throw shiftRequestError;
+      const employees = (cfg.employees ?? []).filter((e: any) => e.active).map((candidate: any) => {
+        const attendance = (daily ?? []).filter((row: any) => row.emp_id === candidate.id), workItems: any[] = [];
+        for (const shift of shifts) {
+          if (String(shift.date ?? "").slice(0, 7) !== month || String(shift.status ?? "").startsWith("cancelled")) continue;
+          for (const assignment of shift.assignments ?? []) if (assignment.empId === candidate.id) workItems.push({ id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind, themeId: shift.themeId ?? null, role: assignment.role, linked: false });
+          for (const link of shift.linkedThemeAssignments ?? []) if (link.empId === candidate.id) {
+            const target = shifts.find((row: any) => String(row.id) === String(link.shiftId));
+            if (target && !String(target.status ?? "").startsWith("cancelled")) workItems.push({ id: target.id, date: target.date, start: target.start, end: target.end, storeId: target.storeId, kind: target.kind, themeId: target.themeId ?? null, role: "場控", linked: true });
+          }
+        }
+        const unique: any[] = [...new Map(workItems.map(item => [`${item.id}|${item.role}`, item])).values()];
+        const dates = new Set<string>([...attendance.map((row: any) => String(row.work_date)), ...unique.map(item => item.date)]);
+        return { id: candidate.id, name: candidate.name, type: candidate.type,
+          approvedMinutes: attendance.filter((row: any) => row.status === "approved").reduce((sum: number, row: any) => sum + Math.max(0, Number(row.payable_minutes) || 0), 0),
+          pendingMinutes: attendance.filter((row: any) => ["pending", "anomaly"].includes(row.status)).reduce((sum: number, row: any) => sum + Math.max(0, Number(row.actual_minutes) || 0), 0),
+          pendingDays: attendance.filter((row: any) => ["pending", "anomaly"].includes(row.status)).length,
+          days: [...dates].sort().map(date => ({ date, attendance: attendance.find((row: any) => String(row.work_date) === date) ?? null, workItems: unique.filter(item => item.date === date).sort((a, b) => String(a.start).localeCompare(String(b.start))) })),
+        };
+      });
+      const changes = (shiftRequests ?? []).map((request: any) => {
+        const shift = shifts.find((row: any) => String(row.id) === String(request.shift_id));
+        const replacedEmpId = String(request.details?.replacedEmpId ?? request.requester_emp_id ?? "");
+        const role = String(request.details?.replacedRole ?? (shift?.assignments ?? []).find((a: any) => a.empId === replacedEmpId)?.role ?? "");
+        const candidates = shift ? (cfg.employees ?? []).filter((person: any) => person.active && person.id !== replacedEmpId && !(shift.assignments ?? []).some((a: any) => a.empId === person.id) && eligibilityErrors(person, shift, role, shifts, cfg, [shift.id]).length === 0).map((person: any) => ({ id: person.id, name: person.name })) : [];
+        return { ...request, shift: shift ? { id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind, themeId: shift.themeId } : null, candidates };
+      });
+      return json({ month, employees, attendanceRequests: attendanceRequests ?? [], shiftRequests: changes });
+    }
+
+    if (action === "manager-review-day") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以審核工時" }, 403);
+      const empId = String(input.empId ?? ""), workDate = String(input.workDate ?? ""), status = String(input.status ?? "");
+      const payable = Math.max(0, Math.min(1440, Number(input.payableMinutes) || 0));
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(workDate) || !["approved", "rejected", "pending"].includes(status)) return json({ error: "審核資料格式錯誤" }, 400);
+      const { data, error } = await sb.rpc("review_attendance_day", { p_emp: empId, p_date: workDate, p_status: status, p_payable: payable, p_note: String(input.note ?? "LINE 管理員審核") });
+      if (error) throw error;
+      if (!data?.ok) return json({ error: data?.msg ?? "審核失敗" }, 409);
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "review_attendance_day", target_type: "attendance_daily", target_id: `${empId}:${workDate}`, details: { status, payableMinutes: payable } });
+      return json({ ok: true });
+    }
+
+    if (action === "manager-approve-month") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以審核工時" }, 403);
+      const empId = String(input.empId ?? ""), month = String(input.month ?? "");
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: "月份格式錯誤" }, 400);
+      const [year, monthNo] = month.split("-").map(Number), nextMonth = dateText(new Date(Date.UTC(year, monthNo, 1))).slice(0, 7);
+      const { data: rows, error: rowsError } = await sb.from("attendance_daily").select("work_date,actual_minutes,status").eq("emp_id", empId).gte("work_date", `${month}-01`).lt("work_date", `${nextMonth}-01`).in("status", ["pending", "anomaly"]);
+      if (rowsError) throw rowsError;
+      for (const row of rows ?? []) {
+        const { data, error } = await sb.rpc("review_attendance_day", { p_emp: empId, p_date: row.work_date, p_status: "approved", p_payable: Math.max(0, Number(row.actual_minutes) || 0), p_note: "LINE 管理員本月全部核准" });
+        if (error) throw error;
+        if (!data?.ok) return json({ error: `${row.work_date}：${data?.msg ?? "審核失敗"}` }, 409);
+      }
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "approve_employee_month", target_type: "attendance_daily", target_id: `${empId}:${month}`, details: { count: (rows ?? []).length } });
+      return json({ ok: true, count: (rows ?? []).length });
+    }
+
+    if (action === "manager-review-attendance-request") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以審核補卡" }, 403);
+      const requestId = String(input.requestId ?? ""), status = String(input.status ?? "");
+      if (!["approved", "rejected"].includes(status)) return json({ error: "審核狀態錯誤" }, 400);
+      const { data, error } = await sb.rpc("review_attendance_request", { p_request: requestId, p_status: status });
+      if (error) throw error;
+      if (!data?.ok) return json({ error: data?.msg ?? "審核失敗" }, 409);
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "review_attendance_request", target_type: "attendance_request", target_id: requestId, details: { status } });
+      return json({ ok: true });
+    }
+
+    if (action === "manager-review-shift-request") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以審核換班" }, 403);
+      const requestId = String(input.requestId ?? ""), decision = String(input.decision ?? ""), replacementEmpId = String(input.replacementEmpId ?? "");
+      if (!["approved", "rejected"].includes(decision)) return json({ error: "審核狀態錯誤" }, 400);
+      const { data: request, error: requestError } = await sb.from("shift_requests").select("*").eq("id", requestId).eq("status", "pending_manager").maybeSingle();
+      if (requestError) throw requestError;
+      if (!request) return json({ error: "申請不存在或已處理" }, 409);
+      const shift = shifts.find((row: any) => String(row.id) === String(request.shift_id));
+      if (!shift) return json({ error: "找不到原班次" }, 404);
+      const now = new Date().toISOString(), originalEmpId = String(request.details?.replacedEmpId ?? request.requester_emp_id ?? "");
+      if (decision === "rejected") {
+        const reason = String(input.note ?? "管理員未核准").trim() || "管理員未核准";
+        const { error } = await sb.from("shift_requests").update({ status: "cancelled", details: { ...(request.details ?? {}), managerReply: reason }, updated_at: now }).eq("id", requestId);
+        if (error) throw error;
+        if (request.requester_emp_id) await queueNotification(sb, request.requester_emp_id, "shift_change_result", { title: "換班申請未核准", text: `${shift.date} ${shift.start}–${shift.end}：${reason}` }, true, `shift-change-rejected:${requestId}`);
+      } else {
+        const replacement = (cfg.employees ?? []).find((row: any) => row.id === replacementEmpId && row.active);
+        const slot = (shift.assignments ?? []).find((row: any) => row.empId === originalEmpId), role = String(request.details?.replacedRole ?? slot?.role ?? "");
+        if (!replacement || !slot) return json({ error: "找不到原排班或替補人員" }, 409);
+        const errors = eligibilityErrors(replacement, shift, role, shifts, cfg, [shift.id]);
+        if (errors.length) return json({ error: errors.join("、") }, 409);
+        slot.empId = replacement.id; shift.manualEdit = true;
+        const source = String(shift.id).startsWith("sb_") ? "simplybook" : "manual";
+        const [{ error: shiftError }, { error: updateError }] = await Promise.all([sb.from("shifts").upsert({ id: shift.id, date: shift.date, source, data: shift }), sb.from("shift_requests").update({ status: "completed", selected_emp_id: replacement.id, completed_at: now, updated_at: now }).eq("id", requestId)]);
+        if (shiftError) throw shiftError;
+        if (updateError) throw updateError;
+        const label = `${shift.date} ${shift.start}–${shift.end}`;
+        if (request.requester_emp_id) await queueNotification(sb, request.requester_emp_id, "shift_change_result", { title: "換班已核准", text: `${label} 已由 ${replacement.name} 接替。` }, true, `shift-change-approved:${requestId}:requester`);
+        await queueNotification(sb, replacement.id, "shift_assigned", { title: "管理員指派新班次", text: `你已接替 ${label}，請至 LINE 班表確認。` }, true, `shift-change-approved:${requestId}:replacement`);
+      }
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "review_shift_request", target_type: "shift_request", target_id: requestId, details: { decision, replacementEmpId: replacementEmpId || null } });
+      return json({ ok: true });
     }
 
     if (action === "confirm-shift") {
