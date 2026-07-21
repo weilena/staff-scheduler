@@ -151,6 +151,10 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
 .slot>select.grow{flex:1 1 100%;width:100%}             /* 人員:過長時獨占一行 */
 .slot>input[type=time]{flex:1 1 108px;width:auto}       /* 個別時段 */
 .slot>button{flex:0 0 auto;width:auto;margin-left:auto}
+.slot-quick{flex:1 1 100%;display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:2px}
+.slot-quick button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:2px 8px;font-size:12px;cursor:pointer;width:auto;flex:0 0 auto}
+.slot-quick button:hover{border-color:var(--accent);color:var(--accent)}
+.slot-quick .muted{font-size:11px}
 .warn{color:var(--warn);font-size:12.5px}
 .timebtns{display:flex;gap:5px;flex-wrap:wrap}
 .timebtns button{border:1px solid var(--line);background:#fff;border-radius:7px;padding:4px 9px;font-size:13px;cursor:pointer}
@@ -1367,8 +1371,27 @@ function defaultSlots(){
 function addSlot(){
   const kind=document.getElementById('sfKind').value;
   const t=kind==='theme'?theme(document.getElementById('sfTheme').value):null;
-  dlgSlotsArr.push({role:kind==='counter'?'櫃台':kind==='practice'?'訓練場':kind==='theme'?(allowedThemeRoles(t)[0]||'場控'):'場控',empId:''});
+  const row={role:kind==='counter'?'櫃台':kind==='practice'?'訓練場':kind==='theme'?(allowedThemeRoles(t)[0]||'場控'):'場控',empId:''};
+  // 櫃台/駐店加人時自動接班:新的人從「前一位的結束」開始接到班別結束,不用重打
+  if(kind==='counter'||kind==='floor'){
+    const shEnd=document.getElementById('sfEnd').value;
+    const prev=dlgSlotsArr[dlgSlotsArr.length-1];
+    if(prev){
+      const prevEnd=prev.end||shEnd;
+      if(prevEnd&&shEnd&&toMin(prevEnd)<toMin(shEnd)){row.start=prevEnd;row.end=shEnd;}
+    }
+  }
+  dlgSlotsArr.push(row);
   renderSlots();renderLinkedThemeOptions();
+}
+/* 每人時段的一鍵填入 */
+function slotFillWhole(i){const sh={start:document.getElementById('sfStart').value,end:document.getElementById('sfEnd').value};dlgSlotsArr[i].start='';dlgSlotsArr[i].end='';renderSlots();}
+function slotFillAfterPrev(i){
+  if(i<=0)return;
+  const shEnd=document.getElementById('sfEnd').value,prev=dlgSlotsArr[i-1];
+  dlgSlotsArr[i].start=prev.end||document.getElementById('sfStart').value;
+  if(!dlgSlotsArr[i].end)dlgSlotsArr[i].end=shEnd;
+  renderSlots();
 }
 function rmSlot(i){dlgSlotsArr.splice(i,1);renderSlots();renderLinkedThemeOptions()}
 function slotRole(i,v){dlgSlotsArr[i].role=v;renderSlots();renderLinkedThemeOptions()}
@@ -1502,8 +1525,10 @@ function renderSlots(){
     const opts=`<option value="">(未指定)</option>`
       +(good.length?`<optgroup label="✓ 可排(無碰撞)">${good.map(opt).join('')}</optgroup>`:'')
       +(bad.length?`<optgroup label="⚠ 有狀況(仍可強制選)">${bad.map(opt).join('')}</optgroup>`:'');
+    const custom=!!(sl.start||sl.end);
     const timeInputs=(kind==='counter'||kind==='floor')
-      ?`<input type="time" value="${slotStart||''}" onchange="slotTime(${i},'start',this.value)" title="此人開始時間" style="width:auto"><span class="muted">–</span><input type="time" value="${slotEnd||''}" onchange="slotTime(${i},'end',this.value)" title="此人結束時間" style="width:auto">`
+      ?`<input type="time" value="${slotStart||''}" onchange="slotTime(${i},'start',this.value)" title="此人開始時間(可直接打字,例:1230)" style="width:auto"><span class="muted">–</span><input type="time" value="${slotEnd||''}" onchange="slotTime(${i},'end',this.value)" title="此人結束時間" style="width:auto">
+         <span class="slot-quick">${i>0?`<button type="button" onclick="slotFillAfterPrev(${i})" title="從前一位下班時間接著上">接前一位</button>`:''}${custom?`<button type="button" onclick="slotFillWhole(${i})" title="改回跟班別同時間">整段</button>`:''}<span class="muted">${custom?'個別時段':'同班別時間'}</span></span>`
       :'';
     return `<div class="slot">
       <select onchange="slotRole(${i},this.value)">${roleChoices.map(r=>`<option ${r===sl.role?'selected':''}>${r}</option>`).join('')}</select>
