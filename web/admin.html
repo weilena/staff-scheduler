@@ -1474,11 +1474,14 @@ function renderSlots(){
 function refreshSlotOptions(){if(dlgShift.open){renderSlots();renderLinkedThemeOptions()}}
 function notifyShiftAssignments(obj,prev){
   if(isDemo()||isCx(obj))return;
-  const oldSig=prev?`${prev.date}|${prev.start}|${prev.end}|${prev.storeId}|${prev.kind}|${prev.themeId||''}`:'',newSig=`${obj.date}|${obj.start}|${obj.end}|${obj.storeId}|${obj.kind}|${obj.themeId||''}`;
+  const oldSig=prev?`${prev.date}|${prev.storeId}|${prev.kind}|${prev.themeId||''}`:'',newSig=`${obj.date}|${obj.storeId}|${obj.kind}|${obj.themeId||''}`;
   for(const a of obj.assignments||[]){
     if(!a.empId)continue;
-    const existed=(prev?.assignments||[]).some(x=>x.empId===a.empId&&x.role===a.role)&&oldSig===newSig;if(existed)continue;
-    sbc.from('notification_outbox').upsert({recipient_emp_id:a.empId,category:'shift_assigned',critical:true,payload:{title:'新的工作安排',text:`${obj.date} ${obj.start}–${obj.end} ${store(obj.storeId)?.name||''}・${shiftLabel(obj)}（${a.role}），請至 LINE 班表確認。`},idempotency_key:`manual-shift:${obj.id}:${a.empId}:${obj.date}:${obj.start}:${obj.end}`},{onConflict:'idempotency_key',ignoreDuplicates:true});
+    const w=asgWindow(obj,a); // 通知用「這個人自己的時段」(櫃台兩人分段時各收各的時間)
+    const prevA=(prev?.assignments||[]).find(x=>x.empId===a.empId&&x.role===a.role);
+    const prevW=prevA?asgWindow(prev,prevA):null;
+    const existed=!!prevA&&oldSig===newSig&&prevW&&prevW.start===w.start&&prevW.end===w.end;if(existed)continue;
+    sbc.from('notification_outbox').upsert({recipient_emp_id:a.empId,category:'shift_assigned',critical:true,payload:{title:'新的工作安排',text:`${obj.date}(週${WD[dateWD(obj.date)]}) ${w.start}–${w.end} ${store(obj.storeId)?.name||''}・${shiftLabel(obj)}（${a.role}），請至 LINE 班表確認。`},idempotency_key:`manual-shift:${obj.id}:${a.empId}:${obj.date}:${w.start}:${w.end}`},{onConflict:'idempotency_key',ignoreDuplicates:true});
   }
 }
 function saveShift(){
@@ -1509,11 +1512,25 @@ function saveShift(){
   };
   // 櫃台/駐店:班別時間自動涵蓋所有人的個別時段,不會遺漏任何人的班
   if(kind==='counter'||kind==='floor'){
+    // 防呆1:個別時段顛倒
+    for(const a of obj.assignments){
+      if(a.empId&&a.start&&a.end&&toMin(a.end)<=toMin(a.start))
+        return alert(`${emp(a.empId)?.name||'人員'} 的個別時段「${a.start}–${a.end}」結束需晚於開始,請修正`);
+    }
+    // 防呆2:同一人被排兩列
+    const ids=obj.assignments.filter(a=>a.empId).map(a=>a.empId);
+    const dup=ids.find((x,i)=>ids.indexOf(x)!==i);
+    if(dup)return alert(`${emp(dup)?.name||'同一人'} 在此班被排了兩列;請刪掉一列,直接調整另一列的個別時段即可`);
     const ws=obj.assignments.filter(a=>a.empId).map(a=>asgWindow(obj,a));
     if(ws.length){
       const s0=ws.map(x=>x.start).sort()[0],e0=ws.map(x=>x.end).sort().pop();
       if(s0&&s0<obj.start)obj.start=s0;
       if(e0&&e0>obj.end)obj.end=e0;
+      // 防呆3:交接空檔提醒(不硬擋)——例如梨梨到15:00、庭瑋16:30才來,中間櫃台沒人
+      const mins=ws.map(w=>[toMin(w.start),toMin(w.end)]).sort((a,b)=>a[0]-b[0]);
+      let cur=mins[0][1];const gaps=[];
+      for(let i=1;i<mins.length;i++){if(mins[i][0]>cur)gaps.push(fromMin(cur)+'–'+fromMin(mins[i][0]));cur=Math.max(cur,mins[i][1]);}
+      if(gaps.length&&!confirm(`注意:${shiftLabel(obj)}在 ${gaps.join('、')} 沒有人顧,確定要儲存?`))return;
     }
   }
   // 保留 SimplyBook 同步來的客人/付款資訊
