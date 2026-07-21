@@ -215,12 +215,17 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
       <div class="row">
         <div class="field grow"><label>改期期限(颱風天預設一個月)</label><input type="date" id="sfRebookDue"></div>
         <div class="field grow"><label>處理狀態</label>
-          <select id="sfRebookState">
+          <select id="sfRebookState" onchange="onRebookStateChange()">
             <option value="pending">待客人改期</option>
             <option value="rebooked">已改期</option>
             <option value="refunded">已退費</option>
           </select>
         </div>
+      </div>
+      <div class="field" id="sfRebookLinkBox" style="display:none;background:#eff6ff;border:1px solid #93c5fd;border-radius:9px;padding:9px 10px">
+        <label>連結新的 SimplyBook 預約編號</label>
+        <select id="sfRebookShift"></select>
+        <p class="muted" style="margin-top:5px">只列出同主題、尚未取消的未來 SimplyBook 場次；請依預約編號人工確認，不以姓名或電話自動配對。</p>
       </div>
       <label>取消/處理備註</label><input id="sfCancelNote" placeholder="例:已致電通知,客人考慮中">
     </div>
@@ -905,7 +910,11 @@ function shiftLabel(sh){
 /* 是否已取消(涵蓋 cancelled / cancelled_typhoon / cancelled_customer / cancelled_other)*/
 function isCx(sh){return sh.status&&String(sh.status).indexOf('cancelled')===0}
 function cxLabel(sh){
-  if(sh.status==='cancelled_typhoon')return '🌀颱風取消';
+  if(sh.status==='cancelled_typhoon'){
+    if(sh.rebook?.state==='rebooked'&&sh.rebook?.newShiftId){const next=byId(S.shifts,sh.rebook.newShiftId);return next?`🌀已改期→${next.date} ${next.start}`:'🌀已改期'}
+    if(sh.rebook?.state==='refunded')return '🌀已退費';
+    return '🌀待改期';
+  }
   if(sh.status==='cancelled_customer')return '已取消(客人)';
   if(isCx(sh))return '已取消';
   return '';
@@ -1216,14 +1225,15 @@ function openShift(id,presetDate,preset){
   renderLinkedThemeOptions();
   // 客人與付款資訊(SimplyBook 同步來的才有)
   const cbox=document.getElementById('sfCustomer');
-  if(sh&&sh.customer&&(sh.customer.name||sh.customer.phone)){
-    const c=sh.customer,p=sh.payment||{};
+  if(sh&&((sh.customer&&(sh.customer.name||sh.customer.phone))||sh.rebookFrom)){
+    const c=sh.customer||{},p=sh.payment||{},origin=sh.rebookFrom?byId(S.shifts,sh.rebookFrom.shiftId):null;
     cbox.style.display='';
-    cbox.innerHTML=`<b>👤 客人資訊</b>　${esc(c.name||'')}`
+    cbox.innerHTML=(c.name||c.phone?`<b>👤 客人資訊</b>　${esc(c.name||'')}`
       +(c.phone?`　📞 <a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>`:'')
       +(c.email?`　✉ ${esc(c.email)}`:'')
       +(c.comment?`<br>💬 ${esc(c.comment)}`:'')
-      +(p.depositAmount?`<br>💰 訂金 ${p.depositCurrency||p.currency||''} ${p.depositAmount}（${p.depositStatus==='paid'?'已付':esc(p.depositStatus||'')}${p.system?'・'+esc(p.system):''}）`:'');
+      +(p.depositAmount?`<br>💰 訂金 ${p.depositCurrency||p.currency||''} ${p.depositAmount}（${p.depositStatus==='paid'?'已付':esc(p.depositStatus||'')}${p.system?'・'+esc(p.system):''}）`:''):'')
+      +(sh.rebookFrom?`<div style="margin-top:7px;padding-top:7px;border-top:1px dashed #94a3b8"><b>🌀 颱風改期來源</b>　${origin?`${origin.date} ${origin.start} ${esc(shiftLabel(origin))}`:`${esc(sh.rebookFrom.date||'')} ${esc(sh.rebookFrom.start||'')}`}（原預約 ${esc(sh.rebookFrom.bookingId||'—')}）</div>`:'');
   }else cbox.style.display='none';
   // 場次狀態(取消/颱風天/改期)
   const st=sh?(sh.status||'active'):'active';
@@ -1232,6 +1242,7 @@ function openShift(id,presetDate,preset){
   document.getElementById('sfRebookDue').value=rb.due||'';
   document.getElementById('sfRebookState').value=rb.state||'pending';
   document.getElementById('sfCancelNote').value=rb.note||'';
+  renderRebookShiftOptions(rb.newShiftId||'');
   onStatusChange(true);
   renderCoverageHint();
   dlgShift.showModal();
@@ -1252,6 +1263,21 @@ function onStatusChange(keep){
     d.setMonth(d.getMonth()+1);
     document.getElementById('sfRebookDue').value=fmtDate(d);
   }
+  onRebookStateChange();
+}
+function rebookCandidates(){
+  const original=editShiftId?byId(S.shifts,editShiftId):null;if(!original||original.kind!=='theme')return [];
+  return S.shifts.filter(sh=>sh.id!==original.id&&String(sh.id).startsWith('sb_')&&sh.kind==='theme'&&sh.themeId===original.themeId&&!isCx(sh)&&sh.date>=todayStr())
+    .sort((a,b)=>(a.date+a.start).localeCompare(b.date+b.start));
+}
+function renderRebookShiftOptions(selected){
+  const sel=document.getElementById('sfRebookShift');if(!sel)return;const candidates=rebookCandidates();
+  sel.innerHTML=`<option value="">請選擇新的 SimplyBook 場次</option>`+candidates.map(sh=>{const booking=String(sh.id).replace(/^sb_/,'');return `<option value="${esc(sh.id)}" ${sh.id===selected?'selected':''}>${esc(sh.date)} ${esc(sh.start)}–${esc(sh.end)}・${esc(shiftLabel(sh))}・預約 ${esc(booking)}</option>`}).join('');
+  if(selected&&!candidates.some(sh=>sh.id===selected))sel.insertAdjacentHTML('beforeend',`<option value="${esc(selected)}" selected>原連結 ${esc(String(selected).replace(/^sb_/,''))}（目前已取消或不存在）</option>`);
+}
+function onRebookStateChange(){
+  const box=document.getElementById('sfRebookLinkBox'),status=document.getElementById('sfStatus')?.value,state=document.getElementById('sfRebookState')?.value;
+  if(box)box.style.display=status==='cancelled_typhoon'&&state==='rebooked'?'':'none';
 }
 function rebuildThemeSelect(val){
   const storeId=document.getElementById('sfStore').value;
@@ -1495,6 +1521,8 @@ function saveShift(){
   const prev=editShiftId?byId(S.shifts,editShiftId):null;
   const statusVal=document.getElementById('sfStatus').value;
   const isCancel=statusVal.indexOf('cancelled')===0;
+  const rebookState=document.getElementById('sfRebookState').value,selectedNewShiftId=document.getElementById('sfRebookShift').value,newShiftId=statusVal==='cancelled_typhoon'&&rebookState==='rebooked'?selectedNewShiftId:'';
+  if(statusVal==='cancelled_typhoon'&&rebookState==='rebooked'&&!newShiftId)return alert('請選擇要連結的新 SimplyBook 場次。');
   const linkedThemeAssignments=(kind==='counter'||kind==='floor')?dlgLinkedThemeArr.filter(x=>x.shiftId&&x.empId).map(x=>({shiftId:x.shiftId,empId:x.empId})):[];
   const incompleteLinked=(kind==='counter'||kind==='floor')&&dlgLinkedThemeArr.some(x=>!x.empId);
   if(incompleteLinked)return alert('請替每個勾選的主題場次指定實際場控人員。');
@@ -1516,15 +1544,20 @@ function saveShift(){
       if(e0&&e0>obj.end)obj.end=e0;
     }
   }
-  // 保留 SimplyBook 同步來的客人/付款資訊
-  if(prev){if(prev.customer)obj.customer=prev.customer;if(prev.payment)obj.payment=prev.payment;if(prev.sourceUpdatedAt)obj.sourceUpdatedAt=prev.sourceUpdatedAt;}
+  // 正常場次保留客資；颱風待改期期間暫留聯絡資料。一般取消、已改期或已退費立即移除舊場次客資。
+  const keepPersonal=!isCancel||(statusVal==='cancelled_typhoon'&&rebookState==='pending');
+  if(prev){if(keepPersonal&&prev.customer)obj.customer=prev.customer;if(keepPersonal&&prev.payment)obj.payment=prev.payment;if(prev.sourceUpdatedAt)obj.sourceUpdatedAt=prev.sourceUpdatedAt;}
   // 取消/改期資訊
   if(isCancel){
     obj.rebook={
       reason:statusVal,
       due:document.getElementById('sfRebookDue').value||'',
-      state:document.getElementById('sfRebookState').value,
-      note:document.getElementById('sfCancelNote').value.trim()
+      state:rebookState,
+      note:document.getElementById('sfCancelNote').value.trim(),
+      originalBookingId:prev?.rebook?.originalBookingId||(String(obj.id).startsWith('sb_')?String(obj.id).slice(3):''),
+      originalDate:prev?.rebook?.originalDate||prev?.date||date,
+      originalStart:prev?.rebook?.originalStart||prev?.start||start,
+      ...(statusVal==='cancelled_typhoon'&&rebookState==='rebooked'?{newShiftId}:{})
     };
   }
   // 自由選人:被指派者若尚未勾技能/櫃台,自動同步到技能表
@@ -1546,6 +1579,9 @@ function saveShift(){
     e.skills=e.skills||{};const arr=e.skills[target.themeId]||[];if(!arr.includes('場控'))e.skills[target.themeId]=[...arr,'場控'];
   }
   if(String(obj.id).indexOf('sb_')===0)obj.manualEdit=true; // SimplyBook 班次手動改過,同步時不覆蓋
+  const oldLinkedId=prev?.rebook?.newShiftId||'';
+  if(oldLinkedId&&oldLinkedId!==newShiftId){const oldTarget=byId(S.shifts,oldLinkedId);if(oldTarget?.rebookFrom?.shiftId===obj.id){delete oldTarget.rebookFrom;dbUpsertShift(oldTarget)}}
+  if(statusVal==='cancelled_typhoon'&&rebookState==='rebooked'&&newShiftId){const target=byId(S.shifts,newShiftId);if(target){target.rebookFrom={shiftId:obj.id,bookingId:obj.rebook.originalBookingId,date:obj.rebook.originalDate,start:obj.rebook.originalStart};dbUpsertShift(target)}}
   if(editShiftId){const i=S.shifts.findIndex(x=>x.id===editShiftId);S.shifts[i]=obj}
   else S.shifts.push(obj);
   save();dbUpsertShift(obj);notifyShiftAssignments(obj,prev);dlgShift.close();render();
