@@ -1036,7 +1036,7 @@ function vMonth(){
   <div class="mhead">${['一','二','三','四','五','六','日'].map(d=>`<div>週${d}</div>`).join('')}</div>
   <div class="mgrid">${days.map(ds=>{
     const inMonth=ds.slice(0,7)===monthAnchor;
-    const shifts=S.shifts.filter(x=>x.date===ds&&x.kind!=='counter'&&shiftMatch(x)).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
+    const shifts=S.shifts.filter(x=>x.date===ds&&!isCx(x)&&x.kind!=='counter'&&shiftMatch(x)).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
     const hasUnstaffed=shifts.some(isShiftUnstaffed)||yijiaNeedsDzCoverage(ds);
     // 選了人員時,格子底色顯示他當天可上班/休
     let av='';
@@ -1083,11 +1083,11 @@ function moveDay(n){
   dayAnchor=fmtDate(d);render();
 }
 function findSlotShift(ds,themeId,slot){
-  return S.shifts.find(sh=>sh.date===ds&&sh.kind==='theme'&&sh.themeId===themeId&&sh.start===slot);
+  return S.shifts.find(sh=>sh.date===ds&&!isCx(sh)&&sh.kind==='theme'&&sh.themeId===themeId&&sh.start===slot);
 }
 function vDaySessions(){
   const ds=dayAnchor;
-  const others=S.shifts.filter(sh=>sh.date===ds&&!(sh.kind==='theme'&&theme(sh.themeId)&&(theme(sh.themeId).slots||[]).includes(sh.start)))
+  const others=S.shifts.filter(sh=>sh.date===ds&&!isCx(sh)&&!(sh.kind==='theme'&&theme(sh.themeId)&&(theme(sh.themeId).slots||[]).includes(sh.start)))
     .sort((a,b)=>a.start.localeCompare(b.start));
   const counters=(storeId)=>others.filter(sh=>sh.kind==='counter'&&sh.storeId===storeId);
   const extra=others.filter(sh=>sh.kind!=='counter');
@@ -1170,7 +1170,7 @@ function vWeek(){
     </div>
     <p class="muted" style="margin-bottom:8px">每欄上方為當日人力（可上班＝SimplyBook 人員色並顯示時段；休假／無班＝灰色）；黃底＝有未排人場次。</p>
     <div class="week">${days.map(ds=>{
-      const shifts=S.shifts.filter(x=>x.date===ds&&x.kind!=='counter'&&shiftMatch(x)).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
+      const shifts=S.shifts.filter(x=>x.date===ds&&!isCx(x)&&x.kind!=='counter'&&shiftMatch(x)).sort((a,b)=>(a.start||'').localeCompare(b.start||''));
       const hasUnstaffed=shifts.some(isShiftUnstaffed)||yijiaNeedsDzCoverage(ds);
       const avail=S.employees.filter(e=>employedOn(e,ds)&&(()=>{const a=effectiveAvail(e,ds);return a&&a.on})());
       return `<div class="day ${ds===td?'today':''}" style="${hasUnstaffed?'background:#fef3c7;border-color:#f59e0b':''}">
