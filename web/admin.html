@@ -1114,7 +1114,7 @@ function vDaySessions(){
         const names=assignedTags(sh,true),missing=isShiftUnstaffed(sh);
         return `<div class="slotbox ${isCx(sh)?'cancelled':missing?'unstaffed':'staffed'}${bulkClass(sh)}" style="${names||isCx(sh)?chipStyle(sh):''}" onclick="${shiftAction(sh)}">${bulkMode?`<span class="bulk-check">${bulkSelected.has(sh.id)?'☑':'☐'}</span>`:''}<b>${slot}</b><br>${isCx(sh)?cxLabel(sh):(names||'⚠ 未排人')+(missing&&names?' ⚠未排完整':'')}</div>`;
       }
-      return `<div class="slotbox" onclick="createSlotShift('${t.id}','${slot}')"><b>${slot}</b><br>＋開場</div>`;
+      return `<div class="slotbox" onclick="createSlotShift('${t.id}','${slot}')" title="前往 SimplyBook 建立正式預約"><b>${slot}</b><br>空場・到 SimplyBook 建立</div>`;
     }).join('');
     return `<h3 style="margin:14px 0 8px"><span class="badge" style="background:${s.color};color:${textOn(s.color)};border:1px solid ${lum(s.color)>0.82?'#cbd5e1':'transparent'}">${esc(s.name)}</span></h3>
     <table>${groups.map(g=>`<tr><th style="width:110px">${esc(baseThemeName(g.base))}<br><span class="muted" style="font-weight:400">${g.base.dur}分</span></th>
@@ -1130,7 +1130,9 @@ function vDaySessions(){
 }
 function createSlotShift(themeId,slot){
   const t=theme(themeId);
-  openShift(null,dayAnchor,{storeId:t.storeId,themeId,start:slot});
+  if(!t)return;
+  const ok=confirm(`${dayAnchor} ${slot}・${t.name}\n\n這是尚無預約的空場。正式客人場次必須先在 SimplyBook 建立，才能保留客人、訂金及取消資料。\n\n按「確定」開啟 SimplyBook；建立完成後，排班系統會由即時回撥或每分鐘同步自動帶入。\n\n若只是新增訓練場、櫃台或其他內部工作，請使用右上角「新增班次」。`);
+  if(ok)window.open('https://bglescape.secure.simplybook.asia/v2/management/','_blank','noopener');
 }
 
 /* ---- 週表 ---- */
