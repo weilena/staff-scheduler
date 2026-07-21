@@ -132,11 +132,25 @@ dialog{border:none;border-radius:14px;padding:0;max-width:560px;width:94vw;box-s
 dialog::backdrop{background:rgba(15,23,42,.45)}
 .dlg-h{background:#0f172a;color:#fff;padding:12px 18px;font-size:15px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
 .dlg-h button{background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer}
-.dlg-b{padding:16px 18px;display:flex;flex-direction:column;gap:12px;max-height:70vh;overflow-y:auto}
-.dlg-f{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end}
+.dlg-b{padding:16px 18px;display:flex;flex-direction:column;gap:12px;max-height:70vh;overflow-y:auto;overflow-x:hidden}
+/* 彈窗一律只上下捲動:內容不得超出框寬,過長文字換行、下拉選單可縮小 */
+.dlg-b,.dlg-b *{max-width:100%;box-sizing:border-box}
+.dlg-b .row,.dlg-b .field,.dlg-b .slot,.dlg-b label,.dlg-b div{min-width:0}
+.dlg-b select,.dlg-b input,.dlg-b textarea{min-width:0;width:100%;text-overflow:ellipsis}
+.dlg-b .row>.field{flex:1 1 160px}
+.dlg-b label,.dlg-b .muted,.dlg-b p,.dlg-b span{overflow-wrap:anywhere;word-break:break-word;white-space:normal}
+.dlg-b .timebtns{flex-wrap:wrap}
+.dlg-b .timebtns button{white-space:nowrap;width:auto}
+.dlg-f{padding:12px 18px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.dlg-b input[type=checkbox]{width:16px;flex:0 0 auto}
+.dlg-b .cklab{white-space:nowrap}
 .field{display:flex;flex-direction:column;gap:4px}
 .field label{font-size:13px;color:var(--muted)}
-.slot{display:flex;gap:6px;align-items:center;background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:6px}
+.slot{display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:6px}
+.slot>select:first-child{flex:0 0 84px;width:84px}      /* 角色 */
+.slot>select.grow{flex:1 1 100%;width:100%}             /* 人員:過長時獨占一行 */
+.slot>input[type=time]{flex:1 1 108px;width:auto}       /* 個別時段 */
+.slot>button{flex:0 0 auto;width:auto;margin-left:auto}
 .warn{color:var(--warn);font-size:12.5px}
 .timebtns{display:flex;gap:5px;flex-wrap:wrap}
 .timebtns button{border:1px solid var(--line);background:#fff;border-radius:7px;padding:4px 9px;font-size:13px;cursor:pointer}
@@ -1407,7 +1421,7 @@ function renderLinkedThemeOptions(){
   const kind=document.getElementById('sfKind').value,show=kind==='counter'||kind==='floor';wrap.style.display=show?'':'none';if(!show){box.innerHTML='';return}
   const people=[...new Set(dlgSlotsArr.map(x=>x.empId).filter(Boolean))],candidates=linkedThemeCandidates(),start=toMin(document.getElementById('sfStart').value),end=toMin(document.getElementById('sfEnd').value),storeId=document.getElementById('sfStore').value;
   dlgLinkedThemeArr=dlgLinkedThemeArr.filter(x=>candidates.some(sh=>sh.id===x.shiftId));
-  box.innerHTML=`<button type="button" class="btn gray sm" onclick="autoLinkThemeControllers()">自動對應未排場控</button><span class="muted" style="margin-left:8px">只列出同店且需要場控的主題；單一櫃台人員會自動預選，可取消。</span>`+(candidates.length?candidates.map(sh=>{const row=dlgLinkedThemeArr.find(x=>x.shiftId===sh.id),checked=!!row,direct=(sh.assignments||[]).filter(a=>a.empId&&a.role==='場控'),inRange=sh.storeId===storeId&&toMin(sh.start)>=start&&toMin(sh.end)<=end;return `<div class="row" style="padding:7px 0;border-bottom:1px solid #fde68a;align-items:center"><label class="grow" style="margin:0"><input type="checkbox" ${checked?'checked':''} onchange="toggleLinkedTheme('${sh.id}',this.checked)"> ${sh.date} ${sh.start}–${sh.end}・${esc(store(sh.storeId)?.name||'')}・${esc(shiftLabel(sh))}${inRange?'':' <span class="warn">（超出班別時間）</span>'}${direct.length?`<br><span class="muted">目前場控：${direct.map(a=>esc(emp(a.empId)?.name||a.empId)).join('、')}</span>`:''}</label>${checked?`<select style="width:auto;min-width:130px" onchange="setLinkedThemeEmp('${sh.id}',this.value)"><option value="">指定場控人員</option>${people.map(id=>`<option value="${id}" ${row.empId===id?'selected':''}>${esc(emp(id)?.name||id)}</option>`).join('')}</select>`:''}</div>`}).join(''):'<p class="muted" style="margin-top:8px">當天同店沒有需要場控的主題場次。</p>');
+  box.innerHTML=`<button type="button" class="btn gray sm" onclick="autoLinkThemeControllers()">自動對應未排場控</button><span class="muted" style="margin-left:8px">只列出同店且需要場控的主題；單一櫃台人員會自動預選，可取消。</span>`+(candidates.length?candidates.map(sh=>{const row=dlgLinkedThemeArr.find(x=>x.shiftId===sh.id),checked=!!row,direct=(sh.assignments||[]).filter(a=>a.empId&&a.role==='場控'),inRange=sh.storeId===storeId&&toMin(sh.start)>=start&&toMin(sh.end)<=end;return `<div class="row" style="padding:7px 0;border-bottom:1px solid #fde68a;align-items:center"><label class="grow" style="margin:0"><input type="checkbox" ${checked?'checked':''} onchange="toggleLinkedTheme('${sh.id}',this.checked)"> ${sh.date} ${sh.start}–${sh.end}・${esc(store(sh.storeId)?.name||'')}・${esc(shiftLabel(sh))}${inRange?'':' <span class="warn">（超出班別時間）</span>'}${direct.length?`<br><span class="muted">目前場控：${direct.map(a=>esc(emp(a.empId)?.name||a.empId)).join('、')}</span>`:''}</label>${checked?`<select style="flex:1 1 140px;min-width:0;max-width:100%" onchange="setLinkedThemeEmp('${sh.id}',this.value)"><option value="">指定場控人員</option>${people.map(id=>`<option value="${id}" ${row.empId===id?'selected':''}>${esc(emp(id)?.name||id)}</option>`).join('')}</select>`:''}</div>`}).join(''):'<p class="muted" style="margin-top:8px">當天同店沒有需要場控的主題場次。</p>');
 }
 /* NPC 連場檢查:連續 npcMaxChain 場後必須休息(間隔 < npcRestMin 分視為連場);場控不受限 */
 function npcChainWarning(e,date,start,end){
