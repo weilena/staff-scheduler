@@ -226,6 +226,7 @@ const handler = async (req: Request) => {
         assignments: previous?.manualEdit ? previous.assignments : [{ role, empId: employee?.id ?? "" }],
         ...(previous?.manualEdit ? { manualEdit: true } : {}),
         ...(previous?.rebook ? { rebook: previous.rebook } : {}),
+        ...(previous?.rebookFrom ? { rebookFrom: previous.rebookFrom } : {}),
       };
       upserts.push({ id, date: shift.date, source: "simplybook", data: shift });
     }
@@ -243,9 +244,12 @@ const handler = async (req: Request) => {
       const id = `sb_${code}`;
       const previous: any = existingMap.get(id);
       if (!previous) continue;
-      // 取消後保留場次識別、時間與取消稽核，但立即清除客人姓名、電話、Email、留言及付款資料。
+      // 颱風待改期期間暫留聯絡資料；一般取消、已改期與已退費只保留場次及稽核資料。
+      const keepTyphoonContact = previous.status === "cancelled_typhoon" && previous.rebook?.state === "pending";
       const { customer: _customer, payment: _payment, ...nonPersonal } = previous;
-      const shift = { ...nonPersonal, customer: null, payment: null, status: "cancelled", cancelledAt: new Date().toISOString(), sourceUpdatedAt: new Date().toISOString() };
+      const shift = keepTyphoonContact
+        ? { ...previous, status: "cancelled_typhoon", cancelledAt: previous.cancelledAt ?? new Date().toISOString(), sourceUpdatedAt: new Date().toISOString() }
+        : { ...nonPersonal, customer: null, payment: null, status: previous.status === "cancelled_typhoon" ? "cancelled_typhoon" : "cancelled", cancelledAt: previous.cancelledAt ?? new Date().toISOString(), sourceUpdatedAt: new Date().toISOString() };
       cancelledUpdates.push({ id, date: shift.date, source: "simplybook", data: shift });
     }
 
