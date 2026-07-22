@@ -2,6 +2,14 @@ import { cors, distanceMeters, eligibilityErrors, employedOn, getContext, json, 
 
 const DAY = 86_400_000;
 const dateText = (d: Date) => d.toISOString().slice(0, 10);
+const SB_LOGIN_URL = "https://user-api.simplybook.asia/login";
+const SB_ADMIN_URL = "https://user-api.simplybook.asia/admin/";
+async function simplyBookRpc(url: string, headers: Record<string, string>, method: string, params: unknown[]) {
+  const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ jsonrpc: "2.0", method, params, id: crypto.randomUUID() }) });
+  const payload = await response.json();
+  if (!response.ok || payload.error) throw new Error(`${method}: ${JSON.stringify(payload.error ?? payload)}`);
+  return payload.result;
+}
 const MANUAL_WORK_ITEMS: Record<string, string> = {
   grandma: "外婆", haunted_shop: "詭店", haunted_prison: "詭獄", shit_power: "屎力全開",
   haunted_toilet: "詭廁", escapee: "越獄者", orphan: "孤兒怨", mr_mystery_counter: "謎先生櫃台",
@@ -39,13 +47,14 @@ Deno.serve(async (req) => {
 
     if (action === "bootstrap") {
       const now = new Date(), from = dateText(new Date(now.getTime() - 60 * DAY)), to = dateText(new Date(now.getTime() + 60 * DAY));
-      const [{ data: worksites }, { data: punches }, { data: sessionCheckins }, { data: shiftConfirmations }, { data: attendanceDays }, { data: attendanceRequests }] = await Promise.all([
+      const [{ data: worksites }, { data: punches }, { data: sessionCheckins }, { data: shiftConfirmations }, { data: attendanceDays }, { data: attendanceRequests }, { data: overtimeReviews }] = await Promise.all([
         sb.from("worksites").select("id,name,radius_m,enabled").eq("enabled", true),
         sb.from("punches").select("id,ts,type,worksite_id,verification,review_state,voided_at,void_reason,shift_ids,raw").eq("emp_id", employee.id).gte("ts", from).order("ts", { ascending: false }).limit(60),
         sb.from("session_checkins").select("id,shift_id,checked_in_at,worksite_id,verification,source,note").eq("emp_id", employee.id).gte("checked_in_at", from).order("checked_in_at", { ascending: false }).limit(100),
         sb.from("shift_confirmations").select("shift_id,status,confirmed_at").eq("emp_id", employee.id),
         sb.from("attendance_daily").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: false }).limit(70),
         sb.from("attendance_requests").select("*").eq("emp_id", employee.id).order("created_at", { ascending: false }).limit(30),
+        sb.from("overtime_reviews").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: false }).limit(70),
       ]);
       const publicEmployees = (cfg.employees ?? []).filter((e: any) => e.active).map((e: any) => ({ id: e.id, name: e.name }));
       const publicShifts = shifts.filter((s: any) => s.date >= from && s.date <= to).map((s: any) => {
@@ -72,6 +81,10 @@ Deno.serve(async (req) => {
             ).map((candidate: any) => ({ id: candidate.id, name: candidate.name }));
           }
         }
+        const writebackTheme = (cfg.themes ?? []).find((theme: any) => theme.id === s.themeId);
+        const writebackRole = writebackTheme && (Number(writebackTheme.payNPC) || 0) > 0 ? "NPC" : "場控";
+        const writebackCandidates = account.role === "manager" && String(s.id).startsWith("sb_") && (s.assignments ?? []).some((a: any) => !a.empId && a.role === writebackRole)
+          ? (cfg.employees ?? []).filter((candidate: any) => candidate.active && eligibilityErrors(candidate, s, writebackRole, shifts, cfg, [s.id]).length === 0).map((candidate: any) => ({ id: candidate.id, name: candidate.name })) : [];
         return {
           id: s.id, date: s.date, storeId: s.storeId, kind: s.kind, themeId: s.themeId, start: s.start, end: s.end,
           status: s.status ?? "active", assignments: s.assignments ?? [],
@@ -80,6 +93,8 @@ Deno.serve(async (req) => {
           customer: canSeeCustomer && s.customer ? { name: s.customer.name ?? "", phone: s.customer.phone ?? "", email: s.customer.email ?? "", comment: s.customer.comment ?? "" } : null,
           payment: canSeeCustomer && s.payment ? { depositAmount: s.payment.depositAmount ?? null, depositStatus: s.payment.depositStatus ?? "", system: s.payment.system ?? "", currency: s.payment.depositCurrency ?? s.payment.currency ?? "" } : null,
           replacementCandidates,
+          writebackRole: writebackCandidates.length ? writebackRole : null,
+          writebackCandidates,
           candidateGroups: emptyRoles.length ? {
             onSite: onSite.map((candidate: any) => candidate.name),
             available: ranked.filter((candidate: any) => !onSiteIds.has(candidate.id)).map((candidate: any) => candidate.name),
@@ -94,7 +109,7 @@ Deno.serve(async (req) => {
       return json({ me: { id: employee.id, name: employee.name, role: account.role, type: employee.type,
           canSchedulePractice: account.role === "manager" || (employee.type === "full" && !!employee.canSchedulePractice) }, stores: cfg.stores, themes: cfg.themes,
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches,
-        attendanceDays, attendanceRequests, sessionCheckins, shiftConfirmations, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
+        attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
 
     if (action === "monthly-summary") {
@@ -102,16 +117,22 @@ Deno.serve(async (req) => {
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: "月份格式錯誤" }, 400);
       const [year, monthNo] = month.split("-").map(Number);
       const nextMonth = dateText(new Date(Date.UTC(year, monthNo, 1))).slice(0, 7);
-      const [{ data: checkins, error: checkinError }, { data: attendance, error: attendanceError }] = await Promise.all([
+      const [{ data: checkins, error: checkinError }, { data: attendance, error: attendanceError }, { data: punches, error: punchError }, { data: overtime, error: overtimeError }] = await Promise.all([
         sb.from("session_checkins").select("shift_id,checked_in_at").eq("emp_id", employee.id)
           .gte("checked_in_at", `${month}-01T00:00:00`).lt("checked_in_at", `${nextMonth}-01T00:00:00`),
         sb.from("attendance_daily").select("work_date,actual_minutes,payable_minutes,status").eq("emp_id", employee.id)
           .gte("work_date", `${month}-01`).lt("work_date", `${nextMonth}-01`),
+        sb.from("punches").select("ts,type,worksite_id").eq("emp_id", employee.id).is("voided_at", null)
+          .gte("ts", `${month}-01T00:00:00`).lt("ts", `${nextMonth}-01T00:00:00`).order("ts", { ascending: true }),
+        sb.from("overtime_reviews").select("work_date,actual_minutes,candidate_minutes,approved_minutes,status,note").eq("emp_id", employee.id)
+          .gte("work_date", `${month}-01`).lt("work_date", `${nextMonth}-01`).order("work_date", { ascending: true }),
       ]);
       if (checkinError) throw checkinError;
       if (attendanceError) throw attendanceError;
+      if (punchError) throw punchError;
+      if (overtimeError) throw overtimeError;
       const completed = new Set((checkins ?? []).map((row: any) => String(row.shift_id)));
-      const seen = new Set<string>(), scheduled = { gm: 0, npc: 0 }, done = { gm: 0, npc: 0 };
+      const seen = new Set<string>(), detailSeen = new Set<string>(), scheduled = { gm: 0, npc: 0 }, done = { gm: 0, npc: 0 }, workItems: any[] = [];
       const add = (shift: any, role: string) => {
         const normalized = String(role).toUpperCase() === "NPC" ? "npc" : role === "場控" ? "gm" : "";
         if (!normalized || String(shift.status ?? "").startsWith("cancelled") || String(shift.date ?? "").slice(0, 7) !== month) return;
@@ -120,17 +141,227 @@ Deno.serve(async (req) => {
         seen.add(key); scheduled[normalized as "gm" | "npc"]++;
         if (completed.has(String(shift.id))) done[normalized as "gm" | "npc"]++;
       };
-      for (const shift of shifts) for (const assignment of shift.assignments ?? []) if (assignment.empId === employee.id) add(shift, assignment.role);
+      const addDetail = (shift: any, role: string, linked = false) => {
+        if (String(shift.status ?? "").startsWith("cancelled") || String(shift.date ?? "").slice(0, 7) !== month) return;
+        const key = `${shift.id}|${role}`; if (detailSeen.has(key)) return; detailSeen.add(key);
+        const requiresReport = shift.kind === "practice" || (shift.kind === "theme" && ["NPC", "場控"].includes(String(role).toUpperCase() === "NPC" ? "NPC" : role));
+        workItems.push({ id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind,
+          themeId: shift.themeId ?? null, role, linked, requiresReport, completed: completed.has(String(shift.id)) });
+      };
+      for (const shift of shifts) for (const assignment of shift.assignments ?? []) if (assignment.empId === employee.id) { add(shift, assignment.role); addDetail(shift, assignment.role); }
       for (const source of shifts) for (const link of source.linkedThemeAssignments ?? []) {
         if (link.empId !== employee.id) continue;
         const target = shifts.find((shift: any) => String(shift.id) === String(link.shiftId));
-        if (target) add(target, "場控");
+        if (target) { add(target, "場控"); addDetail(target, "場控", true); }
       }
       const rows = attendance ?? [];
       const approvedMinutes = rows.filter((row: any) => row.status === "approved").reduce((sum: number, row: any) => sum + Math.max(0, Number(row.payable_minutes) || 0), 0);
       const pendingMinutes = rows.filter((row: any) => row.status === "pending" || row.status === "anomaly").reduce((sum: number, row: any) => sum + Math.max(0, Number(row.actual_minutes) || 0), 0);
       const actualMinutes = rows.reduce((sum: number, row: any) => sum + Math.max(0, Number(row.actual_minutes) || 0), 0);
-      return json({ month, scheduled, done, approvedMinutes, pendingMinutes, actualMinutes });
+      const punchDays = new Map<string, any[]>();
+      for (const row of punches ?? []) { const date = String(row.ts).slice(0, 10); if (!punchDays.has(date)) punchDays.set(date, []); punchDays.get(date)!.push(row); }
+      const segments = new Map<string, any[]>();
+      for (const [date, dayPunches] of punchDays) {
+        const list: any[] = []; let open: any = null;
+        for (const punch of dayPunches) { if (punch.type === "in") { if (open) list.push({ in: String(open.ts).slice(11, 16), out: null, worksiteId: open.worksite_id }); open = punch; } else if (open) { list.push({ in: String(open.ts).slice(11, 16), out: String(punch.ts).slice(11, 16), worksiteId: open.worksite_id }); open = null; } else list.push({ in: null, out: String(punch.ts).slice(11, 16), worksiteId: punch.worksite_id }); }
+        if (open) list.push({ in: String(open.ts).slice(11, 16), out: null, worksiteId: open.worksite_id }); segments.set(date, list);
+      }
+      const attendanceByDate = new Map(rows.map((row: any) => [String(row.work_date), row]));
+      const dates = new Set<string>([...workItems.map(item => item.date), ...segments.keys(), ...attendanceByDate.keys()]);
+      const days = [...dates].sort().map(date => {
+        const attendanceRow: any = attendanceByDate.get(date), daySegments = segments.get(date) ?? [];
+        let remaining = 540, overtimeThreshold: number | null = null;
+        for (const segment of daySegments) {
+          if (!segment.in || !segment.out) continue;
+          const duration = Math.max(0, toMinutes(segment.out) - toMinutes(segment.in));
+          if (duration > remaining) { overtimeThreshold = toMinutes(segment.in) + remaining; break; }
+          remaining -= duration;
+        }
+        return { date, segments: daySegments,
+          attendance: attendanceRow ? { actualMinutes: attendanceRow.actual_minutes, payableMinutes: attendanceRow.payable_minutes, status: attendanceRow.status } : null,
+          workItems: workItems.filter(item => item.date === date).sort((a, b) => String(a.start).localeCompare(String(b.start))).map(item => ({ ...item,
+            overtime: overtimeThreshold !== null && (String(item.role).toUpperCase() === "NPC" || item.role === "場控") && toMinutes(String(item.end)) > overtimeThreshold })) };
+      });
+      const overtimeRows = overtime ?? [];
+      return json({ month, scheduled, done, approvedMinutes, pendingMinutes, actualMinutes, days,
+        overtime: { approvedMinutes: overtimeRows.filter((row: any) => row.status === "approved").reduce((sum: number, row: any) => sum + Math.max(0, Number(row.approved_minutes) || 0), 0),
+          pendingMinutes: overtimeRows.filter((row: any) => ["pending", "anomaly"].includes(row.status)).reduce((sum: number, row: any) => sum + Math.max(0, Number(row.candidate_minutes) || 0), 0), rows: overtimeRows } });
+    }
+
+    if (action === "empty-slots") {
+      const date = String(input.date ?? "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: "日期格式錯誤" }, 400);
+      const actual = shifts.filter((shift: any) => shift.date === date && shift.kind === "theme" && !String(shift.status ?? "").startsWith("cancelled"));
+      const slots: any[] = [];
+      for (const theme of (cfg.themes ?? []).filter((row: any) => row.active !== false && Array.isArray(row.slots))) {
+        for (const start of theme.slots ?? []) {
+          if (actual.some((shift: any) => shift.themeId === theme.id && shift.start === start)) continue;
+          const startMinutes = toMinutes(String(start)), endMinutes = startMinutes + Math.max(0, Number(theme.dur) || 0);
+          const end = `${String(Math.floor(endMinutes / 60) % 24).padStart(2, "0")}:${String(endMinutes % 60).padStart(2, "0")}`;
+          const assignments: any[] = [];
+          for (let i = 0; i < Number(theme.needGM || 0); i++) assignments.push({ role: "場控", empId: "" });
+          for (let i = 0; i < Number(theme.needNPC || 0); i++) assignments.push({ role: "NPC", empId: "" });
+          if (!assignments.length) assignments.push({ role: "工作人員", empId: "" });
+          const target = { id: `virtual_slot_${date}_${theme.id}_${String(start).replace(":", "")}`, date, storeId: theme.storeId, kind: "theme", themeId: theme.id, start, end, status: "active", assignments, depositPaid: false, virtualEmpty: true };
+          const roles = [...new Set(assignments.map(row => String(row.role)))];
+          const eligible = (cfg.employees ?? []).filter((candidate: any) => candidate.active && roles.some(role => eligibilityErrors(candidate, target, role, shifts, cfg).length === 0));
+          const ranked = rankCandidatesByWorkload(eligible, shifts, date, 99);
+          const onSite = ranked.filter((candidate: any) => shifts.some((other: any) => other.date === date && other.storeId === theme.storeId && !String(other.status ?? "").startsWith("cancelled") && (other.assignments ?? []).some((assignment: any) => assignment.empId === candidate.id)));
+          const onSiteIds = new Set(onSite.map((candidate: any) => candidate.id));
+          slots.push({ ...target, candidateGroups: { onSite: onSite.map((candidate: any) => candidate.name), available: ranked.filter((candidate: any) => !onSiteIds.has(candidate.id)).map((candidate: any) => candidate.name) } });
+        }
+      }
+      return json({ date, slots });
+    }
+
+    if (action === "manager-dashboard") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以查看全體員工資料" }, 403);
+      const month = String(input.month ?? "");
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: "月份格式錯誤" }, 400);
+      const [year, monthNo] = month.split("-").map(Number);
+      const nextMonth = dateText(new Date(Date.UTC(year, monthNo, 1))).slice(0, 7);
+      const [{ data: daily, error: dailyError }, { data: attendanceRequests, error: attendanceRequestError }, { data: shiftRequests, error: shiftRequestError }] = await Promise.all([
+        sb.from("attendance_daily").select("emp_id,work_date,scheduled_minutes,actual_minutes,payable_minutes,status,note,anomalies").gte("work_date", `${month}-01`).lt("work_date", `${nextMonth}-01`).order("work_date", { ascending: true }),
+        sb.from("attendance_requests").select("id,emp_id,punch_date,request_type,requested,reason,status,created_at").eq("status", "pending").order("created_at", { ascending: true }),
+        sb.from("shift_requests").select("id,request_type,shift_id,requester_emp_id,status,details,created_at").eq("status", "pending_manager").order("created_at", { ascending: true }),
+      ]);
+      if (dailyError) throw dailyError;
+      if (attendanceRequestError) throw attendanceRequestError;
+      if (shiftRequestError) throw shiftRequestError;
+      const employees = (cfg.employees ?? []).filter((e: any) => e.active).map((candidate: any) => {
+        const attendance = (daily ?? []).filter((row: any) => row.emp_id === candidate.id), workItems: any[] = [];
+        for (const shift of shifts) {
+          if (String(shift.date ?? "").slice(0, 7) !== month || String(shift.status ?? "").startsWith("cancelled")) continue;
+          for (const assignment of shift.assignments ?? []) if (assignment.empId === candidate.id) workItems.push({ id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind, themeId: shift.themeId ?? null, role: assignment.role, linked: false });
+          for (const link of shift.linkedThemeAssignments ?? []) if (link.empId === candidate.id) {
+            const target = shifts.find((row: any) => String(row.id) === String(link.shiftId));
+            if (target && !String(target.status ?? "").startsWith("cancelled")) workItems.push({ id: target.id, date: target.date, start: target.start, end: target.end, storeId: target.storeId, kind: target.kind, themeId: target.themeId ?? null, role: "場控", linked: true });
+          }
+        }
+        const unique: any[] = [...new Map(workItems.map(item => [`${item.id}|${item.role}`, item])).values()];
+        const dates = new Set<string>([...attendance.map((row: any) => String(row.work_date)), ...unique.map(item => item.date)]);
+        return { id: candidate.id, name: candidate.name, type: candidate.type,
+          approvedMinutes: attendance.filter((row: any) => row.status === "approved").reduce((sum: number, row: any) => sum + Math.max(0, Number(row.payable_minutes) || 0), 0),
+          pendingMinutes: attendance.filter((row: any) => ["pending", "anomaly"].includes(row.status)).reduce((sum: number, row: any) => sum + Math.max(0, Number(row.actual_minutes) || 0), 0),
+          pendingDays: attendance.filter((row: any) => ["pending", "anomaly"].includes(row.status)).length,
+          days: [...dates].sort().map(date => ({ date, attendance: attendance.find((row: any) => String(row.work_date) === date) ?? null, workItems: unique.filter(item => item.date === date).sort((a, b) => String(a.start).localeCompare(String(b.start))) })),
+        };
+      });
+      const changes = (shiftRequests ?? []).map((request: any) => {
+        const shift = shifts.find((row: any) => String(row.id) === String(request.shift_id));
+        const replacedEmpId = String(request.details?.replacedEmpId ?? request.requester_emp_id ?? "");
+        const role = String(request.details?.replacedRole ?? (shift?.assignments ?? []).find((a: any) => a.empId === replacedEmpId)?.role ?? "");
+        const candidates = shift ? (cfg.employees ?? []).filter((person: any) => person.active && person.id !== replacedEmpId && !(shift.assignments ?? []).some((a: any) => a.empId === person.id) && eligibilityErrors(person, shift, role, shifts, cfg, [shift.id]).length === 0).map((person: any) => ({ id: person.id, name: person.name })) : [];
+        return { ...request, shift: shift ? { id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind, themeId: shift.themeId } : null, candidates };
+      });
+      return json({ month, employees, attendanceRequests: attendanceRequests ?? [], shiftRequests: changes });
+    }
+
+    if (action === "manager-review-day") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以審核工時" }, 403);
+      const empId = String(input.empId ?? ""), workDate = String(input.workDate ?? ""), status = String(input.status ?? "");
+      const payable = Math.max(0, Math.min(1440, Number(input.payableMinutes) || 0));
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(workDate) || !["approved", "rejected", "pending"].includes(status)) return json({ error: "審核資料格式錯誤" }, 400);
+      const { data, error } = await sb.rpc("review_attendance_day", { p_emp: empId, p_date: workDate, p_status: status, p_payable: payable, p_note: String(input.note ?? "LINE 管理員審核") });
+      if (error) throw error;
+      if (!data?.ok) return json({ error: data?.msg ?? "審核失敗" }, 409);
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "review_attendance_day", target_type: "attendance_daily", target_id: `${empId}:${workDate}`, details: { status, payableMinutes: payable } });
+      return json({ ok: true });
+    }
+
+    if (action === "manager-approve-month") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以審核工時" }, 403);
+      const empId = String(input.empId ?? ""), month = String(input.month ?? "");
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: "月份格式錯誤" }, 400);
+      const [year, monthNo] = month.split("-").map(Number), nextMonth = dateText(new Date(Date.UTC(year, monthNo, 1))).slice(0, 7);
+      const { data: rows, error: rowsError } = await sb.from("attendance_daily").select("work_date,actual_minutes,status").eq("emp_id", empId).gte("work_date", `${month}-01`).lt("work_date", `${nextMonth}-01`).in("status", ["pending", "anomaly"]);
+      if (rowsError) throw rowsError;
+      for (const row of rows ?? []) {
+        const { data, error } = await sb.rpc("review_attendance_day", { p_emp: empId, p_date: row.work_date, p_status: "approved", p_payable: Math.max(0, Number(row.actual_minutes) || 0), p_note: "LINE 管理員本月全部核准" });
+        if (error) throw error;
+        if (!data?.ok) return json({ error: `${row.work_date}：${data?.msg ?? "審核失敗"}` }, 409);
+      }
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "approve_employee_month", target_type: "attendance_daily", target_id: `${empId}:${month}`, details: { count: (rows ?? []).length } });
+      return json({ ok: true, count: (rows ?? []).length });
+    }
+
+    if (action === "manager-review-attendance-request") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以審核補卡" }, 403);
+      const requestId = String(input.requestId ?? ""), status = String(input.status ?? "");
+      if (!["approved", "rejected"].includes(status)) return json({ error: "審核狀態錯誤" }, 400);
+      const { data, error } = await sb.rpc("review_attendance_request", { p_request: requestId, p_status: status });
+      if (error) throw error;
+      if (!data?.ok) return json({ error: data?.msg ?? "審核失敗" }, 409);
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "review_attendance_request", target_type: "attendance_request", target_id: requestId, details: { status } });
+      return json({ ok: true });
+    }
+
+    if (action === "manager-review-shift-request") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以審核換班" }, 403);
+      const requestId = String(input.requestId ?? ""), decision = String(input.decision ?? ""), replacementEmpId = String(input.replacementEmpId ?? "");
+      if (!["approved", "rejected"].includes(decision)) return json({ error: "審核狀態錯誤" }, 400);
+      const { data: request, error: requestError } = await sb.from("shift_requests").select("*").eq("id", requestId).eq("status", "pending_manager").maybeSingle();
+      if (requestError) throw requestError;
+      if (!request) return json({ error: "申請不存在或已處理" }, 409);
+      const shift = shifts.find((row: any) => String(row.id) === String(request.shift_id));
+      if (!shift) return json({ error: "找不到原班次" }, 404);
+      const now = new Date().toISOString(), originalEmpId = String(request.details?.replacedEmpId ?? request.requester_emp_id ?? "");
+      if (decision === "rejected") {
+        const reason = String(input.note ?? "管理員未核准").trim() || "管理員未核准";
+        const { error } = await sb.from("shift_requests").update({ status: "cancelled", details: { ...(request.details ?? {}), managerReply: reason }, updated_at: now }).eq("id", requestId);
+        if (error) throw error;
+        if (request.requester_emp_id) await queueNotification(sb, request.requester_emp_id, "shift_change_result", { title: "換班申請未核准", text: `${shift.date} ${shift.start}–${shift.end}：${reason}` }, true, `shift-change-rejected:${requestId}`);
+      } else {
+        const replacement = (cfg.employees ?? []).find((row: any) => row.id === replacementEmpId && row.active);
+        const slot = (shift.assignments ?? []).find((row: any) => row.empId === originalEmpId), role = String(request.details?.replacedRole ?? slot?.role ?? "");
+        if (!replacement || !slot) return json({ error: "找不到原排班或替補人員" }, 409);
+        const errors = eligibilityErrors(replacement, shift, role, shifts, cfg, [shift.id]);
+        if (errors.length) return json({ error: errors.join("、") }, 409);
+        slot.empId = replacement.id; shift.manualEdit = true;
+        const source = String(shift.id).startsWith("sb_") ? "simplybook" : "manual";
+        const [{ error: shiftError }, { error: updateError }] = await Promise.all([sb.from("shifts").upsert({ id: shift.id, date: shift.date, source, data: shift }), sb.from("shift_requests").update({ status: "completed", selected_emp_id: replacement.id, completed_at: now, updated_at: now }).eq("id", requestId)]);
+        if (shiftError) throw shiftError;
+        if (updateError) throw updateError;
+        const label = `${shift.date} ${shift.start}–${shift.end}`;
+        if (request.requester_emp_id) await queueNotification(sb, request.requester_emp_id, "shift_change_result", { title: "換班已核准", text: `${label} 已由 ${replacement.name} 接替。` }, true, `shift-change-approved:${requestId}:requester`);
+        await queueNotification(sb, replacement.id, "shift_assigned", { title: "管理員指派新班次", text: `你已接替 ${label}，請至 LINE 班表確認。` }, true, `shift-change-approved:${requestId}:replacement`);
+      }
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "review_shift_request", target_type: "shift_request", target_id: requestId, details: { decision, replacementEmpId: replacementEmpId || null } });
+      return json({ ok: true });
+    }
+
+    if (action === "manager-assign-writeback") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以回填 SimplyBook" }, 403);
+      const shiftId = String(input.shiftId ?? ""), empId = String(input.empId ?? "");
+      if (!shiftId.startsWith("sb_")) return json({ error: "只有已存在的 SimplyBook 預約可以回填人員" }, 400);
+      const shift = shifts.find((row: any) => String(row.id) === shiftId && !String(row.status ?? "").startsWith("cancelled"));
+      const selectedEmployee = (cfg.employees ?? []).find((row: any) => row.id === empId && row.active);
+      const theme = (cfg.themes ?? []).find((row: any) => row.id === shift?.themeId);
+      const role = theme && (Number(theme.payNPC) || 0) > 0 ? "NPC" : "場控";
+      const slot = (shift?.assignments ?? []).find((row: any) => !row.empId && row.role === role);
+      if (!shift || !selectedEmployee || !slot) return json({ error: `場次不存在、已排人，或缺少可回填的${role}欄位` }, 409);
+      const errors = eligibilityErrors(selectedEmployee, shift, role, shifts, cfg, [shift.id]);
+      if (errors.length) return json({ error: errors.join("、") }, 409);
+      const company = Deno.env.get("SB_COMPANY"), userLogin = Deno.env.get("SB_USER_LOGIN"), userKey = Deno.env.get("SB_USER_PASSWORD");
+      if (!company || !userLogin || !userKey) return json({ error: "SimplyBook Secrets 尚未設定完整" }, 500);
+      const token = await simplyBookRpc(SB_LOGIN_URL, {}, "getUserToken", [company, userLogin, userKey]);
+      const headers = { "X-Company-Login": company, "X-User-Token": String(token) };
+      const unitsRaw = await simplyBookRpc(SB_ADMIN_URL, headers, "getUnitList", []);
+      const units: any[] = Array.isArray(unitsRaw) ? unitsRaw : Object.values(unitsRaw ?? {});
+      const employeeNames = [selectedEmployee.name, ...(selectedEmployee.aliases ?? [])];
+      const unit = units.find((row: any) => employeeNames.includes(String(row.name ?? "").trim()));
+      if (!unit) return json({ error: `SimplyBook 找不到服務供應者「${selectedEmployee.name}」` }, 409);
+      const bookingCode = shiftId.slice(3);
+      const bookingsRaw = await simplyBookRpc(SB_ADMIN_URL, headers, "getBookings", [{ date_from: shift.date, date_to: shift.date, booking_type: "non_cancelled" }]);
+      const bookings: any[] = Array.isArray(bookingsRaw) ? bookingsRaw : Object.values(bookingsRaw ?? {});
+      const booking = bookings.find((row: any) => String(row.code ?? "") === bookingCode || String(row.id ?? "") === bookingCode);
+      if (!booking) return json({ error: `SimplyBook 查無預約 ${bookingCode}` }, 404);
+      await simplyBookRpc(SB_ADMIN_URL, headers, "editBook", [Number(booking.id), { unit_id: Number(unit.id) }]);
+      slot.empId = selectedEmployee.id; shift.manualEdit = true; shift.simplybookWritebackAt = new Date().toISOString();
+      const { error: saveError } = await sb.from("shifts").upsert({ id: shift.id, date: shift.date, source: "simplybook", data: shift });
+      if (saveError) throw saveError;
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "simplybook_assign_writeback", target_type: "shift", target_id: shift.id, details: { empId: selectedEmployee.id, role, bookingId: booking.id, unitId: unit.id } });
+      return json({ ok: true, message: `${selectedEmployee.name} 已排入${role}，並回填 SimplyBook` });
     }
 
     if (action === "confirm-shift") {
@@ -252,7 +483,22 @@ Deno.serve(async (req) => {
         p_lat: lat, p_lng: lng, p_accuracy: accuracy, p_verification: verification, p_shift_ids: selectedShifts.map((s: any) => s.id),
         p_raw: { distance_m: Math.round(site.distance), line_user_id: profile.userId, user_agent: req.headers.get("user-agent") ?? "", work_item: workItem, verification } });
       if (error) return json({ error: error.message }, error.message.includes("目前已") ? 409 : 500);
+      let overtime: any = null;
+      if (type === "out") {
+        const { data: attendance } = await sb.from("attendance_daily").select("scheduled_minutes,actual_minutes,anomalies").eq("emp_id", employee.id).eq("work_date", today).maybeSingle();
+        const actualMinutes = Math.max(0, Number(attendance?.actual_minutes) || 0), candidateMinutes = Math.max(0, actualMinutes - 540);
+        if (candidateMinutes > 0) {
+          const { data: existing } = await sb.from("overtime_reviews").select("actual_minutes,status,approved_minutes").eq("emp_id", employee.id).eq("work_date", today).maybeSingle();
+          if (!existing || existing.status !== "approved" || Number(existing.actual_minutes) !== actualMinutes) {
+            const status = Array.isArray(attendance?.anomalies) && attendance.anomalies.length ? "anomaly" : "pending";
+            const { error: overtimeError } = await sb.from("overtime_reviews").upsert({ emp_id: employee.id, work_date: today, scheduled_minutes: Math.max(0, Number(attendance?.scheduled_minutes) || 0), actual_minutes: actualMinutes, candidate_minutes: candidateMinutes, approved_minutes: null, status, note: "LINE 下班打卡自動產生" }, { onConflict: "emp_id,work_date" });
+            if (overtimeError) throw overtimeError;
+            overtime = { candidateMinutes, status };
+          } else overtime = { candidateMinutes, status: existing.status, approvedMinutes: existing.approved_minutes };
+        }
+      }
       return json({ ...data, site: site.name, distance: Math.round(site.distance), workItem,
+        overtime,
         warning: verification === "line_location" ? null : "本次打卡屬於臨時支援或跨店下班，已記錄並交由管理員確認。" });
     }
 
