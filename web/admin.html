@@ -1231,6 +1231,17 @@ function openShift(id,presetDate,preset){
     document.getElementById('sfStart').value=sh.start;
     document.getElementById('sfEnd').value=sh.end;
     dlgSlotsArr=sh.assignments.map(a=>({role:a.role,empId:a.empId,start:a.start||'',end:a.end||''}));
+    // 主題班次:把「可排但缺欄位」的角色補出來(詭獄同步只帶 NPC,編輯時也顯示場控格)
+    if(sh.kind==='theme'){
+      const t=theme(sh.themeId);
+      for(const role of allowedThemeRoles(t)){
+        if(!dlgSlotsArr.some(s=>s.role===role)){
+          // 若櫃台已連結此場的場控,直接帶入該人;否則留空
+          const linked=role==='場控'?S.shifts.flatMap(src=>(src.linkedThemeAssignments||[]).filter(x=>x.shiftId===sh.id&&x.empId)).map(x=>x.empId)[0]:'';
+          dlgSlotsArr.push({role,empId:linked||''});
+        }
+      }
+    }
   }else if(preset){
     document.getElementById('sfStart').value=preset.start||'';
     document.getElementById('sfEnd').value=preset.end||'';
