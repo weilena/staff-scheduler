@@ -268,6 +268,7 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
       <div class="field grow"><label>個人時薪(元・優先)</label><input type="number" id="efRate" min="0" placeholder="有填就優先於訓練場／場控預設時薪"></div>
       <div class="field grow"><label>月薪(元)</label><input type="number" id="efSalary" min="0" placeholder="正職用"></div>
     </div>
+    <div class="field"><label>Email(寄薪資單用;留空=只在 LINE 通知)</label><input id="efEmail" type="email" placeholder="name@example.com" autocomplete="off"></div>
     <div class="field"><label>打卡 PIN(4–6 位數字;店員手機 QR 打卡用,留空=不開放)</label><input id="efPin" maxlength="6" inputmode="numeric" placeholder="例:1234"></div>
     <div class="row">
       <div class="field"><label>SimplyBook 員工顏色</label><input type="color" id="efColorPicker" value="#64748b" oninput="document.getElementById('efColor').value=this.value"></div>
@@ -713,7 +714,8 @@ function render(){
 }
 
 /* ============ 排班表(月/日/週三種檢視) ============ */
-let viewMode='month';
+let viewMode=(()=>{try{const v=localStorage.getItem('schedViewMode');return ['month','day','week'].includes(v)?v:'month'}catch(e){return 'month'}})();
+function setViewMode(v){viewMode=v;try{localStorage.setItem('schedViewMode',v)}catch(e){}render()}
 let monthAnchor=monthStr();
 let dayAnchor=todayStr();
 let weekAnchor=todayStr();
@@ -996,9 +998,9 @@ function vSched(){
   const empOpts='<option value="">全部人員</option>'+S.employees.filter(e=>e.active).map(e=>`<option value="${e.id}" ${filterEmp===e.id?'selected':''}>${esc(e.name)}</option>`).join('');
   const segBar=`<div class="row" style="margin-bottom:10px">
     <div class="seg">
-      <button class="${viewMode==='month'?'on':''}" onclick="viewMode='month';render()">月曆</button>
-      <button class="${viewMode==='day'?'on':''}" onclick="viewMode='day';render()">日場次</button>
-      <button class="${viewMode==='week'?'on':''}" onclick="viewMode='week';render()">週表</button>
+      <button class="${viewMode==='month'?'on':''}" onclick="setViewMode('month')">月曆</button>
+      <button class="${viewMode==='day'?'on':''}" onclick="setViewMode('day')">日場次</button>
+      <button class="${viewMode==='week'?'on':''}" onclick="setViewMode('week')">週表</button>
     </div>
     <span class="grow"></span>
     <button class="btn gray sm" id="syncNowBtn" onclick="syncSimplyBookNow()">↻ 立即同步</button>
@@ -1060,7 +1062,7 @@ function vMonth(){
     let av='';
     if(filterEmp){const e=emp(filterEmp);const a=e&&effectiveAvail(e,ds);av=a&&a.on?'avon':'avoff';}
     const cls=`mday ${inMonth?'':'dim'} ${ds===td?'today':''} ${hasUnstaffed&&!filterEmp?'hasunstaffed':''} ${av}`;
-    return `<div class="${cls}" onclick="dayAnchor='${ds}';viewMode='day';render()">
+    return `<div class="${cls}" onclick="dayAnchor='${ds}';setViewMode('day')">
       <div class="mnum">${Number(ds.slice(8))}${filterEmp&&av==='avon'?' <span style="color:#059669;font-size:11px">可</span>':filterEmp&&av==='avoff'?' <span style="color:#94a3b8;font-size:11px">休</span>':''}</div>
       ${S.closedDates.includes(ds)?'<div class="chip" style="background:#dc2626;color:#fff">店休</div>':''}
       ${counterCoverageChip(ds,'dz')}
@@ -2283,6 +2285,7 @@ function openEmp(id){
   document.getElementById('efType').value=e?e.type:'part';
   document.getElementById('efRate').value=e?(e.hourlyRate||''):'';
   document.getElementById('efSalary').value=e?(e.monthlySalary||''):'';
+  document.getElementById('efEmail').value=e?(e.email||''):'';
   document.getElementById('efPin').value=e?(e.pin||''):'';
   const color=employeeColor(e)||'#64748b';
   document.getElementById('efColor').value=color;
@@ -2308,6 +2311,7 @@ function saveEmp(){
     name,type:document.getElementById('efType').value,
     hourlyRate:Number(document.getElementById('efRate').value)||0,
     monthlySalary:Number(document.getElementById('efSalary').value)||0,
+    email:document.getElementById('efEmail').value.trim(),
     pin:document.getElementById('efPin').value.trim(),
     startDate:document.getElementById('efStartDate').value,
     endDate:document.getElementById('efEndDate').value,
@@ -2341,6 +2345,18 @@ function addClosed(){
   if(!S.closedDates.includes(d)){S.closedDates.push(d);S.closedDates.sort();save();render()}
 }
 function delClosed(d){S.closedDates=S.closedDates.filter(x=>x!==d);save();render()}
+/* 颱風假等自訂假日:當天改用假日費率(薪資/月表會標紅) */
+function addHoliday(){
+  const d=document.getElementById('hdDate').value,n=document.getElementById('hdName').value.trim()||'颱風假';
+  if(!d)return alert('請選日期');
+  S.settings.holidays=S.settings.holidays||{};
+  S.settings.holidays[d]=n;save();render();
+  alert(`已設定 ${d} 為「${n}」,當天場次改用假日費率。`);
+}
+function delHoliday(d){
+  if(!confirm('取消這天的假日費率?當天薪資會改回一般日計算。'))return;
+  S.settings.holidays=S.settings.holidays||{};delete S.settings.holidays[d];save();render();
+}
 function vThemes(){
   return `<div class="card">
     <div class="row"><h2 class="grow" style="margin:0">排班規則設定</h2></div>
@@ -2361,6 +2377,19 @@ function vThemes(){
       ${S.closedDates.map(d=>`<span class="tag" style="background:#fee2e2;color:#b91c1c">${d} <a href="#" onclick="delClosed('${d}');return false" style="color:#b91c1c;text-decoration:none">✕</a></span>`).join('')}
       <input type="date" id="cdDate" style="margin-left:6px">
       <button class="btn gray sm" onclick="addClosed()">＋ 加店休日</button>
+    </div>
+    <p class="muted" style="margin-top:4px">店休日=當天不排班、不營業(薪資不計);颱風假等「有上班要算假日費率」的日子請用下面設定。</p>
+    <div class="row" style="margin-top:12px;align-items:flex-start">
+      <span>假日費率日<br><span class="muted" style="font-size:11px">(颱風假/國定假日)</span></span>
+      <div class="grow">
+        ${Object.entries(S.settings.holidays||{}).sort().map(([d,n])=>`<span class="tag" style="background:#fee2e2;color:#b91c1c">${d} ${esc(n)} <a href="#" onclick="delHoliday('${d}');return false" style="color:#b91c1c;text-decoration:none">✕</a></span>`).join('')||'<span class="muted">尚未自訂(系統已內建 2026 國定假日)</span>'}
+        <div class="row" style="margin-top:6px">
+          <input type="date" id="hdDate">
+          <input id="hdName" placeholder="名稱,例:颱風假" style="width:auto;flex:1 1 140px">
+          <button class="btn gray sm" onclick="addHoliday()">＋ 加假日費率日</button>
+        </div>
+        <p class="muted" style="margin-top:4px">加入後,當天所有場次改用「假日費率」(主題可分別設定平日/假日場次費),個人月表與薪資表會標紅「國定」。若颱風天不營業,請改加在上面的店休日。</p>
+      </div>
     </div>
   </div>
   <div class="card">
