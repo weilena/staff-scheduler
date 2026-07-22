@@ -49,6 +49,14 @@ th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 .muted{color:var(--muted);font-size:13px}
 .badge{display:inline-block;padding:1px 8px;border-radius:20px;font-size:12px;color:#fff}
 .tag{display:inline-block;padding:1px 7px;border-radius:6px;font-size:12px;background:#eef2ff;color:#3730a3;margin:1px}
+.fdrop{position:relative;display:inline-block}
+.fdrop>summary{list-style:none;cursor:pointer;border:1px solid var(--line);border-radius:8px;padding:7px 12px;font-size:14px;background:#fff;white-space:nowrap;user-select:none}
+.fdrop>summary::-webkit-details-marker{display:none}
+.fdrop[open]>summary{border-color:var(--accent);color:var(--accent)}
+.fmenu{position:absolute;z-index:60;top:calc(100% + 4px);left:0;min-width:200px;max-height:280px;overflow-y:auto;background:#fff;border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 30px rgba(15,23,42,.18);padding:6px}
+.fchk{display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:7px;font-size:14px;cursor:pointer;white-space:nowrap}
+.fchk:hover{background:#f1f5f9}
+.fchk input{width:16px;flex:0 0 auto}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
 .seg button{background:#fff;border:none;padding:7px 14px;cursor:pointer;font-size:14px;border-right:1px solid var(--line)}
 .seg button:last-child{border-right:none}
@@ -719,17 +727,27 @@ function setViewMode(v){viewMode=v;try{localStorage.setItem('schedViewMode',v)}c
 let monthAnchor=monthStr();
 let dayAnchor=todayStr();
 let weekAnchor=todayStr();
-let filterTheme='';               // 主題篩選
-let filterEmp='';                 // 人員篩選
+let filterThemes=[];              // 主題複選(空=全部)
+let filterEmps=[];                // 人員複選(空=全部);特殊值 '__deposit__'=已收訂金未排班
 let bulkMode=false;
 let bulkSelected=new Set();
 let bulkEmp='';
 let bulkRole='場控';
-function setFilterTheme(v){filterTheme=v;render()}
-function setFilterEmp(v){filterEmp=v;render()}
+// 相容舊寫法:單一 filterEmp 供面板/月曆的「只看此人」快捷用
+Object.defineProperty(window,'filterEmp',{get:()=>filterEmps.length===1?filterEmps[0]:'',set:v=>{filterEmps=v?[v]:[];},configurable:true});
+Object.defineProperty(window,'filterTheme',{get:()=>filterThemes.length===1?filterThemes[0]:'',set:v=>{filterThemes=v?[v]:[];},configurable:true});
+let openFilterMenu='';
+function toggleFilterMulti(arr,v){const which=arr===filterThemes?'theme':'emp';const i=arr.indexOf(v);if(i>=0)arr.splice(i,1);else arr.push(v);openFilterMenu=which;render();openFilterMenu='';}
+function shiftDepositUnstaffed(sh){return sh.kind==='theme'&&(sh.payment&&sh.payment.depositAmount>0||sh.depositPaid)&&isShiftUnstaffed(sh)&&!isCx(sh)}
 function shiftMatch(sh){
-  if(filterTheme&&sh.themeId!==filterTheme)return false;
-  if(filterEmp&&!sh.assignments.some(a=>a.empId===filterEmp))return false;
+  if(filterThemes.length&&!filterThemes.includes(sh.themeId))return false;
+  if(filterEmps.length){
+    const depOnly=filterEmps.includes('__deposit__');
+    const ids=filterEmps.filter(x=>x!=='__deposit__');
+    const byPerson=ids.length&&sh.assignments.some(a=>ids.includes(a.empId));
+    const byDeposit=depOnly&&shiftDepositUnstaffed(sh);
+    if(!byPerson&&!byDeposit)return false;
+  }
   return true;
 }
 /* 顏色亮度 → 決定文字黑/白,做大忠(深)/謎先生(淺)黑白對比 */
@@ -993,9 +1011,14 @@ async function applyBulkEmployee(){
   save();bulkSelected.clear();render();
   alert(`批次安排完成：新增 ${added} 筆。${skipped.length?`\n略過 ${skipped.length} 筆：\n`+skipped.slice(0,8).join('\n'):''}`);
 }
+function filterChip(arrName,val,label){const arr=arrName==='filterThemes'?filterThemes:filterEmps;return `<label class="fchk"><input type="checkbox" ${arr.includes(val)?'checked':''} onchange="toggleFilterMulti(${arrName},'${val}')">${label}</label>`}
 function vSched(){
-  const themeOpts='<option value="">全部主題</option>'+S.themes.map(t=>`<option value="${t.id}" ${filterTheme===t.id?'selected':''}>${esc(store(t.storeId)?.name||'')}·${esc(t.name)}</option>`).join('');
-  const empOpts='<option value="">全部人員</option>'+S.employees.filter(e=>e.active).map(e=>`<option value="${e.id}" ${filterEmp===e.id?'selected':''}>${esc(e.name)}</option>`).join('');
+  const themeMenu=S.themes.map(t=>filterChip('filterThemes',t.id,`${esc(store(t.storeId)?.name||'')}·${esc(t.name)}`)).join('');
+  const empMenu=filterChip('filterEmps','__deposit__','💰 已收訂金未排班')
+    +'<hr style="margin:5px 0;border:0;border-top:1px solid var(--line)">'
+    +S.employees.filter(e=>e.active).map(e=>filterChip('filterEmps',e.id,esc(e.name))).join('');
+  const themeLabel=filterThemes.length?`主題 (${filterThemes.length})`:'全部主題';
+  const empLabel=filterEmps.length?`人員/訂金 (${filterEmps.length})`:'全部人員';
   const segBar=`<div class="row" style="margin-bottom:10px">
     <div class="seg">
       <button class="${viewMode==='month'?'on':''}" onclick="setViewMode('month')">月曆</button>
@@ -1010,9 +1033,9 @@ function vSched(){
   </div>
   <div class="row" style="margin-bottom:12px;gap:8px">
     <span class="muted">篩選</span>
-    <select onchange="setFilterTheme(this.value)">${themeOpts}</select>
-    <select onchange="setFilterEmp(this.value)">${empOpts}</select>
-    ${(filterTheme||filterEmp)?`<button class="btn gray sm" onclick="filterTheme='';filterEmp='';render()">清除篩選</button>`:''}
+    <details class="fdrop" ${openFilterMenu==='theme'?'open':''}><summary>${themeLabel} ▾</summary><div class="fmenu">${themeMenu}</div></details>
+    <details class="fdrop" ${openFilterMenu==='emp'?'open':''}><summary>${empLabel} ▾</summary><div class="fmenu">${empMenu}</div></details>
+    ${(filterThemes.length||filterEmps.length)?`<button class="btn gray sm" onclick="filterThemes=[];filterEmps=[];render()">清除篩選</button>`:''}
     <span class="grow"></span>
     ${S.stores.map(s=>`<span class="badge" style="background:${s.color};color:${textOn(s.color)};border:1px solid ${lum(s.color)>0.82?'#cbd5e1':'transparent'}">${esc(s.name)}</span>`).join(' ')}
   </div>`;
