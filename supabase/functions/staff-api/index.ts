@@ -156,6 +156,32 @@ Deno.serve(async (req) => {
       return json({ month, scheduled, done, approvedMinutes, pendingMinutes, actualMinutes, days });
     }
 
+    if (action === "empty-slots") {
+      const date = String(input.date ?? "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json({ error: "日期格式錯誤" }, 400);
+      const actual = shifts.filter((shift: any) => shift.date === date && shift.kind === "theme" && !String(shift.status ?? "").startsWith("cancelled"));
+      const slots: any[] = [];
+      for (const theme of (cfg.themes ?? []).filter((row: any) => row.active !== false && Array.isArray(row.slots))) {
+        for (const start of theme.slots ?? []) {
+          if (actual.some((shift: any) => shift.themeId === theme.id && shift.start === start)) continue;
+          const startMinutes = toMinutes(String(start)), endMinutes = startMinutes + Math.max(0, Number(theme.dur) || 0);
+          const end = `${String(Math.floor(endMinutes / 60) % 24).padStart(2, "0")}:${String(endMinutes % 60).padStart(2, "0")}`;
+          const assignments: any[] = [];
+          for (let i = 0; i < Number(theme.needGM || 0); i++) assignments.push({ role: "場控", empId: "" });
+          for (let i = 0; i < Number(theme.needNPC || 0); i++) assignments.push({ role: "NPC", empId: "" });
+          if (!assignments.length) assignments.push({ role: "工作人員", empId: "" });
+          const target = { id: `virtual_slot_${date}_${theme.id}_${String(start).replace(":", "")}`, date, storeId: theme.storeId, kind: "theme", themeId: theme.id, start, end, status: "active", assignments, depositPaid: false, virtualEmpty: true };
+          const roles = [...new Set(assignments.map(row => String(row.role)))];
+          const eligible = (cfg.employees ?? []).filter((candidate: any) => candidate.active && roles.some(role => eligibilityErrors(candidate, target, role, shifts, cfg).length === 0));
+          const ranked = rankCandidatesByWorkload(eligible, shifts, date, 99);
+          const onSite = ranked.filter((candidate: any) => shifts.some((other: any) => other.date === date && other.storeId === theme.storeId && !String(other.status ?? "").startsWith("cancelled") && (other.assignments ?? []).some((assignment: any) => assignment.empId === candidate.id)));
+          const onSiteIds = new Set(onSite.map((candidate: any) => candidate.id));
+          slots.push({ ...target, candidateGroups: { onSite: onSite.map((candidate: any) => candidate.name), available: ranked.filter((candidate: any) => !onSiteIds.has(candidate.id)).map((candidate: any) => candidate.name) } });
+        }
+      }
+      return json({ date, slots });
+    }
+
     if (action === "manager-dashboard") {
       if (account.role !== "manager") return json({ error: "只有管理員可以查看全體員工資料" }, 403);
       const month = String(input.month ?? "");
