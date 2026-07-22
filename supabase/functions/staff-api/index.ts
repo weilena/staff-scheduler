@@ -2,6 +2,14 @@ import { cors, distanceMeters, eligibilityErrors, employedOn, getContext, json, 
 
 const DAY = 86_400_000;
 const dateText = (d: Date) => d.toISOString().slice(0, 10);
+const SB_LOGIN_URL = "https://user-api.simplybook.asia/login";
+const SB_ADMIN_URL = "https://user-api.simplybook.asia/admin/";
+async function simplyBookRpc(url: string, headers: Record<string, string>, method: string, params: unknown[]) {
+  const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ jsonrpc: "2.0", method, params, id: crypto.randomUUID() }) });
+  const payload = await response.json();
+  if (!response.ok || payload.error) throw new Error(`${method}: ${JSON.stringify(payload.error ?? payload)}`);
+  return payload.result;
+}
 const MANUAL_WORK_ITEMS: Record<string, string> = {
   grandma: "外婆", haunted_shop: "詭店", haunted_prison: "詭獄", shit_power: "屎力全開",
   haunted_toilet: "詭廁", escapee: "越獄者", orphan: "孤兒怨", mr_mystery_counter: "謎先生櫃台",
@@ -39,13 +47,14 @@ Deno.serve(async (req) => {
 
     if (action === "bootstrap") {
       const now = new Date(), from = dateText(new Date(now.getTime() - 60 * DAY)), to = dateText(new Date(now.getTime() + 60 * DAY));
-      const [{ data: worksites }, { data: punches }, { data: sessionCheckins }, { data: shiftConfirmations }, { data: attendanceDays }, { data: attendanceRequests }] = await Promise.all([
+      const [{ data: worksites }, { data: punches }, { data: sessionCheckins }, { data: shiftConfirmations }, { data: attendanceDays }, { data: attendanceRequests }, { data: overtimeReviews }] = await Promise.all([
         sb.from("worksites").select("id,name,radius_m,enabled").eq("enabled", true),
         sb.from("punches").select("id,ts,type,worksite_id,verification,review_state,voided_at,void_reason,shift_ids,raw").eq("emp_id", employee.id).gte("ts", from).order("ts", { ascending: false }).limit(60),
         sb.from("session_checkins").select("id,shift_id,checked_in_at,worksite_id,verification,source,note").eq("emp_id", employee.id).gte("checked_in_at", from).order("checked_in_at", { ascending: false }).limit(100),
         sb.from("shift_confirmations").select("shift_id,status,confirmed_at").eq("emp_id", employee.id),
         sb.from("attendance_daily").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: false }).limit(70),
         sb.from("attendance_requests").select("*").eq("emp_id", employee.id).order("created_at", { ascending: false }).limit(30),
+        sb.from("overtime_reviews").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: false }).limit(70),
       ]);
       const publicEmployees = (cfg.employees ?? []).filter((e: any) => e.active).map((e: any) => ({ id: e.id, name: e.name }));
       const publicShifts = shifts.filter((s: any) => s.date >= from && s.date <= to).map((s: any) => {
@@ -72,6 +81,10 @@ Deno.serve(async (req) => {
             ).map((candidate: any) => ({ id: candidate.id, name: candidate.name }));
           }
         }
+        const writebackTheme = (cfg.themes ?? []).find((theme: any) => theme.id === s.themeId);
+        const writebackRole = writebackTheme && (Number(writebackTheme.payNPC) || 0) > 0 ? "NPC" : "場控";
+        const writebackCandidates = account.role === "manager" && String(s.id).startsWith("sb_") && (s.assignments ?? []).some((a: any) => !a.empId && a.role === writebackRole)
+          ? (cfg.employees ?? []).filter((candidate: any) => candidate.active && eligibilityErrors(candidate, s, writebackRole, shifts, cfg, [s.id]).length === 0).map((candidate: any) => ({ id: candidate.id, name: candidate.name })) : [];
         return {
           id: s.id, date: s.date, storeId: s.storeId, kind: s.kind, themeId: s.themeId, start: s.start, end: s.end,
           status: s.status ?? "active", assignments: s.assignments ?? [],
@@ -80,6 +93,8 @@ Deno.serve(async (req) => {
           customer: canSeeCustomer && s.customer ? { name: s.customer.name ?? "", phone: s.customer.phone ?? "", email: s.customer.email ?? "", comment: s.customer.comment ?? "" } : null,
           payment: canSeeCustomer && s.payment ? { depositAmount: s.payment.depositAmount ?? null, depositStatus: s.payment.depositStatus ?? "", system: s.payment.system ?? "", currency: s.payment.depositCurrency ?? s.payment.currency ?? "" } : null,
           replacementCandidates,
+          writebackRole: writebackCandidates.length ? writebackRole : null,
+          writebackCandidates,
           candidateGroups: emptyRoles.length ? {
             onSite: onSite.map((candidate: any) => candidate.name),
             available: ranked.filter((candidate: any) => !onSiteIds.has(candidate.id)).map((candidate: any) => candidate.name),
@@ -94,7 +109,7 @@ Deno.serve(async (req) => {
       return json({ me: { id: employee.id, name: employee.name, role: account.role, type: employee.type,
           canSchedulePractice: account.role === "manager" || (employee.type === "full" && !!employee.canSchedulePractice) }, stores: cfg.stores, themes: cfg.themes,
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches,
-        attendanceDays, attendanceRequests, sessionCheckins, shiftConfirmations, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
+        attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
 
     if (action === "monthly-summary") {
@@ -102,17 +117,20 @@ Deno.serve(async (req) => {
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: "月份格式錯誤" }, 400);
       const [year, monthNo] = month.split("-").map(Number);
       const nextMonth = dateText(new Date(Date.UTC(year, monthNo, 1))).slice(0, 7);
-      const [{ data: checkins, error: checkinError }, { data: attendance, error: attendanceError }, { data: punches, error: punchError }] = await Promise.all([
+      const [{ data: checkins, error: checkinError }, { data: attendance, error: attendanceError }, { data: punches, error: punchError }, { data: overtime, error: overtimeError }] = await Promise.all([
         sb.from("session_checkins").select("shift_id,checked_in_at").eq("emp_id", employee.id)
           .gte("checked_in_at", `${month}-01T00:00:00`).lt("checked_in_at", `${nextMonth}-01T00:00:00`),
         sb.from("attendance_daily").select("work_date,actual_minutes,payable_minutes,status").eq("emp_id", employee.id)
           .gte("work_date", `${month}-01`).lt("work_date", `${nextMonth}-01`),
         sb.from("punches").select("ts,type,worksite_id").eq("emp_id", employee.id).is("voided_at", null)
           .gte("ts", `${month}-01T00:00:00`).lt("ts", `${nextMonth}-01T00:00:00`).order("ts", { ascending: true }),
+        sb.from("overtime_reviews").select("work_date,actual_minutes,candidate_minutes,approved_minutes,status,note").eq("emp_id", employee.id)
+          .gte("work_date", `${month}-01`).lt("work_date", `${nextMonth}-01`).order("work_date", { ascending: true }),
       ]);
       if (checkinError) throw checkinError;
       if (attendanceError) throw attendanceError;
       if (punchError) throw punchError;
+      if (overtimeError) throw overtimeError;
       const completed = new Set((checkins ?? []).map((row: any) => String(row.shift_id)));
       const seen = new Set<string>(), detailSeen = new Set<string>(), scheduled = { gm: 0, npc: 0 }, done = { gm: 0, npc: 0 }, workItems: any[] = [];
       const add = (shift: any, role: string) => {
@@ -150,10 +168,24 @@ Deno.serve(async (req) => {
       }
       const attendanceByDate = new Map(rows.map((row: any) => [String(row.work_date), row]));
       const dates = new Set<string>([...workItems.map(item => item.date), ...segments.keys(), ...attendanceByDate.keys()]);
-      const days = [...dates].sort().map(date => { const attendanceRow: any = attendanceByDate.get(date); return { date, segments: segments.get(date) ?? [],
-        attendance: attendanceRow ? { actualMinutes: attendanceRow.actual_minutes, payableMinutes: attendanceRow.payable_minutes, status: attendanceRow.status } : null,
-        workItems: workItems.filter(item => item.date === date).sort((a, b) => String(a.start).localeCompare(String(b.start))) }; });
-      return json({ month, scheduled, done, approvedMinutes, pendingMinutes, actualMinutes, days });
+      const days = [...dates].sort().map(date => {
+        const attendanceRow: any = attendanceByDate.get(date), daySegments = segments.get(date) ?? [];
+        let remaining = 540, overtimeThreshold: number | null = null;
+        for (const segment of daySegments) {
+          if (!segment.in || !segment.out) continue;
+          const duration = Math.max(0, toMinutes(segment.out) - toMinutes(segment.in));
+          if (duration > remaining) { overtimeThreshold = toMinutes(segment.in) + remaining; break; }
+          remaining -= duration;
+        }
+        return { date, segments: daySegments,
+          attendance: attendanceRow ? { actualMinutes: attendanceRow.actual_minutes, payableMinutes: attendanceRow.payable_minutes, status: attendanceRow.status } : null,
+          workItems: workItems.filter(item => item.date === date).sort((a, b) => String(a.start).localeCompare(String(b.start))).map(item => ({ ...item,
+            overtime: overtimeThreshold !== null && (String(item.role).toUpperCase() === "NPC" || item.role === "場控") && toMinutes(String(item.end)) > overtimeThreshold })) };
+      });
+      const overtimeRows = overtime ?? [];
+      return json({ month, scheduled, done, approvedMinutes, pendingMinutes, actualMinutes, days,
+        overtime: { approvedMinutes: overtimeRows.filter((row: any) => row.status === "approved").reduce((sum: number, row: any) => sum + Math.max(0, Number(row.approved_minutes) || 0), 0),
+          pendingMinutes: overtimeRows.filter((row: any) => ["pending", "anomaly"].includes(row.status)).reduce((sum: number, row: any) => sum + Math.max(0, Number(row.candidate_minutes) || 0), 0), rows: overtimeRows } });
     }
 
     if (action === "empty-slots") {
@@ -298,6 +330,40 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
+    if (action === "manager-assign-writeback") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以回填 SimplyBook" }, 403);
+      const shiftId = String(input.shiftId ?? ""), empId = String(input.empId ?? "");
+      if (!shiftId.startsWith("sb_")) return json({ error: "只有已存在的 SimplyBook 預約可以回填人員" }, 400);
+      const shift = shifts.find((row: any) => String(row.id) === shiftId && !String(row.status ?? "").startsWith("cancelled"));
+      const selectedEmployee = (cfg.employees ?? []).find((row: any) => row.id === empId && row.active);
+      const theme = (cfg.themes ?? []).find((row: any) => row.id === shift?.themeId);
+      const role = theme && (Number(theme.payNPC) || 0) > 0 ? "NPC" : "場控";
+      const slot = (shift?.assignments ?? []).find((row: any) => !row.empId && row.role === role);
+      if (!shift || !selectedEmployee || !slot) return json({ error: `場次不存在、已排人，或缺少可回填的${role}欄位` }, 409);
+      const errors = eligibilityErrors(selectedEmployee, shift, role, shifts, cfg, [shift.id]);
+      if (errors.length) return json({ error: errors.join("、") }, 409);
+      const company = Deno.env.get("SB_COMPANY"), userLogin = Deno.env.get("SB_USER_LOGIN"), userKey = Deno.env.get("SB_USER_PASSWORD");
+      if (!company || !userLogin || !userKey) return json({ error: "SimplyBook Secrets 尚未設定完整" }, 500);
+      const token = await simplyBookRpc(SB_LOGIN_URL, {}, "getUserToken", [company, userLogin, userKey]);
+      const headers = { "X-Company-Login": company, "X-User-Token": String(token) };
+      const unitsRaw = await simplyBookRpc(SB_ADMIN_URL, headers, "getUnitList", []);
+      const units: any[] = Array.isArray(unitsRaw) ? unitsRaw : Object.values(unitsRaw ?? {});
+      const employeeNames = [selectedEmployee.name, ...(selectedEmployee.aliases ?? [])];
+      const unit = units.find((row: any) => employeeNames.includes(String(row.name ?? "").trim()));
+      if (!unit) return json({ error: `SimplyBook 找不到服務供應者「${selectedEmployee.name}」` }, 409);
+      const bookingCode = shiftId.slice(3);
+      const bookingsRaw = await simplyBookRpc(SB_ADMIN_URL, headers, "getBookings", [{ date_from: shift.date, date_to: shift.date, booking_type: "non_cancelled" }]);
+      const bookings: any[] = Array.isArray(bookingsRaw) ? bookingsRaw : Object.values(bookingsRaw ?? {});
+      const booking = bookings.find((row: any) => String(row.code ?? "") === bookingCode || String(row.id ?? "") === bookingCode);
+      if (!booking) return json({ error: `SimplyBook 查無預約 ${bookingCode}` }, 404);
+      await simplyBookRpc(SB_ADMIN_URL, headers, "editBook", [Number(booking.id), { unit_id: Number(unit.id) }]);
+      slot.empId = selectedEmployee.id; shift.manualEdit = true; shift.simplybookWritebackAt = new Date().toISOString();
+      const { error: saveError } = await sb.from("shifts").upsert({ id: shift.id, date: shift.date, source: "simplybook", data: shift });
+      if (saveError) throw saveError;
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "simplybook_assign_writeback", target_type: "shift", target_id: shift.id, details: { empId: selectedEmployee.id, role, bookingId: booking.id, unitId: unit.id } });
+      return json({ ok: true, message: `${selectedEmployee.name} 已排入${role}，並回填 SimplyBook` });
+    }
+
     if (action === "confirm-shift") {
       const shiftId = String(input.shiftId ?? "");
       const shift = shifts.find((s: any) => String(s.id) === shiftId && !String(s.status ?? "").startsWith("cancelled"));
@@ -417,7 +483,22 @@ Deno.serve(async (req) => {
         p_lat: lat, p_lng: lng, p_accuracy: accuracy, p_verification: verification, p_shift_ids: selectedShifts.map((s: any) => s.id),
         p_raw: { distance_m: Math.round(site.distance), line_user_id: profile.userId, user_agent: req.headers.get("user-agent") ?? "", work_item: workItem, verification } });
       if (error) return json({ error: error.message }, error.message.includes("目前已") ? 409 : 500);
+      let overtime: any = null;
+      if (type === "out") {
+        const { data: attendance } = await sb.from("attendance_daily").select("scheduled_minutes,actual_minutes,anomalies").eq("emp_id", employee.id).eq("work_date", today).maybeSingle();
+        const actualMinutes = Math.max(0, Number(attendance?.actual_minutes) || 0), candidateMinutes = Math.max(0, actualMinutes - 540);
+        if (candidateMinutes > 0) {
+          const { data: existing } = await sb.from("overtime_reviews").select("actual_minutes,status,approved_minutes").eq("emp_id", employee.id).eq("work_date", today).maybeSingle();
+          if (!existing || existing.status !== "approved" || Number(existing.actual_minutes) !== actualMinutes) {
+            const status = Array.isArray(attendance?.anomalies) && attendance.anomalies.length ? "anomaly" : "pending";
+            const { error: overtimeError } = await sb.from("overtime_reviews").upsert({ emp_id: employee.id, work_date: today, scheduled_minutes: Math.max(0, Number(attendance?.scheduled_minutes) || 0), actual_minutes: actualMinutes, candidate_minutes: candidateMinutes, approved_minutes: null, status, note: "LINE 下班打卡自動產生" }, { onConflict: "emp_id,work_date" });
+            if (overtimeError) throw overtimeError;
+            overtime = { candidateMinutes, status };
+          } else overtime = { candidateMinutes, status: existing.status, approvedMinutes: existing.approved_minutes };
+        }
+      }
       return json({ ...data, site: site.name, distance: Math.round(site.distance), workItem,
+        overtime,
         warning: verification === "line_location" ? null : "本次打卡屬於臨時支援或跨店下班，已記錄並交由管理員確認。" });
     }
 
