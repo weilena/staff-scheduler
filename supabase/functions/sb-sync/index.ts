@@ -193,6 +193,12 @@ const handler = async (req: Request) => {
         ignored.push({ bookingId: code || "unknown", reason: !selectedTheme ? `找不到主題對應:${serviceName}` : "缺少日期或 ID" });
         continue;
       }
+      // 防呆:non_cancelled 分類偶爾會夾帶未確認/作廢單(is_confirm="0"),不當有效班次。
+      const confirmFlag = String(pick(booking, ["is_confirm"]));
+      if (confirmFlag === "0") {
+        ignored.push({ bookingId: code, reason: "未確認或作廢(is_confirm=0)" });
+        continue;
+      }
       const employee = matchedEmployee(cfg.employees ?? [], providerName);
       const role = (selectedTheme.payNPC ?? 0) > 0 ? "NPC" : "場控";
       // 客人與付款資訊僅存私人雲端；員工 API 只提供給該場人員、同店值班櫃台與管理員。
@@ -209,6 +215,8 @@ const handler = async (req: Request) => {
         system: String(pick(booking, ["deposit_payment_system", "payment_system"])),
         currency: String(pick(booking, ["deposit_invoice_currency"])),
         invoiceNo: String(pick(booking, ["deposit_invoice_number"])),
+        // 錢實際入帳時間,供日後營收報表使用
+        paidAt: String(pick(booking, ["deposit_invoice_datetime"])),
       };
       const shift = {
         id,
