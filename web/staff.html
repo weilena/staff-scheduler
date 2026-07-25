@@ -174,7 +174,7 @@ async function changeSummaryMonth(month){if(!month)return;summaryMonth=month;mon
 function home(){
   const info=todayPunchInfo(),tasks=todayWorkItems(),day=(D.attendanceDays||[]).find(x=>x.work_date===info.today),completed=tasks.filter(completedTask).length,pending=tasks.filter(t=>confirmableTask(t)&&!completedTask(t)).length;
   const worked=day?`${Math.floor(day.actual_minutes/60)}小時${day.actual_minutes%60}分`:'0小時0分',hasTodayPunch=info.punches.length>0;
-  app.innerHTML=`<div class="card punch-panel"><h2>今日班表與定位打卡</h2><div id="homeDateTime" class="date-time">${esc(taipeiDateTimeText())}</div>${isThursday(info.today)?'<span class="closed-day">週四公休</span>':''}<div class="big ${info.on?'ok':''}">${info.on?'目前狀態：上班中':hasTodayPunch?'今日已下班':'尚未上班'}</div><p class="muted">${info.on?`${info.last.ts.slice(11,16)} 上班・${esc(D.worksites.find(w=>w.id===info.last.worksite_id)?.name||'店內')}`:`今日累積工時：${worked}`}<br>所有打卡均重新驗證 LINE 本人身分與手機店內定位。</p>${todaySegmentsHtml()}<button class="punch-main ${info.on?'out':''}" ${punchBusy?'disabled':''} onclick="doPunch('${info.on?'out':'in'}')">${info.on?'下班定位打卡':hasTodayPunch?'再次上班定位打卡':'上班定位打卡'}</button><button class="secondary" style="width:100%;margin-top:9px" onclick="toggleHomeCorrection()">申請補卡／更正</button></div>
+  app.innerHTML=`<div class="card punch-panel"><h2>今日班表與定位打卡</h2><div id="homeDateTime" class="date-time">${esc(taipeiDateTimeText())}</div>${isThursday(info.today)?'<span class="closed-day">週四公休</span>':''}<div class="big ${info.on?'ok':''}">${info.on?'目前狀態：上班中':hasTodayPunch?'今日已下班':'尚未上班'}</div><p class="muted">${info.on?`${info.last.ts.slice(11,16)} 上班・${esc(D.worksites.find(w=>w.id===info.last.worksite_id)?.name||'店內')}`:`今日累積工時：${worked}`}<br>所有打卡均重新驗證 LINE 本人身分與手機店內定位。</p>${todaySegmentsHtml()}<button class="punch-main ${info.on?'out':''}" ${punchBusy?'disabled':''} onclick="doPunch('${info.on?'out':'in'}')">${info.on?'下班定位打卡':hasTodayPunch?'再次上班定位打卡':'上班定位打卡'}</button>${!info.on&&tasks.length?`<button class="secondary" style="width:100%;margin-top:9px" ${punchBusy?'disabled':''} onclick="doMissedOut()">忘記上班打卡？補打下班定位卡</button>`:''}<button class="secondary" style="width:100%;margin-top:9px" onclick="toggleHomeCorrection()">申請補卡／更正</button></div>
   <div class="card"><div class="row"><h2 style="margin:0">今日工作</h2><span class="grow"></span><span class="tag">共 ${tasks.length} 筆</span><span class="tag">已確認 ${completed}</span>${pending?`<span class="tag">待確認 ${pending}</span>`:''}</div><div class="reminder" style="margin-top:12px">先完成上班定位打卡，再確認自己實際執行的 NPC、場控或訓練場。離店前務必按下班；同一天中途離開再回來，可再次上班形成多段打卡。</div>${tasks.map(t=>todayTaskCard(t,info.on)).join('')||'<p class="muted">今天沒有指派給你的工作；若為臨時支援，仍可定位打卡並交由管理員核對。</p>'}</div>
   <div id="homeCorrection" class="hidden">${correctionCardHtml(info.today)}</div><button class="secondary" style="width:100%" onclick="show('schedule')">查看完整班表與空場</button>`
   if(D.me.canSchedulePractice)app.insertAdjacentHTML('beforeend',`<div class="card"><h2>新人訓練場安排</h2><p class="muted">你有安排新人訓練場的權限；安排結果會同步到班表、出勤與薪資紀錄。</p><button style="width:100%" onclick="show('practice')">安排新人訓練場</button></div>`);
@@ -212,9 +212,14 @@ function recentSessionsHtml(){
 function punchView(){
   home();
 }
-function doPunch(type){
+function doMissedOut(){
   if(punchBusy)return;
-  if(type==='out'){
+  if(!confirm('你今天沒有上班卡。\n\n這會把「現在」記為下班時間並標記為異常，另外請再送「上班補卡」補上上班時間。上班補卡與這筆下班互不影響，也不必等審核。\n\n要繼續嗎？'))return;
+  doPunch('out',{skipPendingConfirm:true});
+}
+function doPunch(type,opts){
+  if(punchBusy)return;
+  if(type==='out'&&!(opts&&opts.skipPendingConfirm)){
     const pending=todayWorkItems().filter(t=>confirmableTask(t)&&!completedTask(t));
     if(pending.length&&!confirm(`尚有 ${pending.length} 筆今日工作未確認：\n\n${pending.map(t=>`${t.shift.start} ${shiftName(t.shift)}（${t.role}）`).join('\n')}\n\n仍要先下班嗎？未確認項目會留給管理員核對。`))return;
   }

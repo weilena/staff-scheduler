@@ -471,13 +471,18 @@ Deno.serve(async (req) => {
       } else {
         const { data: latest } = await sb.from("punches").select("type,ts,worksite_id,shift_ids,raw").eq("emp_id", employee.id)
           .is("voided_at", null).order("ts", { ascending: false }).limit(1).maybeSingle();
-        if (!latest || latest.type !== "in" || String(latest.ts ?? "").slice(0, 10) !== today) {
-          return json({ error: "今天沒有尚未下班的上班卡；過去缺卡請使用補卡申請。" }, 409);
+        const hasOpenIn = latest && latest.type === "in" && String(latest.ts ?? "").slice(0, 10) === today;
+        if (hasOpenIn) {
+          selectedShifts = shifts.filter((s: any) => (latest.shift_ids ?? []).includes(s.id));
+          workItem = latest.raw?.work_item ?? null;
+          if (latest.raw?.verification === "line_location_unassigned") verification = "line_location_unassigned";
+          else if (latest.worksite_id !== site.id) verification = "line_location_cross_site";
+        } else {
+          // 今天沒有尚未下班的上班卡(忘記上班打卡):仍即時記錄真正的下班時間並標記異常,
+          // 員工另外提出「上班補卡」由管理員補上,兩者互不影響、不必等審核才能打卡。
+          verification = "line_location_missing_in";
+          workItem = { source: "missing_in_clock", attendance_mode: "clock_range", labels: ["缺上班卡（請補上班補卡）"] };
         }
-        selectedShifts = shifts.filter((s: any) => (latest.shift_ids ?? []).includes(s.id));
-        workItem = latest.raw?.work_item ?? null;
-        if (latest.raw?.verification === "line_location_unassigned") verification = "line_location_unassigned";
-        else if (latest.worksite_id !== site.id) verification = "line_location_cross_site";
       }
       const { data, error } = await sb.rpc("record_line_punch", { p_emp: employee.id, p_type: type, p_worksite: site.id,
         p_lat: lat, p_lng: lng, p_accuracy: accuracy, p_verification: verification, p_shift_ids: selectedShifts.map((s: any) => s.id),
@@ -499,7 +504,9 @@ Deno.serve(async (req) => {
       }
       return json({ ...data, site: site.name, distance: Math.round(site.distance), workItem,
         overtime,
-        warning: verification === "line_location" ? null : "本次打卡屬於臨時支援或跨店下班，已記錄並交由管理員確認。" });
+        warning: verification === "line_location" ? null
+          : verification === "line_location_missing_in" ? "已記錄下班時間。今天沒有上班卡，請補送「上班補卡」，管理員補上工時即完成；此下班時間不受補卡審核影響。"
+          : "本次打卡屬於臨時支援或跨店下班，已記錄並交由管理員確認。" });
     }
 
     if (action === "create-request") {
