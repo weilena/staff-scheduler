@@ -1096,36 +1096,40 @@ function vThemeStats(){
       <button class="btn gray sm" onclick="themeStatsAnchor=monthStr();render()">回本月</button>
       <span class="grow"></span>
       <span class="muted">全店合計 <b style="font-size:18px">${grand}</b> 場</span></div>`;
+  // 全主題統一配色(圓餅圖與占比條共用),占比一律以「占全部場次」為準
+  const PIE_COLORS=['#2563eb','#e11d48','#16a34a','#d97706','#7c3aed','#0891b2','#db2777','#059669','#ea580c','#4338ca','#ca8a04','#0284c7'];
+  const allGroups=[];
+  for(const b of Object.values(stores))for(const g of Object.values(b.groups))allGroups.push({storeId:b.store.id,storeName:b.store.name,base:g.base,total:g.total});
+  allGroups.sort((a,c)=>c.total-a.total);
+  const colorOf={};allGroups.forEach((g,i)=>colorOf[g.storeId+'|'+g.base]=PIE_COLORS[i%PIE_COLORS.length]);
   const cards=Object.values(stores).filter(b=>Object.keys(b.groups).length).map(b=>{
     const rows=Object.values(b.groups).sort((a,c)=>c.total-a.total);
-    const color=b.store.color||'#2563eb';
     return `<div class="card">
-      <div class="row" style="align-items:baseline;margin-bottom:12px"><h2 style="margin:0">${esc(b.store.name)}</h2><span class="grow"></span><span class="muted">本月合計 <b style="font-size:22px;color:${color}">${b.total}</b> 場</span></div>
+      <div class="row" style="align-items:baseline;margin-bottom:12px"><h2 style="margin:0">${esc(b.store.name)}</h2><span class="grow"></span><span class="muted">本月合計 <b style="font-size:22px;color:${b.store.color||'#2563eb'}">${b.total}</b> 場</span></div>
       <table style="table-layout:fixed;width:100%"><colgroup><col style="width:26%"><col style="width:13%"><col style="width:13%"><col style="width:13%"><col style="width:35%"></colgroup>
       <tr><th>主題</th><th class="num">一般場</th><th class="num">加場</th><th class="num">合計</th><th>占比</th></tr>
-      ${rows.map(r=>{const share=b.total?Math.round(r.total/b.total*100):0;return `<tr style="cursor:pointer" onclick="openThemeSessions('${b.store.id}','${esc(r.base)}')" title="點擊看每場時段明細">
-        <td><b>${esc(r.base)}</b></td>
+      ${rows.map(r=>{const col=colorOf[b.store.id+'|'+r.base]||'#64748b',share=grand?Math.round(r.total/grand*100):0;return `<tr style="cursor:pointer" onclick="openThemeSessions('${b.store.id}','${esc(r.base)}')" title="點擊看每場時段明細">
+        <td><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${col};margin-right:6px"></span><b>${esc(r.base)}</b></td>
         <td class="num">${r.normal}</td>
         <td class="num">${r.surge?`<span style="color:#a21caf;font-weight:600">${r.surge}</span>`:'<span class="muted">—</span>'}</td>
         <td class="num"><b style="font-size:15px">${r.total}</b></td>
-        <td><div class="row" style="gap:6px;align-items:center;flex-wrap:nowrap"><div class="loadbar" style="flex:1"><div style="width:${share}%;background:${color}"></div></div><span style="font-size:12px;min-width:36px;text-align:right">${share}%</span></div></td></tr>`;}).join('')}
+        <td><div class="row" style="gap:6px;align-items:center;flex-wrap:nowrap"><div class="loadbar" style="flex:1"><div style="width:${share}%;background:${col}"></div></div><span style="font-size:12px;min-width:36px;text-align:right">${share}%</span></div></td></tr>`;}).join('')}
       </table></div>`;
   }).join('');
-  const storesArr=Object.values(stores).filter(b=>b.total>0);
   let acc=0;
-  const stops=storesArr.map(b=>{const p=grand?b.total/grand*100:0;const seg=`${b.store.color||'#64748b'} ${acc.toFixed(2)}% ${(acc+p).toFixed(2)}%`;acc+=p;return seg;}).join(', ');
-  const pie=grand?`<div class="card"><h2 style="margin:0 0 14px">兩店場次總占比</h2>
+  const stops=allGroups.map(g=>{const p=grand?g.total/grand*100:0;const seg=`${colorOf[g.storeId+'|'+g.base]} ${acc.toFixed(2)}% ${(acc+p).toFixed(2)}%`;acc+=p;return seg;}).join(', ');
+  const pie=grand?`<div class="card"><h2 style="margin:0 0 14px">各主題場次占比(全部 ${grand} 場)</h2>
     <div class="row" style="gap:28px;align-items:center;flex-wrap:wrap">
-      <div style="position:relative;width:150px;height:150px;flex:0 0 auto">
+      <div style="position:relative;width:170px;height:170px;flex:0 0 auto">
         <div style="width:100%;height:100%;border-radius:50%;background:conic-gradient(${stops})"></div>
-        <div style="position:absolute;inset:30%;background:#fff;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 0 0 1px #e2e8f0"><b style="font-size:20px">${grand}</b><span class="muted" style="font-size:11px">總場次</span></div>
+        <div style="position:absolute;inset:32%;background:#fff;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 0 0 1px #e2e8f0"><b style="font-size:20px">${grand}</b><span class="muted" style="font-size:11px">總場次</span></div>
       </div>
-      <div style="flex:1;min-width:200px">
-        ${storesArr.map(b=>{const p=grand?Math.round(b.total/grand*100):0;return `<div class="row" style="gap:8px;align-items:center;margin-bottom:10px"><span style="width:14px;height:14px;border-radius:4px;background:${b.store.color||'#64748b'};flex:0 0 auto"></span><span style="flex:1">${esc(b.store.name)}</span><b>${b.total}</b> 場<span class="muted" style="min-width:46px;text-align:right;font-size:15px">${p}%</span></div>`;}).join('')}
+      <div style="flex:1;min-width:240px;display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px 18px">
+        ${allGroups.map(g=>{const p=grand?Math.round(g.total/grand*100):0;return `<div class="row" style="gap:8px;align-items:center"><span style="width:13px;height:13px;border-radius:3px;background:${colorOf[g.storeId+'|'+g.base]};flex:0 0 auto"></span><span style="flex:1">${esc(g.base)} <span class="muted" style="font-size:11px">${esc(g.storeName)}</span></span><b>${g.total}</b><span class="muted" style="min-width:40px;text-align:right">${p}%</span></div>`;}).join('')}
       </div>
     </div></div>`:'';
   return `${nav}
-    <p class="muted" style="margin:0 4px 12px">各主題本月排班場次(不含已取消);詭獄加場與詭獄同列、分開計並加總。占比為該主題占該店的比例。<b>點任一主題</b>可看當月每一場的日期與時段明細。</p>
+    <p class="muted" style="margin:0 4px 12px">各主題本月排班場次(不含已取消);詭獄加場與詭獄同列、分開計並加總。占比為該主題占<b>全部場次</b>的比例,顏色與下方圓餅圖一致。<b>點任一主題</b>可看當月每一場的日期與時段明細。</p>
     ${cards||'<div class="card"><p class="muted">本月尚無主題場次。</p></div>'}${pie}`;
 }
 /* 主題「時段明細」彈窗:列出當月每一場的日期與時段(像場次明細) */
