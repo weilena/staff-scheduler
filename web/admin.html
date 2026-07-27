@@ -1151,20 +1151,21 @@ function openThemeSessions(storeId,base){
 function renderThemeSessions(){
   const list=themeSessionsList(),{storeId,base}=themeSessionsCtx,WDn=['日','一','二','三','四','五','六'];
   const surge=list.filter(sh=>isSurge(theme(sh.themeId)||{name:''})).length,normal=list.length-surge;
-  const rows=list.map(sh=>{const sg=isSurge(theme(sh.themeId)||{name:''});return `<tr>
+  const rows=list.map((sh,i)=>{const sg=isSurge(theme(sh.themeId)||{name:''});return `<tr>
+    <td class="num muted">${i+1}</td>
     <td style="white-space:nowrap">${sh.date} <span class="muted">(${WDn[dateWD(sh.date)]})</span></td>
     <td style="white-space:nowrap">${sh.start||''}${sh.end?'–'+sh.end:''}</td>
     <td>${sg?'<span style="color:#a21caf;font-weight:600">加場</span>':'一般場'}</td></tr>`;}).join('');
   document.getElementById('dlgThemeSessionsTitle').textContent=`${store(storeId)?.name||''}・${base}・${themeStatsAnchor}`;
   document.getElementById('dlgThemeSessionsBody').innerHTML=`
     <p style="margin-bottom:10px">合計 <b style="font-size:18px">${list.length}</b> 場・一般 ${normal}・<span style="color:#a21caf">加場 ${surge}</span></p>
-    <table><tr><th>日期</th><th>時段</th><th>類型</th></tr>${rows||'<tr><td colspan="3" class="muted">本月無此主題場次</td></tr>'}</table>`;
+    <table><tr><th style="width:44px">#</th><th>日期</th><th>時段</th><th>類型</th></tr>${rows||'<tr><td colspan="4" class="muted">本月無此主題場次</td></tr>'}</table>`;
 }
 function exportThemeSessionsCSV(){
   const list=themeSessionsList();if(!list.length||!themeSessionsCtx)return;
   const WDn=['日','一','二','三','四','五','六'];
-  let csv='﻿日期,星期,開始,結束,主題,類型\n';
-  for(const sh of list){const sg=isSurge(theme(sh.themeId)||{name:''});csv+=`${sh.date},${WDn[dateWD(sh.date)]},${sh.start||''},${sh.end||''},${themeSessionsCtx.base},${sg?'加場':'一般場'}\n`;}
+  let csv='﻿編號,日期,星期,開始,結束,主題,類型\n';
+  list.forEach((sh,i)=>{const sg=isSurge(theme(sh.themeId)||{name:''});csv+=`${i+1},${sh.date},${WDn[dateWD(sh.date)]},${sh.start||''},${sh.end||''},${themeSessionsCtx.base},${sg?'加場':'一般場'}\n`;});
   dl(csv,`${store(themeSessionsCtx.storeId)?.name||''}_${themeSessionsCtx.base}_${themeStatsAnchor}_時段明細.csv`,'text/csv');
 }
 function vMonth(){
