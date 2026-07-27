@@ -291,7 +291,9 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
       <div class="field grow"><label>到職日</label><input type="date" id="efStartDate"></div>
       <div class="field grow"><label>離職日(最後工作日)</label><input type="date" id="efEndDate"></div>
     </div>
-    <label class="cklab" style="margin:0"><input type="checkbox" id="efActive" checked> 在職中(停用後不出現在排班與打卡)</label>
+    <div class="field"><label>休假／出勤備註(例外說明,例:美術,休假逐日看 Google 日曆)</label><input id="efRestNote" placeholder="選填,會顯示在個人月打卡的休假統計"></div>
+    <label class="cklab" style="margin:0"><input type="checkbox" id="efWeeklyOffExempt"> 週四公休不自動計入此人休假(不固定、逐日填,例如美術)</label>
+    <label class="cklab" style="margin-top:10px"><input type="checkbox" id="efActive" checked> 在職中(停用後不出現在排班與打卡)</label>
     <label class="cklab" style="margin-top:10px"><input type="checkbox" id="efPracticeScheduler"> 授權安排新人訓練場（限需要負責人資安排的正職）</label>
   </div>
   <div class="dlg-f">
@@ -650,6 +652,8 @@ function effectiveAvail(e,ds){
 function employedOn(e,ds){
   return !!e.active&&(!e.startDate||ds>=e.startDate)&&(!e.endDate||ds<=e.endDate);
 }
+/* 店休息日:每週四公休 或 手動加入的店休/颱風不營業日 */
+function isStoreClosedDay(ds){return dateWD(ds)===4||S.closedDates.includes(ds)}
 function employedInMonth(e,month){
   const start=month+'-01';
   const end=fmtDate(new Date(Number(month.slice(0,4)),Number(month.slice(5,7)),0));
@@ -1946,13 +1950,44 @@ function attendanceMonthCellData(empId,date){
   const anomaly=[...(daily?.anomalies||[])];
   return {assignments,segments,daily,correction,manager,training,sb,roles,checkins,source,anomaly};
 }
+/* 正職當月休假統計:實際休假(週四公休＋店休/颱風＋個人請假)＋行事曆應休對照＋國定假日清單 */
+function fullLeaveSummary(e,month){
+  const[y,m]=month.split('-').map(Number),days=new Date(y,m,0).getDate();
+  const exempt=!!e.weeklyOffExempt;
+  let thu=0,closed=0,weekendDays=0,holidayOnly=0;const personal=[],holidays=[];
+  for(let i=1;i<=days;i++){
+    const d=`${month}-${String(i).padStart(2,'0')}`,wd=dateWD(d),hol=holidayName(d);
+    if(hol)holidays.push({d,name:hol});
+    if(wd===0||wd===6)weekendDays++;else if(hol)holidayOnly++;
+    if(S.closedDates.includes(d)){closed++;continue;}       // 店休/颱風不營業(全店)
+    if(wd===4&&!exempt){thu++;continue;}                    // 週四公休(例外者不自動計)
+    const a=effectiveAvail(e,d);if(a&&a.on===false)personal.push(d);  // 個人請假(Google 日曆帶入)
+  }
+  return {actual:thu+closed+personal.length,thu,closed,personal,holidays,exempt,
+    nominal:weekendDays+holidayOnly,weekendDays,holidayOnly};
+}
+function fullLeaveSummaryHtml(e,month){
+  if(e.type!=='full')return '';
+  const s=fullLeaveSummary(e,month),[y,m]=month.split('-').map(Number);
+  const personalList=s.personal.map(d=>`${Number(d.slice(8))}(週${WD[dateWD(d)]})`).join('、')||'無';
+  const holList=s.holidays.map(h=>`${Number(h.d.slice(8))} ${esc(h.name)}`).join('、')||'無';
+  return `<div style="margin-bottom:10px;padding:10px 12px;border:1px solid #fca5a5;border-radius:10px;background:#fff5f5">
+    <div class="row" style="align-items:baseline"><b>🗓 ${y} 年 ${m} 月 正職休假統計</b>
+      ${e.restNote?`<span class="muted" style="margin-left:8px">備註:${esc(e.restNote)}</span>`:''}
+      <span class="grow"></span><span>實際休假 <b style="font-size:18px;color:#b91c1c">${s.actual}</b> 天</span></div>
+    <div class="muted" style="margin-top:6px;font-size:12.5px">
+      ${s.exempt?'不套用週四公休(逐日填)':`週四公休 ${s.thu} 天`}・店休/颱風 ${s.closed} 天・個人請假 ${s.personal.length} 天(${personalList})</div>
+    <div class="muted" style="margin-top:4px;font-size:12.5px">
+      行事曆應休(對照) <b>${s.nominal}</b> 天＝六日 ${s.weekendDays} ＋ 國定 ${s.holidayOnly}・本月國定假日:${holList}</div>
+  </div>`;
+}
 function attendanceMonthGrid(e,month){
   const[y,m]=month.split('-').map(Number),days=new Date(y,m,0).getDate(),dates=Array.from({length:days},(_,i)=>month+'-'+String(i+1).padStart(2,'0'));
   const data=Object.fromEntries(dates.map(d=>[d,attendanceMonthCellData(e.id,d)]));
   const head=dates.map(d=>{const holiday=holidayName(d);return `<th style="${holiday?'background:#b91c1c;color:#fff':'background:#f8fafc'}">${holiday?'國定':'一般日'}<br>${Number(d.slice(8))}<br>週${WD[dateWD(d)]}${holiday?`<br><small>${esc(holiday)}</small>`:''}</th>`}).join('');
   const row=(label,bg,fn)=>`<tr style="background:${bg}"><th class="row-label" style="background:${bg}">${label}</th>${dates.map(d=>`<td>${fn(data[d],d)}</td>`).join('')}</tr>`;
-  return `<div class="attendance-scroll"><table class="attendance-matrix" style="min-width:${Math.max(1200,days*112+145)}px"><thead><tr><th class="row-label" style="background:#fff3cd">項目</th>${head}</tr></thead><tbody>
-    ${row('休假／請假','#fee2e2',(x,d)=>{if(S.closedDates.includes(d))return '<span class="muted">公休</span>';const a=effectiveAvail(e,d);if(a&&a.on===false)return '<span class="att-error">休假</span>';if(a&&a.on&&(a.start!=='09:00'||a.end!=='22:30'))return `<span class="muted">可 ${esc(a.start)}–${esc(a.end)}</span>`;return '—'})}
+  return `${fullLeaveSummaryHtml(e,month)}<div class="attendance-scroll"><table class="attendance-matrix" style="min-width:${Math.max(1200,days*112+145)}px"><thead><tr><th class="row-label" style="background:#fff3cd">項目</th>${head}</tr></thead><tbody>
+    ${row('休假／請假','#fee2e2',(x,d)=>{if(S.closedDates.includes(d))return '<span class="muted">店休/颱風</span>';if(dateWD(d)===4&&!e.weeklyOffExempt)return '<span class="muted">公休</span>';const a=effectiveAvail(e,d);if(a&&a.on===false)return '<span class="att-error">休假</span>';if(a&&a.on&&(a.start!=='09:00'||a.end!=='22:30'))return `<span class="muted">可 ${esc(a.start)}–${esc(a.end)}</span>`;return '—'})}
     ${row('管理員派班','#fff8d8',x=>x.manager)}
     ${row('正職安排訓練','#fef3c7',x=>x.training)}
     ${row('SimplyBook 主題','#fce7f3',x=>x.sb)}
@@ -2379,6 +2414,8 @@ function openEmp(id){
   document.getElementById('efStdHours').value=e?(e.stdHours||''):'';
   document.getElementById('efOtRate').value=e?(e.otRate||''):'';
   document.getElementById('efExtraSessionRate').value=e?(e.extraSessionRate||''):'';
+  document.getElementById('efRestNote').value=e?(e.restNote||''):'';
+  document.getElementById('efWeeklyOffExempt').checked=!!e?.weeklyOffExempt;
   document.getElementById('efActive').checked=e?e.active:true;
   document.getElementById('efPracticeScheduler').checked=!!e?.canSchedulePractice;
   const tsel=document.getElementById('efType');
@@ -2404,6 +2441,8 @@ function saveEmp(){
     extraSessionRate:Number(document.getElementById('efExtraSessionRate').value)||0,
     active:document.getElementById('efActive').checked,
     canSchedulePractice:document.getElementById('efPracticeScheduler').checked,
+    restNote:document.getElementById('efRestNote').value.trim(),
+    weeklyOffExempt:document.getElementById('efWeeklyOffExempt').checked,
     simplybookColor
   };
   if(data.canSchedulePractice&&data.type!=='full')return alert('安排新人訓練場的權限只能授予正職員工');
