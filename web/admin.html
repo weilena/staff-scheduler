@@ -659,7 +659,7 @@ function employedInMonth(e,month){
 /* ============ 導覽 ============ */
 /* 導覽分成五大類,相似功能放一起 */
 const NAV_GROUPS=[
- ['grpSched','📅 排班',[['sched','排班表'],['themes','主題設定']]],
+ ['grpSched','📅 排班',[['sched','排班表'],['themestats','主題場次統計'],['themes','主題設定']]],
  ['grpAtt','🕐 打卡出勤',[['punch','每日打卡總覽'],['attendance','個人月打卡'],['line','LINE員工系統']]],
  ['grpPay','💰 薪資計算',[['pay','薪資計算']]],
  ['grpPpl','👥 人員設定',[['emps','員工'],['skills','技能表'],['avail','可上班時間'],['admins','管理者帳號']]],
@@ -709,6 +709,7 @@ function render(){
   const v=document.getElementById('view');
   const banner=(tab==='sched'||tab==='pay')?renderAlertBanner():'';
   if(tab==='sched')v.innerHTML=banner+vSched();
+  else if(tab==='themestats')v.innerHTML=vThemeStats();
   else if(tab==='punch')v.innerHTML=vPunch();
   else if(tab==='attendance')v.innerHTML=vAttendance();
   else if(tab==='pay')v.innerHTML=banner+vPay();
@@ -1061,6 +1062,55 @@ function moveMonth(n){
   const d=new Date(y,m-1+n,1);
   monthAnchor=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
   render();
+}
+/* ============ 主題場次統計(每月各主題累計排班場次) ============ */
+let themeStatsAnchor=monthStr();
+function moveThemeStatsMonth(n){
+  const[y,m]=themeStatsAnchor.split('-').map(Number);
+  const d=new Date(y,m-1+n,1);
+  themeStatsAnchor=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+  render();
+}
+function vThemeStats(){
+  const[y,m]=themeStatsAnchor.split('-').map(Number);
+  const from=themeStatsAnchor+'-01', to=fmtDate(new Date(y,m,0));
+  // 依店別彙整:各主題在本月的排班場次數(「XX加場」併入「XX」一起計)
+  const stores={};
+  for(const st of S.stores)stores[st.id]={store:st,groups:{},total:0};
+  for(const sh of S.shifts){
+    if(sh.kind!=='theme'||isCx(sh)||sh.date<from||sh.date>to)continue;
+    const t=theme(sh.themeId);if(!t)continue;
+    const bucket=stores[sh.storeId];if(!bucket)continue;
+    const base=baseThemeName(t);
+    const g=bucket.groups[base]||(bucket.groups[base]={base,normal:0,surge:0,total:0});
+    if(isSurge(t))g.surge++;else g.normal++;g.total++;bucket.total++;
+  }
+  const grand=Object.values(stores).reduce((s,b)=>s+b.total,0);
+  const cards=Object.values(stores).filter(b=>Object.keys(b.groups).length).map(b=>{
+    const rows=Object.values(b.groups).sort((a,c)=>c.total-a.total);
+    const max=rows.reduce((mx,r)=>Math.max(mx,r.total),0);
+    return `<div class="card"><div class="row" style="align-items:baseline">
+        <h2 style="margin:0">${esc(b.store.name)}</h2><span class="grow"></span>
+        <span class="muted">本月合計 <b style="font-size:18px">${b.total}</b> 場</span></div>
+      <table style="margin-top:10px"><tr><th>主題</th><th class="num">一般場</th><th class="num">加場</th><th class="num">合計</th><th style="width:36%">占比</th></tr>
+      ${rows.map(r=>{const pct=max?Math.round(r.total/max*100):0;return `<tr>
+        <td>${esc(r.base)}</td>
+        <td class="num">${r.normal}</td>
+        <td class="num">${r.surge?r.surge:'—'}</td>
+        <td class="num"><b>${r.total}</b></td>
+        <td><div class="loadbar"><div style="width:${pct}%"></div></div></td></tr>`;}).join('')}
+      </table></div>`;
+  }).join('');
+  return `<div class="row" style="margin-bottom:10px">
+      <button class="btn gray sm" onclick="moveThemeStatsMonth(-1)">←</button>
+      <b style="font-size:16px">${y} 年 ${m} 月</b>
+      <button class="btn gray sm" onclick="moveThemeStatsMonth(1)">→</button>
+      <button class="btn gray sm" onclick="themeStatsAnchor=monthStr();render()">回本月</button>
+      <span class="grow"></span>
+      <span class="muted">全店合計 <b style="font-size:18px">${grand}</b> 場</span>
+    </div>
+    <p class="muted" style="margin-bottom:12px">統計本月排班中的主題場次(不含已取消);「加場」併入同一主題計算,合計＝一般場＋加場。櫃台班、駐店場控等非主題班次不列入。</p>
+    ${cards||'<div class="card"><p class="muted">本月尚無主題場次。</p></div>'}`;
 }
 function vMonth(){
   const[y,m]=monthAnchor.split('-').map(Number);
@@ -2904,8 +2954,6 @@ function vData(){
     <div class="row">
       <button class="btn" onclick="exportJSON()">⬇ 匯出備份(JSON)</button>
       <label class="btn gray" style="cursor:pointer">⬆ 匯入備份<input type="file" accept=".json" style="display:none" onchange="importJSON(this)"></label>
-      <span class="grow"></span>
-      <button class="btn red" onclick="resetAll()">清除全部資料</button>
     </div>
     <p class="muted" style="margin-top:12px">目前:員工 ${S.employees.length} 人、主題 ${S.themes.length} 個、班次 ${S.shifts.length} 筆、打卡 ${S.punches.length} 筆。<br>
     SimplyBook 預約會在新增／改期／取消時立即同步，並由排程每 1 分鐘校正一次；店員打卡請使用 LINE 員工入口。</p>
