@@ -188,7 +188,10 @@ const handler = async (req: Request) => {
       const serviceName = String(pick(booking, ["event_name", "event", "service_name"]));
       const providerName = String(pick(booking, ["unit_name", "unit", "provider_name"]));
       const previous: any = existingMap.get(id);
-      const selectedTheme = cfg.themes.find((theme: any) => serviceName.startsWith(theme.name));
+      // 取「名稱最長、最精準」的相符主題,避免「詭獄加場」被較短的「詭獄」先撞到而歸錯類。
+      const selectedTheme = cfg.themes
+        .filter((theme: any) => serviceName.startsWith(theme.name))
+        .sort((a: any, b: any) => b.name.length - a.name.length)[0];
       if (!code || !startRaw || !selectedTheme) {
         ignored.push({ bookingId: code || "unknown", reason: !selectedTheme ? `找不到主題對應:${serviceName}` : "缺少日期或 ID" });
         continue;
