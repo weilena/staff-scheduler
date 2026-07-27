@@ -1077,50 +1077,81 @@ function moveThemeStatsMonth(n){
 }
 function vThemeStats(){
   const[y,m]=themeStatsAnchor.split('-').map(Number);
-  const from=themeStatsAnchor+'-01', to=fmtDate(new Date(y,m,0)), days=new Date(y,m,0).getDate();
-  // 欄=各店主題(「XX加場」併入「XX」);列=每一天;格=當天該主題各場次的開始時段
-  const colIndex={}, cell={};let grand=0;
+  const from=themeStatsAnchor+'-01', to=fmtDate(new Date(y,m,0));
+  // 依店別彙整各主題本月場次(詭獄加場與詭獄同一列、分開計並加總)
+  const stores={};
+  for(const st of S.stores)stores[st.id]={store:st,groups:{},total:0};
   for(const sh of S.shifts){
     if(sh.kind!=='theme'||isCx(sh)||sh.date<from||sh.date>to)continue;
-    const t=theme(sh.themeId);if(!t)continue;
-    const base=baseThemeName(t), key=sh.storeId+'|'+base;
-    if(!(key in colIndex))colIndex[key]={storeId:sh.storeId,storeName:store(sh.storeId)?.name||'',base,key,total:0};
-    colIndex[key].total++;grand++;
-    ((cell[sh.date]=cell[sh.date]||{})[key]=cell[sh.date][key]||[]).push(sh.start||'');
+    const t=theme(sh.themeId);if(!t)continue;const b=stores[sh.storeId];if(!b)continue;
+    const base=baseThemeName(t);
+    const g=b.groups[base]||(b.groups[base]={base,normal:0,surge:0,total:0});
+    if(isSurge(t))g.surge++;else g.normal++;g.total++;b.total++;
   }
-  const colList=Object.values(colIndex).sort((a,b)=>{
-    const oa=S.stores.findIndex(s=>s.id===a.storeId),ob=S.stores.findIndex(s=>s.id===b.storeId);
-    return (oa-ob)||(b.total-a.total);
-  });
+  const grand=Object.values(stores).reduce((s,b)=>s+b.total,0);
   const nav=`<div class="row" style="margin-bottom:10px">
       <button class="btn gray sm" onclick="moveThemeStatsMonth(-1)">←</button>
       <b style="font-size:16px">${y} 年 ${m} 月</b>
       <button class="btn gray sm" onclick="moveThemeStatsMonth(1)">→</button>
       <button class="btn gray sm" onclick="themeStatsAnchor=monthStr();render()">回本月</button>
       <span class="grow"></span>
-      <span class="muted">全月合計 <b style="font-size:18px">${grand}</b> 場</span></div>`;
-  if(!colList.length)return `<div class="card">${nav}<p class="muted">本月尚無主題場次。</p></div>`;
-  const storeGroups=[];
-  for(const c of colList){const g=storeGroups[storeGroups.length-1];if(g&&g.storeId===c.storeId)g.count++;else storeGroups.push({storeId:c.storeId,storeName:c.storeName,count:1});}
+      <span class="muted">全店合計 <b style="font-size:18px">${grand}</b> 場</span></div>`;
+  const cards=Object.values(stores).filter(b=>Object.keys(b.groups).length).map(b=>{
+    const rows=Object.values(b.groups).sort((a,c)=>c.total-a.total);
+    const max=rows.reduce((mx,r)=>Math.max(mx,r.total),0);
+    return `<div class="card">
+      <div class="row" style="align-items:baseline;margin-bottom:12px"><h2 style="margin:0">${esc(b.store.name)}</h2><span class="grow"></span><span class="muted">本月合計 <b style="font-size:22px;color:#2563eb">${b.total}</b> 場</span></div>
+      <table><tr><th>主題</th><th class="num">一般場</th><th class="num">加場</th><th class="num">合計</th><th style="width:40%">占比</th></tr>
+      ${rows.map(r=>{const pct=max?Math.round(r.total/max*100):0;return `<tr style="cursor:pointer" onclick="openThemeSessions('${b.store.id}','${esc(r.base)}')" title="點擊看每場時段明細">
+        <td><b>${esc(r.base)}</b> <span class="muted" style="font-size:11px">›明細</span></td>
+        <td class="num">${r.normal}</td>
+        <td class="num">${r.surge?`<span style="color:#a21caf;font-weight:600">${r.surge}</span>`:'<span class="muted">—</span>'}</td>
+        <td class="num"><b style="font-size:15px">${r.total}</b></td>
+        <td><div class="loadbar"><div style="width:${pct}%"></div></div></td></tr>`;}).join('')}
+      </table></div>`;
+  }).join('');
+  return `${nav}
+    <p class="muted" style="margin:0 4px 12px">各主題本月排班場次(不含已取消);詭獄加場與詭獄同列、分開計並加總。<b>點任一主題</b>可看當月每一場的日期與時段明細。</p>
+    ${cards||'<div class="card"><p class="muted">本月尚無主題場次。</p></div>'}`;
+}
+/* 主題「時段明細」彈窗:列出當月每一場的日期與時段(像場次明細) */
+let themeSessionsCtx=null;
+function ensureThemeSessionsDialog(){
+  let dlg=document.getElementById('dlgThemeSessions');
+  if(dlg)return dlg;
+  dlg=document.createElement('dialog');dlg.id='dlgThemeSessions';
+  dlg.innerHTML=`<div class="dlg-h"><span id="dlgThemeSessionsTitle"></span><button onclick="document.getElementById('dlgThemeSessions').close()">✕</button></div><div class="dlg-b" id="dlgThemeSessionsBody"></div><div class="dlg-f"><button class="btn gray" onclick="exportThemeSessionsCSV()">匯出 CSV</button><span class="grow"></span><button class="btn gray" onclick="document.getElementById('dlgThemeSessions').close()">關閉</button></div>`;
+  document.body.appendChild(dlg);return dlg;
+}
+function themeSessionsList(){
+  if(!themeSessionsCtx)return[];
+  const{storeId,base}=themeSessionsCtx,[y,m]=themeStatsAnchor.split('-').map(Number);
+  const from=themeStatsAnchor+'-01',to=fmtDate(new Date(y,m,0));
+  return S.shifts.filter(sh=>sh.kind==='theme'&&!isCx(sh)&&sh.storeId===storeId&&sh.date>=from&&sh.date<=to&&baseThemeName(theme(sh.themeId)||{name:''})===base)
+    .sort((a,b)=>((a.date+a.start)||'').localeCompare((b.date+b.start)||''));
+}
+function openThemeSessions(storeId,base){
+  themeSessionsCtx={storeId,base};ensureThemeSessionsDialog();renderThemeSessions();
+  document.getElementById('dlgThemeSessions').showModal();
+}
+function renderThemeSessions(){
+  const list=themeSessionsList(),{storeId,base}=themeSessionsCtx,WDn=['日','一','二','三','四','五','六'];
+  const surge=list.filter(sh=>isSurge(theme(sh.themeId)||{name:''})).length,normal=list.length-surge;
+  const rows=list.map(sh=>{const sg=isSurge(theme(sh.themeId)||{name:''});return `<tr>
+    <td style="white-space:nowrap">${sh.date} <span class="muted">(${WDn[dateWD(sh.date)]})</span></td>
+    <td style="white-space:nowrap">${sh.start||''}${sh.end?'–'+sh.end:''}</td>
+    <td>${sg?'<span style="color:#a21caf;font-weight:600">加場</span>':'一般場'}</td></tr>`;}).join('');
+  document.getElementById('dlgThemeSessionsTitle').textContent=`${store(storeId)?.name||''}・${base}・${themeStatsAnchor}`;
+  document.getElementById('dlgThemeSessionsBody').innerHTML=`
+    <p style="margin-bottom:10px">合計 <b style="font-size:18px">${list.length}</b> 場・一般 ${normal}・<span style="color:#a21caf">加場 ${surge}</span></p>
+    <table><tr><th>日期</th><th>時段</th><th>類型</th></tr>${rows||'<tr><td colspan="3" class="muted">本月無此主題場次</td></tr>'}</table>`;
+}
+function exportThemeSessionsCSV(){
+  const list=themeSessionsList();if(!list.length||!themeSessionsCtx)return;
   const WDn=['日','一','二','三','四','五','六'];
-  const head1=`<tr><th class="row-label" rowspan="2" style="background:#fff3cd">日期</th><th rowspan="2">星期</th>${storeGroups.map(g=>`<th colspan="${g.count}" style="text-align:center;background:#f1f5f9">${esc(g.storeName)}</th>`).join('')}<th class="num" rowspan="2">當日<br>合計</th></tr>`;
-  const head2=`<tr>${colList.map(c=>`<th style="min-width:86px">${esc(c.base)}</th>`).join('')}</tr>`;
-  let body='';
-  for(let i=1;i<=days;i++){
-    const d=`${themeStatsAnchor}-${String(i).padStart(2,'0')}`,wd=dateWD(d),row=cell[d]||{};
-    const dayTotal=Object.values(row).reduce((s,a)=>s+a.length,0);
-    const label=isTyphoonClosed(d)?'🌀颱風停班':S.closedDates.includes(d)?'店休':wd===4?'公休':'';
-    const hol=holidayName(d),bg=hol?'#fff1f2':(wd===0||wd===6)?'#f8fafc':'';
-    body+=`<tr${bg?` style="background:${bg}"`:''}>
-      <td class="row-label" style="white-space:nowrap;${bg?`background:${bg}`:''}">${i} 日${label?` <span class="muted">${label}</span>`:''}${hol?`<br><span style="color:#b91c1c;font-size:11px">${esc(hol)}</span>`:''}</td>
-      <td style="text-align:center">${WDn[wd]}</td>
-      ${colList.map(c=>{const arr=(row[c.key]||[]).slice().sort();return `<td style="font-size:12px;line-height:1.55">${arr.length?arr.map(esc).join('<br>'):'<span class="muted">—</span>'}</td>`}).join('')}
-      <td class="num"><b>${dayTotal||''}</b></td></tr>`;
-  }
-  const foot=`<tr style="background:#eef2f6"><td class="row-label" style="background:#eef2f6"><b>月合計</b></td><td></td>${colList.map(c=>`<td class="num"><b>${c.total}</b></td>`).join('')}<td class="num"><b style="font-size:15px">${grand}</b></td></tr>`;
-  return `<div class="card">${nav}
-    <p class="muted" style="margin-bottom:10px">整個月一次看:一天一列,欄位為各主題(加場併入同主題);每一格列出當天該主題各場次的開始時段,最右為當日合計,最底列為各主題整月合計。不含已取消場次。</p>
-    <div class="attendance-scroll"><table class="attendance-matrix" style="min-width:${Math.max(700,colList.length*96+220)}px">${head1}${head2}${body}${foot}</table></div></div>`;
+  let csv='﻿日期,星期,開始,結束,主題,類型\n';
+  for(const sh of list){const sg=isSurge(theme(sh.themeId)||{name:''});csv+=`${sh.date},${WDn[dateWD(sh.date)]},${sh.start||''},${sh.end||''},${themeSessionsCtx.base},${sg?'加場':'一般場'}\n`;}
+  dl(csv,`${store(themeSessionsCtx.storeId)?.name||''}_${themeSessionsCtx.base}_${themeStatsAnchor}_時段明細.csv`,'text/csv');
 }
 function vMonth(){
   const[y,m]=monthAnchor.split('-').map(Number);
