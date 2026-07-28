@@ -1106,12 +1106,10 @@ function vThemeStats(){
     const rows=Object.values(b.groups).sort((a,c)=>c.total-a.total);
     return `<div class="card">
       <div class="row" style="align-items:baseline;margin-bottom:12px"><h2 style="margin:0">${esc(b.store.name)}</h2><span class="grow"></span><span class="muted">本月合計 <b style="font-size:22px;color:${b.store.color||'#2563eb'}">${b.total}</b> 場</span></div>
-      <table style="table-layout:fixed;width:100%"><colgroup><col style="width:26%"><col style="width:13%"><col style="width:13%"><col style="width:13%"><col style="width:35%"></colgroup>
-      <tr><th>主題</th><th class="num">一般場</th><th class="num">加場</th><th class="num">合計</th><th>占比</th></tr>
+      <table style="table-layout:fixed;width:100%"><colgroup><col style="width:42%"><col style="width:16%"><col style="width:42%"></colgroup>
+      <tr><th>主題</th><th class="num">場次</th><th>占比</th></tr>
       ${rows.map(r=>{const col=colorOf[b.store.id+'|'+r.base]||'#64748b',share=grand?Math.round(r.total/grand*100):0;return `<tr style="cursor:pointer" onclick="openThemeSessions('${b.store.id}','${esc(r.base)}')" title="點擊看每場時段明細">
         <td><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${col};margin-right:6px"></span><b>${esc(r.base)}</b></td>
-        <td class="num">${r.normal}</td>
-        <td class="num">${r.surge?`<span style="color:#a21caf;font-weight:600">${r.surge}</span>`:'<span class="muted">—</span>'}</td>
         <td class="num"><b style="font-size:15px">${r.total}</b></td>
         <td><div class="row" style="gap:6px;align-items:center;flex-wrap:nowrap"><div class="loadbar" style="flex:1"><div style="width:${share}%;background:${col}"></div></div><span style="font-size:12px;min-width:36px;text-align:right">${share}%</span></div></td></tr>`;}).join('')}
       </table></div>`;
@@ -1129,7 +1127,7 @@ function vThemeStats(){
       </div>
     </div></div>`:'';
   return `${nav}
-    <p class="muted" style="margin:0 4px 12px">各主題本月排班場次(不含已取消);詭獄加場與詭獄同列、分開計並加總。占比為該主題占<b>全部場次</b>的比例,顏色與下方圓餅圖一致。<b>點任一主題</b>可看當月每一場的日期與時段明細。</p>
+    <p class="muted" style="margin:0 4px 12px">各主題本月排班場次(不含已取消)。占比為該主題占<b>全部場次</b>的比例,顏色與下方圓餅圖一致。<b>點任一主題</b>可看當月每一場的日期與時段明細。</p>
     ${cards||'<div class="card"><p class="muted">本月尚無主題場次。</p></div>'}${pie}`;
 }
 /* 主題「時段明細」彈窗:列出當月每一場的日期與時段(像場次明細) */
@@ -1154,22 +1152,20 @@ function openThemeSessions(storeId,base){
 }
 function renderThemeSessions(){
   const list=themeSessionsList(),{storeId,base}=themeSessionsCtx,WDn=['日','一','二','三','四','五','六'];
-  const surge=list.filter(sh=>isSurge(theme(sh.themeId)||{name:''})).length,normal=list.length-surge;
-  const rows=list.map((sh,i)=>{const sg=isSurge(theme(sh.themeId)||{name:''});return `<tr>
+  const rows=list.map((sh,i)=>`<tr>
     <td class="num muted">${i+1}</td>
     <td style="white-space:nowrap">${sh.date} <span class="muted">(${WDn[dateWD(sh.date)]})</span></td>
-    <td style="white-space:nowrap">${sh.start||''}${sh.end?'–'+sh.end:''}</td>
-    <td>${sg?'<span style="color:#a21caf;font-weight:600">加場</span>':'一般場'}</td></tr>`;}).join('');
+    <td style="white-space:nowrap">${sh.start||''}${sh.end?'–'+sh.end:''}</td></tr>`).join('');
   document.getElementById('dlgThemeSessionsTitle').textContent=`${store(storeId)?.name||''}・${base}・${themeStatsAnchor}`;
   document.getElementById('dlgThemeSessionsBody').innerHTML=`
-    <p style="margin-bottom:10px">合計 <b style="font-size:18px">${list.length}</b> 場・一般 ${normal}・<span style="color:#a21caf">加場 ${surge}</span></p>
-    <table><tr><th style="width:44px">#</th><th>日期</th><th>時段</th><th>類型</th></tr>${rows||'<tr><td colspan="4" class="muted">本月無此主題場次</td></tr>'}</table>`;
+    <p style="margin-bottom:10px">合計 <b style="font-size:18px">${list.length}</b> 場</p>
+    <table><tr><th style="width:44px">#</th><th>日期</th><th>時段</th></tr>${rows||'<tr><td colspan="3" class="muted">本月無此主題場次</td></tr>'}</table>`;
 }
 function exportThemeSessionsCSV(){
   const list=themeSessionsList();if(!list.length||!themeSessionsCtx)return;
   const WDn=['日','一','二','三','四','五','六'];
-  let csv='﻿編號,日期,星期,開始,結束,主題,類型\n';
-  list.forEach((sh,i)=>{const sg=isSurge(theme(sh.themeId)||{name:''});csv+=`${i+1},${sh.date},${WDn[dateWD(sh.date)]},${sh.start||''},${sh.end||''},${themeSessionsCtx.base},${sg?'加場':'一般場'}\n`;});
+  let csv='﻿編號,日期,星期,開始,結束,主題\n';
+  list.forEach((sh,i)=>{csv+=`${i+1},${sh.date},${WDn[dateWD(sh.date)]},${sh.start||''},${sh.end||''},${themeSessionsCtx.base}\n`;});
   dl(csv,`${store(themeSessionsCtx.storeId)?.name||''}_${themeSessionsCtx.base}_${themeStatsAnchor}_時段明細.csv`,'text/csv');
 }
 function vMonth(){
