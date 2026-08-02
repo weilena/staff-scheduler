@@ -85,6 +85,16 @@ Deno.serve(async (req) => {
         const writebackRole = writebackTheme && (Number(writebackTheme.payNPC) || 0) > 0 ? "NPC" : "場控";
         const writebackCandidates = account.role === "manager" && String(s.id).startsWith("sb_") && (s.assignments ?? []).some((a: any) => !a.empId && a.role === writebackRole)
           ? (cfg.employees ?? []).filter((candidate: any) => candidate.active && eligibilityErrors(candidate, s, writebackRole, shifts, cfg, [s.id]).length === 0).map((candidate: any) => ({ id: candidate.id, name: candidate.name })) : [];
+        // 管理員 LINE 排班用:每個尚未排人的角色，列出「有資格＋當天有空＋不衝堂」的候選人(依場數少到多排序，供一鍵排)
+        const roleCandidates: Record<string, Array<{ id: string; name: string }>> = {};
+        if (account.role === "manager" && s.kind === "theme" && !cancelled) {
+          for (const role of [...new Set(emptyRoles)]) {
+            const cands = (cfg.employees ?? []).filter((candidate: any) => candidate.active && employedOn(candidate, s.date) &&
+              !(s.assignments ?? []).some((a: any) => a.empId === candidate.id) &&
+              eligibilityErrors(candidate, s, role, shifts, cfg, [s.id]).length === 0);
+            roleCandidates[role] = rankCandidatesByWorkload(cands, shifts, s.date, 99).map((candidate: any) => ({ id: candidate.id, name: candidate.name }));
+          }
+        }
         return {
           id: s.id, date: s.date, storeId: s.storeId, kind: s.kind, themeId: s.themeId, start: s.start, end: s.end,
           status: s.status ?? "active", assignments: s.assignments ?? [],
@@ -99,6 +109,7 @@ Deno.serve(async (req) => {
             onSite: onSite.map((candidate: any) => candidate.name),
             available: ranked.filter((candidate: any) => !onSiteIds.has(candidate.id)).map((candidate: any) => candidate.name),
           } : null,
+          roleCandidates,
         };
       });
       const publicPunches = (punches ?? []).map((p: any) => ({
@@ -110,6 +121,33 @@ Deno.serve(async (req) => {
           canSchedulePractice: account.role === "manager" || (employee.type === "full" && !!employee.canSchedulePractice) }, stores: cfg.stores, themes: cfg.themes,
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches,
         attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
+    }
+
+    if (action === "manager-assign") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以排班" }, 403);
+      const shiftId = String(input.shiftId ?? ""), role = String(input.role ?? ""), empId = input.empId ? String(input.empId) : "";
+      const shift = shifts.find((s: any) => s.id === shiftId);
+      if (!shift) return json({ error: "找不到這個班次，請重新整理後再試" }, 404);
+      if (String(shift.status ?? "").startsWith("cancelled")) return json({ error: "已取消的班次不能排班" }, 409);
+      const assignments = (shift.assignments ?? []).map((a: any) => ({ ...a }));
+      if (empId) {
+        const cand = (cfg.employees ?? []).find((e: any) => e.id === empId && e.active);
+        if (!cand) return json({ error: "找不到這位員工" }, 400);
+        if (assignments.some((a: any) => a.empId === empId)) return json({ error: `${cand.name} 已排在這個場次` }, 409);
+        const errs = eligibilityErrors(cand, shift, role, shifts, cfg, [shift.id]);
+        if (errs.length) return json({ error: errs.join("、") }, 409);
+        const slot = assignments.find((a: any) => a.role === role && !a.empId);
+        if (slot) slot.empId = empId; else assignments.push({ role, empId });
+      } else {
+        const slot = assignments.find((a: any) => a.role === role && a.empId);
+        if (slot) slot.empId = "";
+      }
+      // manualEdit 保護此指派，避免每分鐘的 SimplyBook 同步覆蓋掉。
+      const updated = { ...shift, assignments, manualEdit: true, sourceUpdatedAt: new Date().toISOString() };
+      const source = String(shift.id).startsWith("sb_") ? "simplybook" : "manual";
+      const { error } = await sb.from("shifts").upsert({ id: shift.id, date: shift.date, source, data: updated });
+      if (error) return json({ error: error.message }, 500);
+      return json({ ok: true, assignments });
     }
 
     if (action === "monthly-summary") {

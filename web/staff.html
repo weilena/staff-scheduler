@@ -16,7 +16,7 @@ label{display:block;font-size:13px;font-weight:700;margin:10px 0 5px}input,selec
 </style></head><body>
 <header><h1>員工排班與打卡</h1><p id="hello">正在連接 LINE…</p></header>
 <main id="app"><div class="card">載入中…</div></main>
-  <nav id="nav" class="hidden"><button data-tab="home" onclick="show('home')">今日班表／打卡</button><button data-tab="schedule" onclick="show('schedule')">班表</button><button id="swapNav" class="hidden" data-tab="requests" onclick="show('requests')">換班</button><button id="managerNav" class="hidden" data-tab="manager" onclick="show('manager')">管理審核</button></nav>
+  <nav id="nav" class="hidden"><button data-tab="home" onclick="show('home')">今日班表／打卡</button><button data-tab="schedule" onclick="show('schedule')">班表</button><button id="swapNav" class="hidden" data-tab="requests" onclick="show('requests')">換班</button><button id="scheduleAdminNav" class="hidden" data-tab="schedadmin" onclick="show('schedadmin')">排班</button><button id="managerNav" class="hidden" data-tab="manager" onclick="show('manager')">管理審核</button></nav>
 <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script><script src="config.js"></script>
 <script>
 let D=null,requestedTab=new URLSearchParams(location.search).get('tab'),tab=['home','schedule','requests','practice','manager'].includes(requestedTab)?requestedTab:'home',idToken='',punchBusy=false,scheduleFilters={date:new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Taipei'}),store:'',theme:''},requestRows=[],virtualScheduleSlots=[],virtualScheduleDate='',virtualScheduleLoading=false,summaryMonth=new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Taipei'}).slice(0,7),monthSummary=null,managerMonth=summaryMonth,managerData=null,managerLoading=false;const app=document.getElementById('app');
@@ -28,7 +28,7 @@ async function start(){
   catch(e){app.innerHTML=`<div class="notice error">${esc(e.message)}</div>`}
 }
 async function load(){
-  try{D=await api({action:'bootstrap'});monthSummary=await api({action:'monthly-summary',month:summaryMonth});document.getElementById('hello').textContent=D.me.name+'，今天也辛苦了';document.getElementById('nav').classList.remove('hidden');const canSwap=D.me.type==='full'||D.me.role==='manager';document.getElementById('swapNav').classList.toggle('hidden',!canSwap);document.getElementById('managerNav').classList.toggle('hidden',D.me.role!=='manager');if(tab==='requests'&&!canSwap)tab='home';if(tab==='manager'&&D.me.role!=='manager')tab='home';if(tab==='practice'&&!D.me.canSchedulePractice)tab='home';show(tab)}
+  try{D=await api({action:'bootstrap'});monthSummary=await api({action:'monthly-summary',month:summaryMonth});document.getElementById('hello').textContent=D.me.name+'，今天也辛苦了';document.getElementById('nav').classList.remove('hidden');const canSwap=D.me.type==='full'||D.me.role==='manager';document.getElementById('swapNav').classList.toggle('hidden',!canSwap);document.getElementById('managerNav').classList.toggle('hidden',D.me.role!=='manager');document.getElementById('scheduleAdminNav').classList.toggle('hidden',D.me.role!=='manager');if(tab==='requests'&&!canSwap)tab='home';if(tab==='manager'&&D.me.role!=='manager')tab='home';if(tab==='schedadmin'&&D.me.role!=='manager')tab='home';if(tab==='practice'&&!D.me.canSchedulePractice)tab='home';show(tab)}
   catch(e){if(e.data?.error==='NOT_BOUND')bindView(e.data.displayName);else app.innerHTML=`<div class="notice error">${esc(e.message)}</div>`}
 }
 function bindView(name){document.getElementById('hello').textContent=name||'首次使用';app.innerHTML=`<div class="card"><h2>綁定員工身分</h2><p class="muted">請向管理員取得一次性驗證碼。請勿使用其他同事的驗證碼。</p><label>驗證碼</label><input id="bindCode" maxlength="12" autocomplete="one-time-code" style="text-transform:uppercase"><button style="width:100%;margin-top:12px" onclick="bind()">完成綁定</button></div>`}
@@ -38,7 +38,44 @@ const empName=id=>D.employees.find(e=>e.id===id)?.name||'未排人',storeName=id
 const shiftName=s=>s.kind==='theme'?themeName(s.themeId):s.kind==='floor'?'駐店場控':s.kind==='cleaning'?'每周大清潔':s.kind==='practice'?'訓練場':s.kind==='counter'?(s.storeId==='ms'?'謎先生櫃台':s.storeId==='dz'?'桌遊大忠店櫃台':'櫃台班'):'其他班別';
 const isCancelled=s=>String(s?.status||'').startsWith('cancelled');
 const myShifts=()=>D.shifts.filter(s=>!isCancelled(s)&&(s.assignments||[]).some(a=>a.empId===D.me.id));
-function render(){if(!D)return;if(tab==='schedule')schedule();else if(tab==='punch')punchView();else if(tab==='requests')requestView();else if(tab==='manager')managerView();else if(tab==='practice'&&D.me.canSchedulePractice)practiceView();else home()}
+function render(){if(!D)return;if(tab==='schedule')schedule();else if(tab==='punch')punchView();else if(tab==='requests')requestView();else if(tab==='manager')managerView();else if(tab==='schedadmin'&&D.me.role==='manager')scheduleAdminView();else if(tab==='practice'&&D.me.canSchedulePractice)practiceView();else home()}
+let schDate=null,schThemes=[],schDepOnly=true;
+function setSchDate(v){schDate=v;render()}
+function toggleSchTheme(id){const i=schThemes.indexOf(id);if(i>=0)schThemes.splice(i,1);else schThemes.push(id);render()}
+function toggleSchDep(){schDepOnly=!schDepOnly;render()}
+async function assignShift(shiftId,role,empId){if(schBusy)return;schBusy=true;render();try{await api({action:'manager-assign',shiftId,role,empId});await load()}catch(e){alert(e.message)}finally{schBusy=false;render()}}
+async function clearSchAssign(shiftId,role){if(schBusy||!confirm('確定取消這個人的排班？'))return;schBusy=true;render();try{await api({action:'manager-assign',shiftId,role,empId:''});await load()}catch(e){alert(e.message)}finally{schBusy=false;render()}}
+let schBusy=false;
+function scheduleAdminView(){
+  if(D.me.role!=='manager'){app.innerHTML='<div class="notice error">只有管理員可以排班。</div>';return}
+  if(!schDate)schDate=taipeiDate();
+  const pick=schThemes.length?schThemes:D.themes.map(t=>t.id);
+  let list=D.shifts.filter(s=>s.kind==='theme'&&!isCancelled(s)&&s.date===schDate&&pick.includes(s.themeId)&&(s.assignments||[]).some(a=>!a.empId));
+  if(schDepOnly)list=list.filter(s=>s.depositPaid);
+  list.sort((a,b)=>(a.start||'').localeCompare(b.start||''));
+  const need=list.reduce((n,s)=>n+(s.assignments||[]).filter(a=>!a.empId).length,0);
+  const chips=D.themes.filter(t=>t.active!==false).map(t=>{const on=schThemes.includes(t.id);return `<button onclick="toggleSchTheme('${t.id}')" style="width:auto;font-size:13px;padding:6px 12px;border-radius:16px;${on?'':'background:#eef2f6;color:#1f2937'}">${on?'✓ ':''}${esc(t.name)}</button>`}).join('');
+  app.innerHTML=`<div class="card"><h2>快速排班（管理員）</h2>
+    <p class="muted">預設顯示「已收訂金、還缺人」的場次，點候選人一下即可排入；排完立即同步到後台與員工班表。</p>
+    <label>日期</label><input type="date" value="${schDate}" onchange="setSchDate(this.value)">
+    <button class="${schDepOnly?'':'secondary'}" style="width:100%;margin-top:10px" onclick="toggleSchDep()">${schDepOnly?'✓ ':''}只看已收訂金、未排人</button>
+    <div style="margin-top:12px"><span class="muted">主題（可複選，不選＝全部）</span><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${chips}</div></div>
+  </div>
+  <div class="card"><h2>待排 ${need} 個角色</h2>
+  ${list.length?list.map(s=>schShiftCard(s)).join(''):'<p class="muted">此條件下沒有缺人的場次。</p>'}</div>`;
+}
+function schShiftCard(s){
+  const t=D.themes.find(x=>x.id===s.themeId),rc=s.roleCandidates||{};
+  const rows=(s.assignments||[]).map(a=>{
+    if(a.empId){const e=D.employees.find(x=>x.id===a.empId);return `<div class="row" style="justify-content:space-between;align-items:center;margin-top:7px"><span>${esc(a.role)}：<b>${esc(e?.name||a.empId)}</b> <span style="color:#16a34a">已排</span></span><button class="secondary" style="width:auto;font-size:12px;padding:6px 10px" onclick="clearSchAssign('${s.id}','${esc(a.role)}')">取消</button></div>`}
+    const cands=rc[a.role]||[];
+    const btns=cands.length?cands.slice(0,5).map(c=>`<button ${schBusy?'disabled':''} style="width:auto;font-size:13px;padding:7px 11px;margin:4px 5px 0 0" onclick="assignShift('${s.id}','${esc(a.role)}','${c.id}')">＋ ${esc(c.name)}</button>`).join(''):'<span class="muted">今天沒有可排的人（可能都休假或衝堂）</span>';
+    return `<div style="margin-top:9px"><div class="muted" style="font-size:12px;margin-bottom:2px">${esc(a.role)}・尚未排人</div>${btns}${cands.length>5?`<span class="muted" style="font-size:11px"> …另有 ${cands.length-5} 人</span>`:''}</div>`;
+  }).join('');
+  return `<div style="border:1px solid #d0d5dd;border-radius:10px;padding:11px 12px;margin-top:9px">
+    <div class="row" style="justify-content:space-between;align-items:center"><b style="font-size:15px">${s.start}–${s.end}　${esc(t?.name||'場次')}</b>${s.depositPaid?'<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:12px;background:#dcfce7;color:#166534">已收訂金</span>':''}</div>
+    ${rows}</div>`;
+}
 function managerWorkLabel(item){return item.kind==='theme'?themeName(item.themeId):item.kind==='counter'?(item.storeId==='ms'?'謎先生櫃台':'桌遊大忠店櫃台'):item.kind==='practice'?'訓練場':item.kind==='cleaning'?'每週大清潔':item.kind==='floor'?'場控／現場支援':'其他工作'}
 function managerStatus(status){return status==='approved'?'已核准':status==='rejected'?'不計薪':status==='anomaly'?'異常待審':'待核准'}
 function managerHm(min){return `${Math.floor((Number(min)||0)/60)}時${(Number(min)||0)%60}分`}
