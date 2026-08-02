@@ -49,42 +49,84 @@ const shiftName=s=>s.kind==='theme'?themeName(s.themeId):s.kind==='floor'?'駐�
 const isCancelled=s=>String(s?.status||'').startsWith('cancelled');
 const myShifts=()=>D.shifts.filter(s=>!isCancelled(s)&&(s.assignments||[]).some(a=>a.empId===D.me.id));
 function render(){if(!D)return;if(tab==='schedule')schedule();else if(tab==='punch')punchView();else if(tab==='requests')requestView();else if(tab==='manager')managerView();else if(tab==='schedadmin'&&D.me.role==='manager')scheduleAdminView();else if(tab==='practice'&&D.me.canSchedulePractice)practiceView();else home()}
-let schDate=null,schThemes=[],schDepOnly=true;
-function setSchDate(v){schDate=v;render()}
-function toggleSchTheme(id){const i=schThemes.indexOf(id);if(i>=0)schThemes.splice(i,1);else schThemes.push(id);render()}
-function toggleSchDep(){schDepOnly=!schDepOnly;render()}
-async function assignShift(shiftId,role,empId){if(schBusy)return;schBusy=true;render();try{await api({action:'manager-assign',shiftId,role,empId});await load()}catch(e){alert(e.message)}finally{schBusy=false;render()}}
+let schDate=null,schWeekStart=null,schStore='',schThemes=[],schDepOnly=true,schSlot=null,schBusy=false,schShowCal=false,schCalY=0,schCalM=0;
+const SCH_PAL=['#2563eb','#e11d48','#16a34a','#d97706','#7c3aed','#0891b2','#db2777','#059669','#ea580c','#4338ca','#b0885b','#0284c7'];
+const SCH_WD=['週一','週二','週三','週四','週五','週六','週日'],SCH_WS=['一','二','三','四','五','六','日'];
+function schFmt(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+function schMonday(d){const wd=(d.getDay()+6)%7,m=new Date(d);m.setDate(d.getDate()-wd);return m}
+function schThemeColor(id){const i=D.themes.findIndex(t=>t.id===id);return SCH_PAL[(i<0?0:i)%SCH_PAL.length]}
+function schEmpColor(e){if(e.color)return e.color;const i=D.employees.findIndex(x=>x.id===e.id);return SCH_PAL[(i<0?0:i)%SCH_PAL.length]||'#64748b'}
+function schEmpAvail(e,date){if(e.availX&&e.availX[date])return e.availX[date];if(e.type==='full')return{on:true,start:'09:00',end:'22:30'};const day=new Date(date+'T00:00:00').getDay();return (e.avail&&(e.avail[day]||e.avail[String(day)]))||null}
+function schRoleSlots(s){const t=D.themes.find(x=>x.id===s.themeId),slots=(s.assignments||[]).map(a=>({role:a.role,empId:a.empId}));if(t&&String(t.name).startsWith('詭獄')&&!slots.some(x=>x.role==='場控'))slots.push({role:'場控',empId:''});return slots}
+function setSchStore(id){schStore=id;schThemes=[];schSlot=null;render()}
+function toggleSchTheme(id){const i=schThemes.indexOf(id);if(i>=0)schThemes.splice(i,1);else schThemes.push(id);schSlot=null;render()}
+function toggleSchDep(){schDepOnly=!schDepOnly;schSlot=null;render()}
+function moveSchWeek(n){schWeekStart=new Date(schWeekStart);schWeekStart.setDate(schWeekStart.getDate()+n*7);render()}
+function pickSchDate(ds){schDate=ds;schWeekStart=schMonday(new Date(ds+'T00:00:00'));schShowCal=false;schSlot=null;render()}
+function schToggleCal(){schShowCal=!schShowCal;const d=new Date(schDate+'T00:00:00');schCalY=d.getFullYear();schCalM=d.getMonth()+1;render()}
+function schMoveCalM(n){schCalM+=n;if(schCalM<1){schCalM=12;schCalY--}if(schCalM>12){schCalM=1;schCalY++}render()}
+function selectSchSlot(shiftId,role){schSlot=(schSlot&&schSlot.shiftId===shiftId&&schSlot.role===role)?null:{shiftId,role};render()}
+async function assignSchEmp(shiftId,role,empId){if(schBusy)return;schBusy=true;render();try{await api({action:'manager-assign',shiftId,role,empId});schSlot=null;await load()}catch(e){alert(e.message)}finally{schBusy=false;render()}}
 async function clearSchAssign(shiftId,role){if(schBusy||!confirm('確定取消這個人的排班？'))return;schBusy=true;render();try{await api({action:'manager-assign',shiftId,role,empId:''});await load()}catch(e){alert(e.message)}finally{schBusy=false;render()}}
-let schBusy=false;
+function schDot(c){return `<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${c};flex:0 0 auto"></span>`}
+function schPill(t){const c=schThemeColor(t.id);return `<span style="display:inline-block;background:${c};color:#fff;font-size:12px;font-weight:600;padding:3px 13px;border-radius:999px;white-space:nowrap">${esc(t.name)}</span>`}
+function schRoleChip(s,r,multi){
+  const sel=schSlot&&schSlot.shiftId===s.id&&schSlot.role===r.role, e=r.empId&&D.employees.find(x=>x.id===r.empId);
+  const box=`flex:1;min-width:0;display:flex;align-items:center;gap:4px;padding:5px 6px;border-radius:8px;border:${sel?'2px solid var(--accent,#2f6f5f)':'1px solid #d0d5dd'};background:${sel?'#e8f3ef':'#fff'}`;
+  let inner=`<span style="font-size:10px;font-weight:600;padding:1px 5px;border-radius:5px;background:#eef2f6;color:#475569;flex:0 0 auto">${esc(r.role)}</span>`;
+  if(r.empId){inner+=`${schDot(e?schEmpColor(e):'#888')}<span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${esc(e?e.name:r.empId)}</span><span onclick="event.stopPropagation();clearSchAssign('${s.id}','${esc(r.role)}')" style="cursor:pointer;color:#dc2626;font-size:14px;flex:0 0 auto">✕</span>`;}
+  else{inner+=`<span style="color:var(--accent,#2f6f5f);font-size:16px;flex:0 0 auto;font-weight:700">＋</span>`;}
+  const onclick=r.empId?'':`onclick="selectSchSlot('${s.id}','${esc(r.role)}')"`;
+  return `<div ${onclick} style="cursor:${r.empId?'default':'pointer'};${box}">${inner}</div>`;
+}
+function schSessionCard(s){
+  const t=D.themes.find(x=>x.id===s.themeId),slots=schRoleSlots(s),filled=slots.every(r=>r.empId),multi=slots.length>1;
+  const dep=s.depositPaid&&!filled?`<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:14px;background:#dcfce7;color:#166534;flex:0 0 auto">已收訂金</span>`:'';
+  const time=`<div style="min-width:58px;text-align:center;flex:0 0 auto"><div style="font-weight:600;font-size:15px">${s.start}</div><div style="margin-top:4px">${t?schPill(t):esc(s.start)}</div></div>`;
+  if(multi){
+    return `<div style="padding:9px 10px;margin-bottom:6px;border-radius:10px;border:1px solid #d0d5dd;background:#fff;display:flex;align-items:center;gap:7px">${time}<div style="flex:1;display:flex;gap:5px;min-width:0">${slots.map(r=>schRoleChip(s,r,true)).join('')}</div>${dep}</div>`;
+  }
+  const r=slots[0]||{role:'場控',empId:''};
+  return `<div style="padding:9px 10px;margin-bottom:6px;border-radius:10px;border:1px solid #d0d5dd;background:#fff;display:flex;align-items:center;gap:10px">${time}<div style="flex:1;min-width:0">${schRoleChip(s,r,false)}</div>${dep}</div>`;
+}
 function scheduleAdminView(){
   if(D.me.role!=='manager'){app.innerHTML='<div class="notice error">只有管理員可以排班。</div>';return}
-  if(!schDate)schDate=taipeiDate();
-  const pick=schThemes.length?schThemes:D.themes.map(t=>t.id);
-  let list=D.shifts.filter(s=>s.kind==='theme'&&!isCancelled(s)&&s.date===schDate&&pick.includes(s.themeId)&&(s.assignments||[]).some(a=>!a.empId));
-  if(schDepOnly)list=list.filter(s=>s.depositPaid);
+  if(!schDate){schDate=taipeiDate();schWeekStart=schMonday(new Date(schDate+'T00:00:00'))}
+  if(!schStore)schStore=(D.stores[0]||{}).id||'';
+  const wk=[];for(let i=0;i<7;i++){const d=new Date(schWeekStart);d.setDate(schWeekStart.getDate()+i);wk.push(d)}
+  const mid=wk[3];
+  const storeThemes=D.themes.filter(t=>t.active!==false&&t.storeId===schStore);
+  const pick=schThemes.length?schThemes:storeThemes.map(t=>t.id);
+  let list=D.shifts.filter(s=>s.kind==='theme'&&!isCancelled(s)&&s.date===schDate&&s.storeId===schStore&&pick.includes(s.themeId));
+  if(schDepOnly)list=list.filter(s=>s.depositPaid&&schRoleSlots(s).some(r=>!r.empId));
   list.sort((a,b)=>(a.start||'').localeCompare(b.start||''));
-  const need=list.reduce((n,s)=>n+(s.assignments||[]).filter(a=>!a.empId).length,0);
-  const chips=D.themes.filter(t=>t.active!==false).map(t=>{const on=schThemes.includes(t.id);return `<button onclick="toggleSchTheme('${t.id}')" style="width:auto;font-size:13px;padding:6px 12px;border-radius:16px;${on?'':'background:#eef2f6;color:#1f2937'}">${on?'✓ ':''}${esc(t.name)}</button>`}).join('');
-  app.innerHTML=`<div class="card"><h2>快速排班（管理員）</h2>
-    <p class="muted">預設顯示「已收訂金、還缺人」的場次，點候選人一下即可排入；排完立即同步到後台與員工班表。</p>
-    <label>日期</label><input type="date" value="${schDate}" onchange="setSchDate(this.value)">
-    <button class="${schDepOnly?'':'secondary'}" style="width:100%;margin-top:10px" onclick="toggleSchDep()">${schDepOnly?'✓ ':''}只看已收訂金、未排人</button>
-    <div style="margin-top:12px"><span class="muted">主題（可複選，不選＝全部）</span><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${chips}</div></div>
+  let need=0,depNeed=0;list.forEach(s=>schRoleSlots(s).forEach(r=>{if(!r.empId){need++;if(s.depositPaid)depNeed++}}));
+  let cal='';
+  if(schShowCal){
+    const first=new Date(schCalY,schCalM-1,1),lead=(first.getDay()+6)%7,dim=new Date(schCalY,schCalM,0).getDate();
+    let cells='';for(let b=0;b<lead;b++)cells+='<div></div>';
+    for(let dd=1;dd<=dim;dd++){const ds=schFmt(new Date(schCalY,schCalM-1,dd)),sel=ds===schDate;cells+=`<div onclick="pickSchDate('${ds}')" style="cursor:pointer;padding:6px 0;border-radius:8px;${sel?'background:#2f6f5f;color:#fff':''}">${dd}</div>`}
+    cal=`<div style="border-top:1px solid #e5e7eb;padding:8px 2px 4px"><div class="row" style="justify-content:space-between;margin-bottom:6px"><span onclick="schMoveCalM(-1)" style="cursor:pointer">‹</span><b style="font-size:13px">${schCalY}年${schCalM}月</b><span onclick="schMoveCalM(1)" style="cursor:pointer">›</span></div><div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center;font-size:11px;color:#94a3b8;margin-bottom:2px">${SCH_WS.map(w=>`<div>${w}</div>`).join('')}</div><div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center">${cells}</div></div>`;
+  }
+  const strip=`<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center;margin-top:6px">${wk.map((d,i)=>{const ds=schFmt(d),on=ds===schDate,thu=d.getDay()===4;return `<div onclick="pickSchDate('${ds}')" style="cursor:pointer;padding:4px 0"><div style="font-size:11px;color:#94a3b8;margin-bottom:3px">${SCH_WD[i]}</div><div style="width:30px;height:30px;line-height:30px;margin:0 auto;border-radius:50%;font-weight:600;${on?'background:#2f6f5f;color:#fff':(thu?'color:#cbd5e1':'')}">${d.getDate()}</div></div>`}).join('')}</div>`;
+  const stores=D.stores.map(st=>{const on=st.id===schStore;return `<button onclick="setSchStore('${st.id}')" style="flex:1;width:auto;padding:8px;font-size:13px;font-weight:600;${on?'':'background:#eef2f6;color:#1f2937'}">${esc(st.name)}</button>`}).join('');
+  const allOn=schThemes.length===0;
+  const chips=`<button onclick="schThemes=[];schSlot=null;render()" style="width:auto;font-size:13px;padding:6px 12px;border-radius:16px;${allOn?'':'background:#eef2f6;color:#1f2937'}">全部</button>`+storeThemes.map(t=>{const on=schThemes.includes(t.id),c=schThemeColor(t.id);return `<button onclick="toggleSchTheme('${t.id}')" style="display:inline-flex;align-items:center;gap:6px;width:auto;font-size:13px;padding:6px 12px;border-radius:16px;${on?`background:${c};color:#fff`:'background:#eef2f6;color:#1f2937'}">${schDot(on?'#fff':c)}${esc(t.name)}</button>`}).join('');
+  const selShift=schSlot&&D.shifts.find(s=>s.id===schSlot.shiftId);
+  const panel=`<div class="card"><h2 style="font-size:16px">當日員工 · 可上班／休假</h2>
+    <p class="muted" style="font-size:12px;margin-top:-4px">${schSlot?`點「可排」員工 → 指派到 ${schSlot.role}`:'先點上面一個角色，再點員工指派'}</p>
+    ${D.employees.map(e=>{const a=schEmpAvail(e,schDate),eligible=selShift&&((selShift.roleCandidates||{})[schSlot.role]||[]).some(c=>c.id===e.id);
+      return `<div ${eligible?`onclick="assignSchEmp('${schSlot.shiftId}','${schSlot.role}','${e.id}')"`:''} style="display:flex;align-items:center;gap:9px;padding:8px;border-radius:8px;margin:0 -4px;${eligible?'cursor:pointer;background:#dcfce7':''}">${schDot(schEmpColor(e))}<span style="font-weight:600;min-width:42px;${a&&a.on?'':'color:#94a3b8'}">${esc(e.name)}</span>${a&&a.on?`<span style="flex:1;font-size:13px;color:#475569">${esc(a.start)}–${esc(a.end)}</span>${schSlot?(eligible?'<span style="color:#16a34a;font-size:16px;font-weight:700">＋</span>':'<span style="font-size:11px;color:#94a3b8">不可排</span>'):''}`:`<span style="flex:1;font-size:13px;color:#94a3b8">—</span><span style="font-size:12px;font-weight:600;padding:2px 8px;border-radius:14px;background:#fee2e2;color:#b91c1c">${esc((a&&a.leaveType)||'休假')}</span>`}</div>`}).join('')}</div>`;
+  app.innerHTML=`<div class="card" style="padding:12px 12px 14px">
+    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px"><span onclick="moveSchWeek(-1)" style="cursor:pointer;font-size:18px;color:#64748b">‹</span><b onclick="schToggleCal()" style="cursor:pointer">${mid.getFullYear()}年${mid.getMonth()+1}月 ▾</b><span onclick="moveSchWeek(1)" style="cursor:pointer;font-size:18px;color:#64748b">›</span></div>
+    ${cal}${strip}
+    <div class="row" style="gap:6px;margin-top:12px">${stores}</div>
+    <div class="muted" style="font-size:12px;margin:12px 2px 6px">主題（可複選）</div><div style="display:flex;flex-wrap:wrap;gap:6px">${chips}</div>
+    <button onclick="toggleSchDep()" style="width:100%;text-align:left;margin-top:12px;${schDepOnly?'':'background:#eef2f6;color:#1f2937'}">${schDepOnly?'✓ ':'○ '}只看已收訂金、未安排人</button>
   </div>
-  <div class="card"><h2>待排 ${need} 個角色</h2>
-  ${list.length?list.map(s=>schShiftCard(s)).join(''):'<p class="muted">此條件下沒有缺人的場次。</p>'}</div>`;
-}
-function schShiftCard(s){
-  const t=D.themes.find(x=>x.id===s.themeId),rc=s.roleCandidates||{};
-  const rows=(s.assignments||[]).map(a=>{
-    if(a.empId){const e=D.employees.find(x=>x.id===a.empId);return `<div class="row" style="justify-content:space-between;align-items:center;margin-top:7px"><span>${esc(a.role)}：<b>${esc(e?.name||a.empId)}</b> <span style="color:#16a34a">已排</span></span><button class="secondary" style="width:auto;font-size:12px;padding:6px 10px" onclick="clearSchAssign('${s.id}','${esc(a.role)}')">取消</button></div>`}
-    const cands=rc[a.role]||[];
-    const btns=cands.length?cands.slice(0,5).map(c=>`<button ${schBusy?'disabled':''} style="width:auto;font-size:13px;padding:7px 11px;margin:4px 5px 0 0" onclick="assignShift('${s.id}','${esc(a.role)}','${c.id}')">＋ ${esc(c.name)}</button>`).join(''):'<span class="muted">今天沒有可排的人（可能都休假或衝堂）</span>';
-    return `<div style="margin-top:9px"><div class="muted" style="font-size:12px;margin-bottom:2px">${esc(a.role)}・尚未排人</div>${btns}${cands.length>5?`<span class="muted" style="font-size:11px"> …另有 ${cands.length-5} 人</span>`:''}</div>`;
-  }).join('');
-  return `<div style="border:1px solid #d0d5dd;border-radius:10px;padding:11px 12px;margin-top:9px">
-    <div class="row" style="justify-content:space-between;align-items:center"><b style="font-size:15px">${s.start}–${s.end}　${esc(t?.name||'場次')}</b>${s.depositPaid?'<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:12px;background:#dcfce7;color:#166534">已收訂金</span>':''}</div>
-    ${rows}</div>`;
+  <div class="card"><h2 style="font-size:16px">待排 ${need} 個角色${depNeed?` · <span style="color:#16a34a">已收訂金 ${depNeed}</span>`:''}</h2>
+    ${list.length?list.map(s=>schSessionCard(s)).join(''):'<p class="muted">此條件下沒有場次。</p>'}</div>
+  ${panel}`;
 }
 function managerWorkLabel(item){return item.kind==='theme'?themeName(item.themeId):item.kind==='counter'?(item.storeId==='ms'?'謎先生櫃台':'桌遊大忠店櫃台'):item.kind==='practice'?'訓練場':item.kind==='cleaning'?'每週大清潔':item.kind==='floor'?'場控／現場支援':'其他工作'}
 function managerStatus(status){return status==='approved'?'已核准':status==='rejected'?'不計薪':status==='anomaly'?'異常待審':'待核准'}

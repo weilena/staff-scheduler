@@ -61,7 +61,9 @@ Deno.serve(async (req) => {
         sb.from("attendance_requests").select("*").eq("emp_id", employee.id).order("created_at", { ascending: false }).limit(30),
         sb.from("overtime_reviews").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: false }).limit(70),
       ]);
-      const publicEmployees = (cfg.employees ?? []).filter((e: any) => e.active).map((e: any) => ({ id: e.id, name: e.name }));
+      const publicEmployees = (cfg.employees ?? []).filter((e: any) => e.active).map((e: any) => account.role === "manager"
+        ? { id: e.id, name: e.name, color: e.simplybookColor ?? "", type: e.type, skills: e.skills ?? {}, avail: e.avail ?? null, availX: e.availX ?? {} }
+        : { id: e.id, name: e.name });
       const publicShifts = shifts.filter((s: any) => s.date >= from && s.date <= to).map((s: any) => {
         const cancelled = String(s.status ?? "").startsWith("cancelled");
         const emptyRoles = (s.assignments ?? []).filter((a: any) => !a.empId).map((a: any) => String(a.role ?? ""));
@@ -93,7 +95,9 @@ Deno.serve(async (req) => {
         // 管理員 LINE 排班用:每個尚未排人的角色，列出「有資格＋當天有空＋不衝堂」的候選人(依場數少到多排序，供一鍵排)
         const roleCandidates: Record<string, Array<{ id: string; name: string }>> = {};
         if (account.role === "manager" && s.kind === "theme" && !cancelled) {
-          for (const role of [...new Set(emptyRoles)]) {
+          // 詭獄／詭獄加場除了 SimplyBook 帶的 NPC，還可排場控(即使 assignments 尚無此欄位)。
+          const extraRoles = writebackTheme && String(writebackTheme.name ?? "").startsWith("詭獄") && !(s.assignments ?? []).some((a: any) => a.role === "場控") ? ["場控"] : [];
+          for (const role of [...new Set([...emptyRoles, ...extraRoles])]) {
             const cands = (cfg.employees ?? []).filter((candidate: any) => candidate.active && employedOn(candidate, s.date) &&
               !(s.assignments ?? []).some((a: any) => a.empId === candidate.id) &&
               eligibilityErrors(candidate, s, role, shifts, cfg, [s.id]).length === 0);
