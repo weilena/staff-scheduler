@@ -1,3 +1,8 @@
+// 給 Codex：2026-07-28 我(老闆端 Claude)動了這個檔，請 pull 最新別蓋掉。
+// 為 LINE@ 管理員排班新增(沒改你既有的 action)：
+//  1. bootstrap 的 publicShifts 每筆多回 roleCandidates(每個尚未排人的角色，附「有資格＋當天有空＋不衝堂」的候選人{id,name}，依場數排序，供一鍵排)。
+//  2. 新增 action "manager-assign"(限 account.role==='manager')：把 empId 寫進指定 shift 的該 role 空位(或清空)，eligibilityErrors 防呆，並設 data.manualEdit=true 避免每分鐘 SimplyBook 同步覆蓋。寫回 shifts 表。
+// 前端搭配在 web/staff.html 的「排班」分頁(scheduleAdminNav)。有衝突或要調整再找我，謝謝！
 import { cors, distanceMeters, eligibilityErrors, employedOn, getContext, json, queueNotification, rankCandidatesByWorkload, serviceClient, toMinutes, verifyLineIdToken } from "../_shared/common.ts";
 
 const DAY = 86_400_000;

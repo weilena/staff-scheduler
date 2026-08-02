@@ -1,4 +1,14 @@
 <!doctype html>
+<!--
+  給 Codex：2026-07-28 我(老闆端 Claude)動了 LINE@ 這個檔，請 pull 最新別蓋掉。
+  新增「管理員專屬排班」功能，只有 role=manager 看得到，沒有改你既有的員工班表/打卡/換班/管理審核：
+   - <nav> 多一顆 id="scheduleAdminNav" data-tab="schedadmin"「排班」(load 時 role!=='manager' 隱藏)
+   - render() 多一支 tab==='schedadmin' → scheduleAdminView()
+   - 新增函式：scheduleAdminView / schShiftCard / assignShift / clearSchAssign / toggleSchTheme / toggleSchDep / setSchDate(狀態 schDate/schThemes/schDepOnly/schBusy)
+   - 呼叫後端新 action：manager-assign(把人寫進 shift.assignments 並設 manualEdit)
+  搭配的後端在 staff-api：bootstrap 的 publicShifts 多回 roleCandidates，新增 manager-assign action。
+  有衝突或要調整再找我，謝謝！
+-->
 <html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>員工排班與打卡</title>
 <style>
