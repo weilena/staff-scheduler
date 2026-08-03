@@ -94,15 +94,16 @@ Deno.serve(async (req) => {
           ? (cfg.employees ?? []).filter((candidate: any) => candidate.active && eligibilityErrors(candidate, s, writebackRole, shifts, cfg, [s.id]).length === 0).map((candidate: any) => ({ id: candidate.id, name: candidate.name })) : [];
         // 管理員 LINE 排班用:每個尚未排人的角色，列出「有資格＋當天有空＋不衝堂」的候選人(依場數少到多排序，供一鍵排)
         const roleCandidates: Record<string, Array<{ id: string; name: string; warnings: string[] }>> = {};
-        if (account.role === "manager" && s.kind === "theme" && !cancelled) {
-          // 詭獄／詭獄加場除了 SimplyBook 帶的 NPC，還可排場控(即使 assignments 尚無此欄位)。
-          const extraRoles = writebackTheme && String(writebackTheme.name ?? "").startsWith("詭獄") && !(s.assignments ?? []).some((a: any) => a.role === "場控") ? ["場控"] : [];
-          // 每個角色(含已排的，供換人)列出全部可調度的人;未具技能/衝堂/跨店/休假以 warnings 提示，不硬擋。
-          const roleSet = new Set<string>([...(s.assignments ?? []).map((a: any) => String(a.role)), ...extraRoles]);
+        // 詭獄／詭獄加場除了 SimplyBook 帶的 NPC，還可排場控(即使 assignments 尚無此欄位)。
+        const extraRoles = writebackTheme && String(writebackTheme.name ?? "").startsWith("詭獄") && !(s.assignments ?? []).some((a: any) => a.role === "場控") ? ["場控"] : [];
+        const roleSet = new Set<string>([...emptyRoles, ...extraRoles]);
+        // 只對「尚有空位的場次」算候選(避免對全部場次×全部角色計算讓 bootstrap 過重逾時);已排要換人先按 ✕ 清空即出現候選。
+        if (account.role === "manager" && s.kind === "theme" && !cancelled && roleSet.size) {
           const pool = (cfg.employees ?? []).filter((candidate: any) => candidate.active && employedOn(candidate, s.date) &&
             !(s.assignments ?? []).some((a: any) => a.empId === candidate.id));
           const ranked = rankCandidatesByWorkload(pool, shifts, s.date, 99);
           for (const role of roleSet) {
+            // 未具技能/衝堂/跨店/休假等以 warnings 提示，不硬擋;合格者(無 warnings)優先。
             roleCandidates[role] = ranked.map((candidate: any) => ({ id: candidate.id, name: candidate.name, warnings: eligibilityErrors(candidate, s, role, shifts, cfg, [s.id]) }))
               .sort((a: any, b: any) => (a.warnings.length ? 1 : 0) - (b.warnings.length ? 1 : 0));
           }
