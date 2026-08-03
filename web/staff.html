@@ -76,8 +76,13 @@ function schRoleChip(s,r,multi){
   let inner=`<span style="font-size:10px;font-weight:600;padding:1px 5px;border-radius:5px;background:#eef2f6;color:#475569;flex:0 0 auto">${esc(r.role)}</span>`;
   if(r.empId){inner+=`${schDot(e?schEmpColor(e):'#888')}<span style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${esc(e?e.name:r.empId)}</span><span onclick="event.stopPropagation();clearSchAssign('${s.id}','${esc(r.role)}')" style="cursor:pointer;color:#dc2626;font-size:14px;flex:0 0 auto">✕</span>`;}
   else{inner+=`<span style="color:var(--accent,#2f6f5f);font-size:16px;flex:0 0 auto;font-weight:700">＋</span>`;}
-  const onclick=r.empId?'':`onclick="selectSchSlot('${s.id}','${esc(r.role)}')"`;
-  return `<div ${onclick} style="cursor:${r.empId?'default':'pointer'};${box}">${inner}</div>`;
+  return `<div onclick="selectSchSlot('${s.id}','${esc(r.role)}')" style="cursor:pointer;${box}">${inner}</div>`;
+}
+async function schAssign(empId){
+  if(!schSlot)return;const s=D.shifts.find(x=>x.id===schSlot.shiftId);if(!s)return;
+  const cand=((s.roleCandidates||{})[schSlot.role]||[]).find(c=>c.id===empId),e=D.employees.find(x=>x.id===empId);
+  if(cand&&cand.warnings&&cand.warnings.length&&!confirm(`${e?e.name:''}：${cand.warnings.join('、')}\n仍要排入「${schSlot.role}」嗎？`))return;
+  assignSchEmp(schSlot.shiftId,schSlot.role,empId);
 }
 function schSessionCard(s){
   const t=D.themes.find(x=>x.id===s.themeId),slots=schRoleSlots(s),filled=slots.every(r=>r.empId),multi=slots.length>1;
@@ -114,9 +119,19 @@ function scheduleAdminView(){
   const chips=`<button onclick="schThemes=[];schSlot=null;render()" style="width:auto;font-size:13px;padding:6px 12px;border-radius:16px;${allOn?'':'background:#eef2f6;color:#1f2937'}">全部</button>`+storeThemes.map(t=>{const on=schThemes.includes(t.id),c=schThemeColor(t.id);return `<button onclick="toggleSchTheme('${t.id}')" style="display:inline-flex;align-items:center;gap:6px;width:auto;font-size:13px;padding:6px 12px;border-radius:16px;${on?`background:${c};color:#fff`:'background:#eef2f6;color:#1f2937'}">${schDot(on?'#fff':c)}${esc(t.name)}</button>`}).join('');
   const selShift=schSlot&&D.shifts.find(s=>s.id===schSlot.shiftId);
   const panel=`<div class="card"><h2 style="font-size:16px">當日員工 · 可上班／休假</h2>
-    <p class="muted" style="font-size:12px;margin-top:-4px">${schSlot?`點「可排」員工 → 指派到 ${schSlot.role}`:'先點上面一個角色，再點員工指派'}</p>
-    ${D.employees.map(e=>{const a=schEmpAvail(e,schDate),eligible=selShift&&((selShift.roleCandidates||{})[schSlot.role]||[]).some(c=>c.id===e.id);
-      return `<div ${eligible?`onclick="assignSchEmp('${schSlot.shiftId}','${schSlot.role}','${e.id}')"`:''} style="display:flex;align-items:center;gap:9px;padding:8px;border-radius:8px;margin:0 -4px;${eligible?'cursor:pointer;background:#dcfce7':''}">${schDot(schEmpColor(e))}<span style="font-weight:600;min-width:42px;${a&&a.on?'':'color:#94a3b8'}">${esc(e.name)}</span>${a&&a.on?`<span style="flex:1;font-size:13px;color:#475569">${esc(a.start)}–${esc(a.end)}</span>${schSlot?(eligible?'<span style="color:#16a34a;font-size:16px;font-weight:700">＋</span>':'<span style="font-size:11px;color:#94a3b8">不可排</span>'):''}`:`<span style="flex:1;font-size:13px;color:#94a3b8">—</span><span style="font-size:12px;font-weight:600;padding:2px 8px;border-radius:14px;background:#fee2e2;color:#b91c1c">${esc((a&&a.leaveType)||'休假')}</span>`}</div>`}).join('')}</div>`;
+    <p class="muted" style="font-size:12px;margin-top:-4px">${schSlot?`點員工 → 指派到 ${schSlot.role}（橘字為有提醒，仍可硬排）`:'先點上面一個角色，再點員工指派'}</p>
+    ${D.employees.map(e=>{
+      const a=schEmpAvail(e,schDate);
+      const cand=selShift?((selShift.roleCandidates||{})[schSlot.role]||[]).find(c=>c.id===e.id):null;
+      const warn=cand&&cand.warnings?cand.warnings:[],ok=cand&&!warn.length;
+      const bg=schSlot&&cand?(ok?'#dcfce7':'#fef3c7'):'';
+      const availCell=a&&a.on?`<span style="flex:1;font-size:13px;color:#475569">${esc(a.start)}–${esc(a.end)}</span>`
+        :(a?`<span style="flex:1"></span><span style="font-size:12px;font-weight:600;padding:2px 8px;border-radius:14px;background:#fee2e2;color:#b91c1c;flex:0 0 auto">${esc(a.leaveType||'休假')}</span>`
+           :'<span style="flex:1;font-size:13px;color:#94a3b8">未回報</span>');
+      let action='';
+      if(schSlot)action=!cand?'<span style="font-size:12px;color:#94a3b8;flex:0 0 auto">不可排</span>':(ok?'<span style="color:#16a34a;font-size:17px;font-weight:700;flex:0 0 auto">＋</span>':`<span style="font-size:11px;color:#b45309;text-align:right;flex:0 0 auto;max-width:96px">${esc(warn[0])}</span>`);
+      return `<div ${cand?`onclick="schAssign('${e.id}')"`:''} style="display:flex;align-items:center;gap:9px;padding:8px;border-radius:8px;margin:0 -4px;${cand?'cursor:pointer;':''}${bg?`background:${bg}`:''}">${schDot(schEmpColor(e))}<span style="font-weight:600;min-width:42px;${a&&a.on?'':'color:#94a3b8'}">${esc(e.name)}</span>${availCell}${action}</div>`;
+    }).join('')}</div>`;
   app.innerHTML=`<div class="card" style="padding:12px 12px 14px">
     <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px"><span onclick="moveSchWeek(-1)" style="cursor:pointer;font-size:18px;color:#64748b">‹</span><b onclick="schToggleCal()" style="cursor:pointer">${mid.getFullYear()}年${mid.getMonth()+1}月 ▾</b><span onclick="moveSchWeek(1)" style="cursor:pointer;font-size:18px;color:#64748b">›</span></div>
     ${cal}${strip}

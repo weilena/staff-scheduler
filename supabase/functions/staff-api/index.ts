@@ -93,15 +93,18 @@ Deno.serve(async (req) => {
         const writebackCandidates = account.role === "manager" && String(s.id).startsWith("sb_") && (s.assignments ?? []).some((a: any) => !a.empId && a.role === writebackRole)
           ? (cfg.employees ?? []).filter((candidate: any) => candidate.active && eligibilityErrors(candidate, s, writebackRole, shifts, cfg, [s.id]).length === 0).map((candidate: any) => ({ id: candidate.id, name: candidate.name })) : [];
         // 管理員 LINE 排班用:每個尚未排人的角色，列出「有資格＋當天有空＋不衝堂」的候選人(依場數少到多排序，供一鍵排)
-        const roleCandidates: Record<string, Array<{ id: string; name: string }>> = {};
+        const roleCandidates: Record<string, Array<{ id: string; name: string; warnings: string[] }>> = {};
         if (account.role === "manager" && s.kind === "theme" && !cancelled) {
           // 詭獄／詭獄加場除了 SimplyBook 帶的 NPC，還可排場控(即使 assignments 尚無此欄位)。
           const extraRoles = writebackTheme && String(writebackTheme.name ?? "").startsWith("詭獄") && !(s.assignments ?? []).some((a: any) => a.role === "場控") ? ["場控"] : [];
-          for (const role of [...new Set([...emptyRoles, ...extraRoles])]) {
-            const cands = (cfg.employees ?? []).filter((candidate: any) => candidate.active && employedOn(candidate, s.date) &&
-              !(s.assignments ?? []).some((a: any) => a.empId === candidate.id) &&
-              eligibilityErrors(candidate, s, role, shifts, cfg, [s.id]).length === 0);
-            roleCandidates[role] = rankCandidatesByWorkload(cands, shifts, s.date, 99).map((candidate: any) => ({ id: candidate.id, name: candidate.name }));
+          // 每個角色(含已排的，供換人)列出全部可調度的人;未具技能/衝堂/跨店/休假以 warnings 提示，不硬擋。
+          const roleSet = new Set<string>([...(s.assignments ?? []).map((a: any) => String(a.role)), ...extraRoles]);
+          const pool = (cfg.employees ?? []).filter((candidate: any) => candidate.active && employedOn(candidate, s.date) &&
+            !(s.assignments ?? []).some((a: any) => a.empId === candidate.id));
+          const ranked = rankCandidatesByWorkload(pool, shifts, s.date, 99);
+          for (const role of roleSet) {
+            roleCandidates[role] = ranked.map((candidate: any) => ({ id: candidate.id, name: candidate.name, warnings: eligibilityErrors(candidate, s, role, shifts, cfg, [s.id]) }))
+              .sort((a: any, b: any) => (a.warnings.length ? 1 : 0) - (b.warnings.length ? 1 : 0));
           }
         }
         return {
@@ -143,9 +146,8 @@ Deno.serve(async (req) => {
         const cand = (cfg.employees ?? []).find((e: any) => e.id === empId && e.active);
         if (!cand) return json({ error: "找不到這位員工" }, 400);
         if (assignments.some((a: any) => a.empId === empId)) return json({ error: `${cand.name} 已排在這個場次` }, 409);
-        const errs = eligibilityErrors(cand, shift, role, shifts, cfg, [shift.id]);
-        if (errs.length) return json({ error: errs.join("、") }, 409);
-        const slot = assignments.find((a: any) => a.role === role && !a.empId);
+        // 管理員可臨時調度:未具技能/衝堂/跨店/休假等不硬擋(前端已提示)。找同角色的欄位填入或換人，沒有就新增。
+        const slot = assignments.find((a: any) => a.role === role);
         if (slot) slot.empId = empId; else assignments.push({ role, empId });
       } else {
         const slot = assignments.find((a: any) => a.role === role && a.empId);
