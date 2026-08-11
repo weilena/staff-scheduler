@@ -159,6 +159,10 @@ Deno.serve(async (req) => {
       const source = String(shift.id).startsWith("sb_") ? "simplybook" : "manual";
       const { error } = await sb.from("shifts").upsert({ id: shift.id, date: shift.date, source, data: updated });
       if (error) return json({ error: error.message }, 500);
+      // 每一次排班/換人/清除都留稽核紀錄，不省略。
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id,
+        action: empId ? "schedule_assign" : "schedule_clear", target_type: "shift", target_id: shift.id,
+        details: { role, empId, date: shift.date, start: shift.start, end: shift.end, themeId: shift.themeId, by: employee.name } });
       return json({ ok: true, assignments });
     }
 

@@ -1799,13 +1799,17 @@ function saveShift(){
   if(statusVal==='cancelled_typhoon'&&rebookState==='rebooked'&&newShiftId){const target=byId(S.shifts,newShiftId);if(target){target.rebookFrom={shiftId:obj.id,bookingId:obj.rebook.originalBookingId,date:obj.rebook.originalDate,start:obj.rebook.originalStart};dbUpsertShift(target)}}
   if(editShiftId){const i=S.shifts.findIndex(x=>x.id===editShiftId);S.shifts[i]=obj}
   else S.shifts.push(obj);
-  save();dbUpsertShift(obj);notifyShiftAssignments(obj,prev);dlgShift.close();render();
+  save();dbUpsertShift(obj);notifyShiftAssignments(obj,prev);
+  if(!isDemo())sbc.from('audit_log').insert({actor_type:'supabase_admin',actor_id:currentAdminUser?.id||null,action:editShiftId?'schedule_edit':'schedule_create',target_type:'shift',target_id:obj.id,details:{date:obj.date,start:obj.start,end:obj.end,kind:obj.kind,themeId:obj.themeId||null,assignments:(obj.assignments||[]).filter(a=>a.empId).map(a=>({role:a.role,empId:a.empId})),by:currentAdminUser?.email||''}});
+  dlgShift.close();render();
   // 外婆／詭獄場控有異動時，立即重新計算謎先生櫃台起訖時間。
   ensureMsCounterFromThemeControl().then(render).catch(e=>console.error('櫃台班重新計算失敗',e));
 }
 function deleteShift(){
   if(!confirm('確定刪除此班次?'))return;
+  const del=byId(S.shifts,editShiftId);
   dbDeleteShift(editShiftId);
+  if(!isDemo())sbc.from('audit_log').insert({actor_type:'supabase_admin',actor_id:currentAdminUser?.id||null,action:'schedule_delete',target_type:'shift',target_id:editShiftId,details:{date:del?.date,start:del?.start,themeId:del?.themeId||null,by:currentAdminUser?.email||''}});
   S.shifts=S.shifts.filter(x=>x.id!==editShiftId);
   dlgShift.close();render();
 }
@@ -3090,7 +3094,31 @@ async function resetAdminPassword(id){
 async function logoutAdmin(){await sbc.auth.signOut();location.reload()}
 
 /* ============ 資料備份 ============ */
+let SCHED_AUDIT=[],schedAuditLoading=false,schedAuditLoaded=false;
+async function loadScheduleAudit(){
+  if(schedAuditLoading||isDemo())return;
+  schedAuditLoading=true;if(tab==='data')render();
+  try{const r=await sbc.from('audit_log').select('created_at,action,target_id,details').like('action','schedule_%').order('created_at',{ascending:false}).limit(100);if(!r.error&&r.data){SCHED_AUDIT=r.data;schedAuditLoaded=true}}
+  catch(e){alert('載入排班紀錄失敗:'+(e.message||e))}
+  schedAuditLoading=false;if(tab==='data')render();
+}
+function schedAuditHtml(){
+  const lab={schedule_assign:'LINE排入',schedule_clear:'LINE移出',schedule_create:'後台新增',schedule_edit:'後台編輯',schedule_delete:'後台刪除'};
+  return `<div class="card"><h2>📋 排班異動紀錄</h2>
+    <div class="row" style="margin-bottom:8px"><span class="muted">後台專屬，LINE 看不到。每一次排班／改人／刪除都保留:誰把誰排進哪一場、何時。</span><span class="grow"></span><button class="btn gray sm" onclick="loadScheduleAudit()">🔄 重新整理</button></div>
+    ${schedAuditLoading?'<p class="muted">載入中…</p>':(SCHED_AUDIT.length?`<div style="overflow:auto"><table><tr><th>時間</th><th>動作</th><th>場次</th><th>人員／角色</th><th>操作者</th></tr>
+      ${SCHED_AUDIT.map(r=>{const d=r.details||{},t=new Date(r.created_at).toLocaleString('zh-TW',{hour12:false});
+        const th=d.themeId?(theme(d.themeId)?.name||d.themeId):'';const sess=d.date?`${d.date} ${d.start||''} ${esc(th)}`:'';
+        let who='<span class="muted">—</span>';
+        if(d.empId){const e=emp(d.empId);who=`${esc(d.role||'')}：${esc(e?.name||d.empId)}`}
+        else if(d.assignments&&d.assignments.length){who=d.assignments.map(a=>{const e=emp(a.empId);return `${esc(a.role)} ${esc(e?.name||a.empId)}`}).join('、')||who}
+        return `<tr><td style="white-space:nowrap;font-size:12px">${esc(t)}</td><td style="white-space:nowrap">${lab[r.action]||esc(r.action)}</td><td style="font-size:12px">${esc(sess)}</td><td style="font-size:12px">${who}</td><td class="muted" style="font-size:12px">${esc(d.by||'')}</td></tr>`;
+      }).join('')}</table></div><p class="muted" style="margin-top:6px">顯示最近 100 筆(全部保留在資料庫)。</p>`
+    :'<p class="muted">目前沒有排班異動紀錄(排班或改人後就會出現)。</p>')}
+  </div>`;
+}
 function vData(){
+  if(!schedAuditLoaded&&!schedAuditLoading)loadScheduleAudit();
   return `<div class="card"><h2>資料備份與還原</h2>
     <p style="margin-bottom:10px">資料存在<b>雲端資料庫(Supabase)</b>,所有裝置即時共用。單機版的備份 JSON 可用「匯入備份」整包搬上雲;仍建議定期匯出備份。</p>
     <div class="row">
@@ -3112,7 +3140,8 @@ function vData(){
       }).join('')}</table>`
     :'<p class="muted">尚無同步紀錄(等待第一次背景同步)。</p>'}
     <p class="muted" style="margin-top:6px">排班表最上方也有即時同步狀態列;失敗時這裡會顯示原因。</p>
-  </div>`;
+  </div>
+  ${schedAuditHtml()}`;
 }
 function exportJSON(){dl(JSON.stringify(S,null,2),`排班系統備份_${todayStr()}.json`,'application/json')}
 function importJSON(input){
