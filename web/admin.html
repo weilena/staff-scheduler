@@ -684,7 +684,7 @@ function renderNav(){
     :'';
   document.getElementById('nav').innerHTML=`<div class="navmain">${row1}</div>${row2}`;
 }
-function go(k){tab=k;renderNav();render()}
+function go(k){tab=k;if(k==='themestats')themeStatsFreshAt=0;renderNav();render()}
 /* 颱風天/取消 → 待客人改期的提醒(期限一週內或已逾期)*/
 function rebookAlerts(){
   const today=todayStr();
@@ -1071,13 +1071,25 @@ function moveMonth(n){
 }
 /* ============ 主題場次統計(每月各主題累計排班場次) ============ */
 let themeStatsAnchor=monthStr();
+let themeStatsLoading=false, themeStatsFreshAt=0;
 function moveThemeStatsMonth(n){
   const[y,m]=themeStatsAnchor.split('-').map(Number);
   const d=new Date(y,m-1+n,1);
   themeStatsAnchor=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
   render();
 }
+/* 只重抓場次(比 afterLogin 輕),讓統計永遠是最新、跟 SimplyBook 同步。打開統計頁自動觸發;🔄 亦可手動 */
+async function refreshThemeStatsShifts(manual){
+  if(themeStatsLoading||isDemo())return;
+  themeStatsLoading=true;
+  if(manual&&tab==='themestats')render();
+  try{const shRes=await sbc.from('shifts').select('id,data');if(!shRes.error&&shRes.data)S.shifts=shRes.data.map(function(r){return r.data});}
+  catch(e){if(manual)alert('重新整理失敗:'+(e.message||e));}
+  themeStatsLoading=false;themeStatsFreshAt=Date.now();
+  if(tab==='themestats')render();
+}
 function vThemeStats(){
+  if(!themeStatsLoading&&Date.now()-themeStatsFreshAt>8000)refreshThemeStatsShifts(false);
   const[y,m]=themeStatsAnchor.split('-').map(Number);
   const from=themeStatsAnchor+'-01', to=fmtDate(new Date(y,m,0));
   // 依店別彙整各主題本月場次(詭獄加場與詭獄同一列、分開計並加總)
@@ -1096,8 +1108,9 @@ function vThemeStats(){
       <b style="font-size:16px">${y} 年 ${m} 月</b>
       <button class="btn gray sm" onclick="moveThemeStatsMonth(1)">→</button>
       <button class="btn gray sm" onclick="themeStatsAnchor=monthStr();render()">回本月</button>
+      <button class="btn gray sm" onclick="refreshThemeStatsShifts(true)" ${themeStatsLoading?'disabled':''}>${themeStatsLoading?'更新中…':'🔄 重新整理'}</button>
       <span class="grow"></span>
-      <span class="muted">全店合計 <b style="font-size:18px">${grand}</b> 場</span></div>`;
+      <span class="muted">${themeStatsLoading?'更新中… ':''}全店合計 <b style="font-size:18px">${grand}</b> 場</span></div>`;
   // 全主題統一配色(圓餅圖與占比條共用),占比一律以「占全部場次」為準
   const PIE_COLORS=['#2563eb','#e11d48','#16a34a','#d97706','#7c3aed','#0891b2','#db2777','#059669','#ea580c','#4338ca','#ca8a04','#0284c7'];
   const allGroups=[];
