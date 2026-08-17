@@ -2356,7 +2356,7 @@ function exportEmpDetailCSV(){
 }
 function formulaHours(minutes){return String(Number((Math.max(0,Number(minutes)||0)/60).toFixed(2)))}
 function payrollFormulaParts(row){
-  const {e,ss,hourlyComponents=[],base,ot}=row,parts=[];
+  const {e,ss,hourlyComponents=[],base,ot,ded}=row,parts=[];
   if(base)parts.push(`基本月薪 $${Number(base).toLocaleString()}`);
   const npcGroups=new Map();
   for(const x of (ss.payItems||[])){const key=`${x.holiday?'國定':'一般'}|${x.rate}`,old=npcGroups.get(key)||{holiday:x.holiday,rate:x.rate,count:0};old.count++;npcGroups.set(key,old)}
@@ -2365,6 +2365,7 @@ function payrollFormulaParts(row){
   for(const x of hourlyComponents)parts.push(`${x.holiday?'國定':'平日'}時薪 ${formulaHours(x.minutes)}小時×$${x.rate}＝$${Math.round(x.pay).toLocaleString()}`);
   if(ot?.firstMinutes)parts.push(`加班前2小時 ${formulaHours(ot.firstMinutes)}小時×$${Number(ot.baseRate).toFixed(2)}×4/3`);
   if(ot?.afterMinutes)parts.push(`加班後續 ${formulaHours(ot.afterMinutes)}小時×$${Number(ot.baseRate).toFixed(2)}×5/3`);
+  if(ded&&ded.amount)parts.push(`扣請假:事假${ded.personal.length}天×日薪$${Math.round(ded.daySalary).toLocaleString()}${ded.sick.length?`＋病假${ded.sick.length}天×半薪`:''} ＝ −$${ded.amount.toLocaleString()}`);
   return parts;
 }
 function payrollFormulaHtml(row){const parts=payrollFormulaParts(row);return `${parts.map(x=>`<div style="white-space:nowrap">${esc(x)}</div>`).join('')||'<span class="muted">無計薪項目</span>'}<div style="margin-top:5px;padding-top:5px;border-top:1px solid #cbd5e1;white-space:nowrap"><b>＝ $${Math.round(row.total).toLocaleString()}</b></div>`}
@@ -2373,14 +2374,16 @@ function vPay(){
   const reviewEmployees=S.employees.filter(e=>employedInMonth(e,payReviewMonth));
   const rows=actives.map(e=>{
     const ss=sessionStats(e.id,payMonth);
-    const hourly=approvedHourlyBreakdown(e,payMonth),hm=hourly.minutes,hp=hourly.pay;
+    const hourly=approvedHourlyBreakdown(e,payMonth),hm=hourly.minutes;
+    const hp=e.type==='full'?0:hourly.pay;  // 正職不重複計時薪(工時含月薪;每日超過8h改走加班)
     const base=e.type==='full'?(e.monthlySalary||0):0;
     const am=actualMinutes(e.id,payMonth);
     // 正職加班只採管理員核准分鐘，不讓缺卡或異常長工時自動進薪資。
     const ot=e.type==='full'?approvedOvertimePay(e,payMonth):{minutes:0,pay:0};
     let otHr=ot.minutes/60,otPay=ot.pay;
+    const ded=e.type==='full'?leaveDeduction(e,payMonth):{amount:0,personal:[],sick:[],daySalary:0};
     const sequence=payrollSequenceRelations(e.id,payMonth);
-    return{e,ss,hm,hp,hourlyRates:hourly.rates||[],hourlyComponents:hourly.components||[],collisionMinutes:hourly.collisionMinutes||0,sequence,base,am,ot,otHr,otPay,total:ss.pay+hp+base+otPay};
+    return{e,ss,hm,hp,hourlyRates:hourly.rates||[],hourlyComponents:e.type==='full'?[]:(hourly.components||[]),collisionMinutes:hourly.collisionMinutes||0,sequence,base,am,ot,otHr,otPay,ded,total:ss.pay+hp+base+otPay-ded.amount};
   });
   const total=rows.reduce((s,r)=>s+r.total,0);
   const pendingMonth=(LINE.daily||[]).filter(r=>String(r.work_date).slice(0,7)===payReviewMonth&&(r.status==='pending'||r.status==='anomaly'));
@@ -2427,7 +2430,7 @@ function vPay(){
         <td class="num"><b>${total.toLocaleString()}</b></td></tr>`}).join('')}
       <tr><td colspan="15" style="text-align:right"><b>合計</b></td><td class="num"><b>${total.toLocaleString()}</b></td></tr>
     </table>
-    <p class="muted" style="margin-top:8px">一般日包含平日與週六日；只有標示名稱的國定假日採固定日費率。兼職 NPC 按主題場次費；兼職主題場控按時薪（預設 $${S.settings.controllerHourlyRate||196}），每場依實際打卡重疊時間、最多 2 小時，兩個撞場仍分場累加。兼職櫃台／清潔／訓練等也按時薪；員工有設定個人時薪時一律優先。正職以月薪含 ${S.settings.fullBaseSessions??40} 場，超過場次費率可依員工設定；加班僅採管理員核准分鐘，前2小時與後續時數分開計算。</p>
+    <p class="muted" style="margin-top:8px">一般日包含平日與週六日；只有標示名稱的國定假日採固定日費率。兼職 NPC 按主題場次費；兼職主題場控按時薪（預設 $${S.settings.controllerHourlyRate||196}），每場依實際打卡重疊時間、最多 2 小時，兩個撞場仍分場累加。兼職櫃台／清潔／訓練等也按時薪；員工有設定個人時薪時一律優先。正職以月薪含 ${S.settings.fullBaseSessions??40} 場，超過場次費率可依員工設定；加班僅採管理員核准分鐘，前2小時與後續時數分開計算。<br><b>正職不另計時薪</b>(工時含月薪,每日超過8小時改走加班)；<b>正職請假(勞基法)</b>:特休全薪、事假扣全日薪(月薪÷30)、病假半薪,假別由 Google 日曆寫「事假／病假／特休」自動帶入。</p>
   </div>`;
 }
 function exportPayCSV(){
@@ -2791,6 +2794,17 @@ function approvedOvertimePay(e,month){
   }
   return{minutes,firstMinutes,afterMinutes,pay:Math.round(pay),baseRate};
 }
+/* 正職請假扣薪(勞基法):事假扣全日薪、病假扣半日薪、特休/一般休不扣;日薪=月薪÷30。假別由 Google 日曆文字(事假/病假/特休)帶入。 */
+function leaveDeduction(e,month){
+  const salary=Number(e.monthlySalary)||0;
+  if(e.type!=='full'||!salary)return{amount:0,personal:[],sick:[],daySalary:0};
+  const daySalary=salary/30,[y,m]=month.split('-').map(Number),days=new Date(y,m,0).getDate();
+  const personal=[],sick=[];
+  for(let i=1;i<=days;i++){const d=`${month}-${String(i).padStart(2,'0')}`,a=effectiveAvail(e,d);
+    if(a&&a.on===false){if(a.leaveType==='事假')personal.push(d);else if(a.leaveType==='病假')sick.push(d);}}
+  const amount=Math.round(personal.length*daySalary + sick.length*daySalary/2);
+  return{amount,personal,sick,daySalary};
+}
 function payrollDayGrid(e,month,opened){
   const[y,m]=month.split('-').map(Number),days=new Date(y,m,0).getDate();
   const cols=Array.from({length:days},(_,i)=>month+'-'+String(i+1).padStart(2,'0'));
@@ -2834,6 +2848,8 @@ function parseGCalAvail(raw){
     if(t)return dir==='before'?{on:true,start:'09:00',end:t}:{on:true,start:t,end:'22:30'};
   }
   if(/特休/.test(s))return {on:false,start:'09:00',end:'22:30',leaveType:'特休'};
+  if(/事假/.test(s))return {on:false,start:'09:00',end:'22:30',leaveType:'事假'};
+  if(/病假/.test(s))return {on:false,start:'09:00',end:'22:30',leaveType:'病假'};
   if(/(❌|❎|不行|休)/.test(s))return {on:false,start:'09:00',end:'22:30'};
   if(/(allday|全天|整天|全台可以|可以|全部)/i.test(s))return {on:true,start:'09:00',end:'22:30'};
   return null;
