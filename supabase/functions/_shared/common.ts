@@ -108,13 +108,19 @@ export function rankCandidatesByWorkload(candidates: any[], shifts: any[], targe
 }
 
 export async function getContext(sb: any) {
-  const [{ data: config, error: configError }, { data: rows, error: shiftError }] = await Promise.all([
-    sb.from("config").select("data").eq("id", 1).single(),
-    sb.from("shifts").select("id,date,data"),
-  ]);
+  const { data: config, error: configError } = await sb.from("config").select("data").eq("id", 1).single();
   if (configError) throw configError;
-  if (shiftError) throw shiftError;
-  const shifts = (rows ?? []).map((r: any) => r.data);
+  // Supabase 單次查詢預設上限 1000 筆;班次已超過,需分頁抓齊否則會漏抓(排班/候選/薪資都會少算)。
+  const shifts: any[] = [];
+  let from = 0; const page = 1000;
+  for (;;) {
+    const { data: rows, error: shiftError } = await sb.from("shifts").select("id,date,data").range(from, from + page - 1);
+    if (shiftError) throw shiftError;
+    const batch = rows ?? [];
+    for (const r of batch) shifts.push(r.data);
+    if (batch.length < page) break;
+    from += page;
+  }
   for (const shift of shifts) for (const assignment of shift.assignments ?? []) {
     if (assignment.role === "練習場") assignment.role = "訓練場";
   }

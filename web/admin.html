@@ -432,16 +432,22 @@ async function doLogin(){
   document.getElementById('loginOv').style.display='none';
   await afterLogin();
 }
+/* Supabase 單次查詢預設上限 1000 筆;分頁把整張表抓齊(場次已超過1000筆,否則會漏抓) */
+async function fetchAllRows(table,cols){
+  let all=[],from=0;const page=1000;
+  for(;;){const r=await sbc.from(table).select(cols).range(from,from+page-1);if(r.error)throw r.error;const rows=r.data||[];all=all.concat(rows);if(rows.length<page)break;from+=page;}
+  return all;
+}
 async function afterLogin(){
   const authUser=await sbc.auth.getUser();
   currentAdminUser=authUser.data?.user||null;
   let cfgRes=await sbc.from('config').select('data').eq('id',1).maybeSingle();
   let cfg=cfgRes.data;
   if(!cfg||!cfg.data){const d=seedConfig();await sbc.from('config').upsert({id:1,data:d});cfg={data:d}}
-  const shRes=await sbc.from('shifts').select('id,data');
-  const puRes=await sbc.from('punches').select('*');
-  const ciRes=await sbc.from('session_checkins').select('*');
-  const cfRes=await sbc.from('shift_confirmations').select('*');
+  const shRes={data:await fetchAllRows('shifts','id,data')};
+  const puRes={data:await fetchAllRows('punches','*')};
+  const ciRes={data:await fetchAllRows('session_checkins','*')};
+  const cfRes={data:await fetchAllRows('shift_confirmations','*')};
   S=Object.assign({},cfg.data,{
     shifts:(shRes.data||[]).map(function(r){return r.data}),
     punches:(puRes.data||[]).map(function(p){return{id:p.id,empId:p.emp_id,type:p.type,ts:p.ts,source:p.source,worksiteId:p.worksite_id,verification:p.verification,reviewState:p.review_state,voidedAt:p.voided_at,voidReason:p.void_reason,shiftIds:p.shift_ids||[],raw:p.raw||{},workItem:p.raw?.work_item||null}}),
@@ -1083,7 +1089,7 @@ async function refreshThemeStatsShifts(manual){
   if(themeStatsLoading||isDemo())return;
   themeStatsLoading=true;
   if(manual&&tab==='themestats')render();
-  try{const shRes=await sbc.from('shifts').select('id,data');if(!shRes.error&&shRes.data)S.shifts=shRes.data.map(function(r){return r.data});}
+  try{const rows=await fetchAllRows('shifts','id,data');S.shifts=rows.map(function(r){return r.data});}
   catch(e){if(manual)alert('重新整理失敗:'+(e.message||e));}
   themeStatsLoading=false;themeStatsFreshAt=Date.now();
   if(tab==='themestats')render();
