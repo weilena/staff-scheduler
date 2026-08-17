@@ -690,7 +690,7 @@ function renderNav(){
     :'';
   document.getElementById('nav').innerHTML=`<div class="navmain">${row1}</div>${row2}`;
 }
-function go(k){tab=k;if(k==='themestats')themeStatsFreshAt=0;renderNav();render()}
+function go(k){tab=k;if(k==='themestats')themeStatsRowsMonth='';renderNav();render()}
 /* 颱風天/取消 → 待客人改期的提醒(期限一週內或已逾期)*/
 function rebookAlerts(){
   const today=todayStr();
@@ -1077,36 +1077,33 @@ function moveMonth(n){
 }
 /* ============ 主題場次統計(每月各主題累計排班場次) ============ */
 let themeStatsAnchor=monthStr();
-let themeStatsLoading=false, themeStatsFreshAt=0;
+let themeStatsLoading=false, themeStatsRows=[], themeStatsRowsMonth='';
 function moveThemeStatsMonth(n){
   const[y,m]=themeStatsAnchor.split('-').map(Number);
   const d=new Date(y,m-1+n,1);
   themeStatsAnchor=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
   render();
 }
-/* 只重抓場次(比 afterLogin 輕),讓統計永遠是最新、跟 SimplyBook 同步。打開統計頁自動觸發;🔄 亦可手動 */
-async function refreshThemeStatsShifts(manual){
+/* 統計數字直接叫資料庫算(theme_month_counts RPC),不靠瀏覽器數全部場次 → 永遠準、再多場次也瞬間。 */
+async function loadThemeStatsCounts(manual){
   if(themeStatsLoading||isDemo())return;
-  themeStatsLoading=true;
-  if(manual&&tab==='themestats')render();
-  try{const rows=await fetchAllRows('shifts','id,data');S.shifts=rows.map(function(r){return r.data});}
-  catch(e){if(manual)alert('重新整理失敗:'+(e.message||e));}
-  themeStatsLoading=false;themeStatsFreshAt=Date.now();
-  if(tab==='themestats')render();
+  const[y,m]=themeStatsAnchor.split('-').map(Number),from=themeStatsAnchor+'-01',to=fmtDate(new Date(y,m,0)),want=themeStatsAnchor;
+  themeStatsLoading=true;if(manual&&tab==='themestats')render();
+  try{const r=await sbc.rpc('theme_month_counts',{p_from:from,p_to:to});if(!r.error){themeStatsRows=r.data||[];themeStatsRowsMonth=want;}else if(manual)alert('讀取失敗:'+r.error.message);}
+  catch(e){if(manual)alert('讀取失敗:'+(e.message||e));}
+  themeStatsLoading=false;if(tab==='themestats')render();
 }
 function vThemeStats(){
-  if(!themeStatsLoading&&Date.now()-themeStatsFreshAt>8000)refreshThemeStatsShifts(false);
+  if(themeStatsRowsMonth!==themeStatsAnchor&&!themeStatsLoading)loadThemeStatsCounts(false);
   const[y,m]=themeStatsAnchor.split('-').map(Number);
-  const from=themeStatsAnchor+'-01', to=fmtDate(new Date(y,m,0));
-  // 依店別彙整各主題本月場次(詭獄加場與詭獄同一列、分開計並加總)
+  // 依店別彙整各主題本月場次(數字來自資料庫 RPC;詭獄與詭獄加場合併為同一主題)
   const stores={};
   for(const st of S.stores)stores[st.id]={store:st,groups:{},total:0};
-  for(const sh of S.shifts){
-    if(sh.kind!=='theme'||isCx(sh)||sh.date<from||sh.date>to)continue;
-    const t=theme(sh.themeId);if(!t)continue;const b=stores[sh.storeId];if(!b)continue;
-    const base=baseThemeName(t);
-    const g=b.groups[base]||(b.groups[base]={base,normal:0,surge:0,total:0});
-    if(isSurge(t))g.surge++;else g.normal++;g.total++;b.total++;
+  for(const row of themeStatsRows){
+    const t=theme(row.theme_id),b=stores[row.store_id];if(!t||!b)continue;
+    const base=baseThemeName(t),c=Number(row.cnt)||0;
+    const g=b.groups[base]||(b.groups[base]={base,total:0});
+    g.total+=c;b.total+=c;
   }
   const grand=Object.values(stores).reduce((s,b)=>s+b.total,0);
   const nav=`<div class="row" style="margin-bottom:10px">
@@ -1114,7 +1111,7 @@ function vThemeStats(){
       <b style="font-size:16px">${y} 年 ${m} 月</b>
       <button class="btn gray sm" onclick="moveThemeStatsMonth(1)">→</button>
       <button class="btn gray sm" onclick="themeStatsAnchor=monthStr();render()">回本月</button>
-      <button class="btn gray sm" onclick="refreshThemeStatsShifts(true)" ${themeStatsLoading?'disabled':''}>${themeStatsLoading?'更新中…':'🔄 重新整理'}</button>
+      <button class="btn gray sm" onclick="loadThemeStatsCounts(true)" ${themeStatsLoading?'disabled':''}>${themeStatsLoading?'更新中…':'🔄 重新整理'}</button>
       <span class="grow"></span>
       <span class="muted">${themeStatsLoading?'更新中… ':''}全店合計 <b style="font-size:18px">${grand}</b> 場</span></div>`;
   // 全主題統一配色(圓餅圖與占比條共用),占比一律以「占全部場次」為準
