@@ -2174,8 +2174,10 @@ function sessionStats(empId,month){
     }
   }
   const total=gm+npc,baseSessions=Number(S.settings.fullBaseSessions??40),extra=e?.type==='full'?Math.max(0,total-baseSessions):0;
-  const extraPay=e?.type==='full'?Math.round(extra*Number(e.extraSessionRate||S.settings.fullExtraSessionRate||0)):0;
-  return{pay:pay+extraPay,gm,npc,total,extra,extraPay,baseSessions,detail,payItems};
+  // 正職:超過含場數後，每滿 fullBonusPer 場給一個 fullBonusAmount 獎金(場數/金額皆可在薪資頁手動設)。
+  const bonusPer=Number(S.settings.fullBonusPer)||5,bonusAmt=Number(S.settings.fullBonusAmount)||1000;
+  const bonusBlocks=e?.type==='full'?Math.floor(extra/bonusPer):0,extraPay=bonusBlocks*bonusAmt;
+  return{pay:pay+extraPay,gm,npc,total,extra,extraPay,bonusBlocks,bonusPer,bonusAmt,baseSessions,detail,payItems};
 }
 /* 櫃台/駐店班時數(時薪計;不含訓練場)*/
 function hourlyMinutes(empId,month){
@@ -2361,7 +2363,7 @@ function payrollFormulaParts(row){
   const npcGroups=new Map();
   for(const x of (ss.payItems||[])){const key=`${x.holiday?'國定':'一般'}|${x.rate}`,old=npcGroups.get(key)||{holiday:x.holiday,rate:x.rate,count:0};old.count++;npcGroups.set(key,old)}
   for(const x of npcGroups.values())parts.push(`${x.holiday?'國定':'一般日'} NPC ${x.count}場×$${x.rate}＝$${(x.count*x.rate).toLocaleString()}`);
-  if(e.type==='full'&&ss.extra)parts.push(`超過${ss.baseSessions}場 ${ss.extra}場×$${Number(e.extraSessionRate||S.settings.fullExtraSessionRate||0)}＝$${ss.extraPay.toLocaleString()}`);
+  if(e.type==='full'&&ss.bonusBlocks)parts.push(`超過${ss.baseSessions}場獎金:每${ss.bonusPer}場$${ss.bonusAmt.toLocaleString()}×${ss.bonusBlocks}＝$${ss.extraPay.toLocaleString()}(共超${ss.extra}場)`);
   for(const x of hourlyComponents)parts.push(`${x.holiday?'國定':'平日'}時薪 ${formulaHours(x.minutes)}小時×$${x.rate}＝$${Math.round(x.pay).toLocaleString()}`);
   if(ot?.firstMinutes)parts.push(`加班前2小時 ${formulaHours(ot.firstMinutes)}小時×$${Number(ot.baseRate).toFixed(2)}×4/3`);
   if(ot?.afterMinutes)parts.push(`加班後續 ${formulaHours(ot.afterMinutes)}小時×$${Number(ot.baseRate).toFixed(2)}×5/3`);
@@ -2406,7 +2408,8 @@ function vPay(){
     <div class="row" style="margin-bottom:10px">
       <div><h2 style="margin:0">薪資試算</h2><span class="muted">${payMonth.slice(0,4)} 年 ${Number(payMonth.slice(5,7))} 月</span></div>
       <span class="grow"></span>
-      <label style="margin:0">滾場空檔</label><input type="number" style="width:72px" min="0" value="${S.settings.rollingGapMin??30}" onchange="setSetting('rollingGapMin',this.value)"><span class="muted">分鐘</span>
+      <label style="margin:0">滾場空檔</label><input type="number" style="width:66px" min="0" value="${S.settings.rollingGapMin??30}" onchange="setSetting('rollingGapMin',this.value)"><span class="muted">分</span>
+      <span class="muted">正職含</span><input type="number" style="width:52px" min="0" value="${S.settings.fullBaseSessions??40}" onchange="setSetting('fullBaseSessions',this.value);render()"><span class="muted">場,每</span><input type="number" style="width:46px" min="1" value="${Number(S.settings.fullBonusPer)||5}" onchange="setSetting('fullBonusPer',this.value);render()"><span class="muted">場獎金$</span><input type="number" style="width:70px" min="0" value="${Number(S.settings.fullBonusAmount)||1000}" onchange="setSetting('fullBonusAmount',this.value);render()">
       <label style="margin:0">薪資月份</label><input type="month" value="${payMonth}" onchange="setPayMonth(this.value)">
       <button class="btn gray sm" onclick="exportPayCSV()">匯出 CSV(含場次明細)</button>
     </div>
