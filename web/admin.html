@@ -661,7 +661,10 @@ function employedOn(e,ds){
   return !!e.active&&(!e.startDate||ds>=e.startDate)&&(!e.endDate||ds<=e.endDate);
 }
 /* 店休息日:每週四公休 或 手動加入的店休/颱風不營業日 */
-function isStoreClosedDay(ds){return dateWD(ds)===4||S.closedDates.includes(ds)}
+/* 每週固定公休日(可設定;預設週四=4;'' 或 -1 = 無固定公休) */
+function weeklyOffDay(){const v=S.settings&&S.settings.weeklyOffDay;return v===''||v===null?-1:(v===undefined?4:Number(v));}
+function isWeeklyOff(ds){const w=weeklyOffDay();return w>=0&&dateWD(ds)===w;}
+function isStoreClosedDay(ds){return isWeeklyOff(ds)||S.closedDates.includes(ds)}
 function employedInMonth(e,month){
   const start=month+'-01';
   const end=fmtDate(new Date(Number(month.slice(0,4)),Number(month.slice(5,7)),0));
@@ -796,7 +799,7 @@ function isShiftUnstaffed(sh){
 function activeCounterShifts(ds,storeId){return S.shifts.filter(sh=>sh.date===ds&&sh.storeId===storeId&&sh.kind==='counter'&&!isCx(sh)).sort((a,b)=>a.start.localeCompare(b.start))}
 function dzCounterDefaultTime(ds){
   const day=dateWD(ds);
-  if(day===4||S.closedDates.includes(ds))return null;
+  if(isWeeklyOff(ds)||S.closedDates.includes(ds))return null;
   if(day===0||day===6)return{start:'12:30',end:'22:00'};
   return{start:'13:30',end:'22:00'};
 }
@@ -861,7 +864,7 @@ function yijiaNeedsDzCoverage(ds){
 }
 function counterCoverageChip(ds,storeId){
   const shifts=activeCounterShifts(ds,storeId),label=storeId==='dz'?'大忠櫃台':'謎先生櫃台';
-  const closed=dateWD(ds)===4||S.closedDates.includes(ds);
+  const closed=isWeeklyOff(ds)||S.closedDates.includes(ds);
   if(closed&&!shifts.length)return `<div class="chip" style="background:#e5e7eb;color:#6b7280;border:1px solid #d1d5db" onclick="event.stopPropagation();openShift(null,'${ds}',{storeId:'${storeId}',kind:'counter'})"><b>${label}</b> 公休・仍可安排</div>`;
   const people=[...new Set(shifts.flatMap(sh=>(sh.assignments||[]).filter(a=>a.empId).map(a=>emp(a.empId)?.name||a.empId)))];
   const urgent=storeId==='dz'&&yijiaNeedsDzCoverage(ds),missing=!shifts.length||!people.length;
@@ -2034,7 +2037,7 @@ function fullLeaveSummary(e,month){
     if(hol)holidays.push({d,name:hol});
     if(wd===0||wd===6)weekendDays++;else if(hol)holidayOnly++;
     if(S.closedDates.includes(d)){if(isTyphoonClosed(d))typhoon++;else closed++;continue;}  // 不營業(全店):颱風或一般店休
-    if(wd===4&&!exempt){thu++;continue;}                    // 週四公休(例外者不自動計)
+    if(isWeeklyOff(d)&&!exempt){thu++;continue;}            // 每週固定公休(例外者不自動計)
     const a=effectiveAvail(e,d);if(a&&a.on===false){personal.push(d);if(a.leaveType==='特休')special.push(d);}  // 個人請假;特休另計
   }
   // 年度特休已用:掃該員工整年 availX 標「特休」的天數(日曆寫「XX特休」自動帶入)
@@ -2054,7 +2057,7 @@ function fullLeaveSummaryHtml(e,month){
       ${e.restNote?`<span class="muted" style="margin-left:8px">備註:${esc(e.restNote)}</span>`:''}
       <span class="grow"></span><span>實際休假 <b style="font-size:18px;color:#b91c1c">${s.actual}</b> 天</span></div>
     <div class="muted" style="margin-top:6px;font-size:12.5px">
-      ${s.exempt?'不套用週四公休(逐日填)':`週四公休 ${s.thu} 天`}・店休 ${s.closed} 天・🌀颱風停班 ${s.typhoon} 天・個人請假 ${s.personal.length} 天(${personalList})</div>
+      ${s.exempt?`不套用${weeklyOffDay()>=0?'週'+WD[weeklyOffDay()]:''}公休(逐日填)`:`${weeklyOffDay()>=0?'週'+WD[weeklyOffDay()]:'固定'}公休 ${s.thu} 天`}・店休 ${s.closed} 天・🌀颱風停班 ${s.typhoon} 天・個人請假 ${s.personal.length} 天(${personalList})</div>
     <div class="muted" style="margin-top:4px;font-size:12.5px">
       行事曆應休(對照) <b>${s.nominal}</b> 天＝六日 ${s.weekendDays} ＋ 國定 ${s.holidayOnly}・本月國定假日:${holList}</div>
     <div style="margin-top:6px;padding-top:6px;border-top:1px dashed #fca5a5;font-size:12.5px">
@@ -2067,7 +2070,7 @@ function attendanceMonthGrid(e,month){
   const head=dates.map(d=>{const holiday=holidayName(d);return `<th style="${holiday?'background:#b91c1c;color:#fff':'background:#f8fafc'}">${holiday?'國定':'一般日'}<br>${Number(d.slice(8))}<br>週${WD[dateWD(d)]}${holiday?`<br><small>${esc(holiday)}</small>`:''}</th>`}).join('');
   const row=(label,bg,fn)=>`<tr style="background:${bg}"><th class="row-label" style="background:${bg}">${label}</th>${dates.map(d=>`<td>${fn(data[d],d)}</td>`).join('')}</tr>`;
   return `${fullLeaveSummaryHtml(e,month)}<div class="attendance-scroll"><table class="attendance-matrix" style="min-width:${Math.max(1200,days*112+145)}px"><thead><tr><th class="row-label" style="background:#fff3cd">項目</th>${head}</tr></thead><tbody>
-    ${row('休假／請假','#fee2e2',(x,d)=>{if(isTyphoonClosed(d))return '<span class="att-error">🌀颱風停班</span>';if(S.closedDates.includes(d))return '<span class="muted">店休</span>';if(dateWD(d)===4&&!e.weeklyOffExempt)return '<span class="muted">公休</span>';const a=effectiveAvail(e,d);if(a&&a.on===false)return '<span class="att-error">休假</span>';if(a&&a.on&&(a.start!=='09:00'||a.end!=='22:30'))return `<span class="muted">可 ${esc(a.start)}–${esc(a.end)}</span>`;return '—'})}
+    ${row('休假／請假','#fee2e2',(x,d)=>{if(isTyphoonClosed(d))return '<span class="att-error">🌀颱風停班</span>';if(S.closedDates.includes(d))return '<span class="muted">店休</span>';if(isWeeklyOff(d)&&!e.weeklyOffExempt)return '<span class="muted">公休</span>';const a=effectiveAvail(e,d);if(a&&a.on===false)return '<span class="att-error">休假</span>';if(a&&a.on&&(a.start!=='09:00'||a.end!=='22:30'))return `<span class="muted">可 ${esc(a.start)}–${esc(a.end)}</span>`;return '—'})}
     ${row('管理員派班','#fff8d8',x=>x.manager)}
     ${row('正職安排訓練','#fef3c7',x=>x.training)}
     ${row('SimplyBook 主題','#fce7f3',x=>x.sb)}
@@ -2557,9 +2560,11 @@ function setSetting(k,v){S.settings[k]=Math.max(0,Number(v)||0);save()}
 function addClosed(){
   const d=document.getElementById('cdDate').value;
   if(!d)return alert('請選日期');
+  if(isWeeklyOff(d))return alert(`每${weeklyOffDay()>=0?'週'+WD[weeklyOffDay()]:''}已自動公休,不需加進店休日;這裡只放「非固定公休」的特別店休日。`);
   if(!S.closedDates.includes(d)){S.closedDates.push(d);S.closedDates.sort();save();render()}
 }
 function delClosed(d){S.closedDates=S.closedDates.filter(x=>x!==d);save();render()}
+function setWeeklyOff(v){S.settings=S.settings||{};S.settings.weeklyOffDay=(v===''?'':Number(v));save();render();}
 /* 颱風假等自訂假日:當天改用假日費率(薪資/月表會標紅) */
 function addHoliday(){
   const d=document.getElementById('hdDate').value,n=document.getElementById('hdName').value.trim()||'颱風假';
@@ -2603,6 +2608,14 @@ function vThemes(){
       <span>兼職主題場控預設時薪</span><input type="number" style="width:80px" value="${S.settings.controllerHourlyRate||196}" min="0" onchange="setSetting('controllerHourlyRate',this.value)"><span>元（員工有個人時薪時，仍以個人時薪優先）</span>
     </div>
     <p class="muted" style="margin-top:6px">排班時的碰撞檢查會套用這些數字。</p>
+    <div class="row" style="margin-top:10px">
+      <span>每週固定公休</span>
+      <select onchange="setWeeklyOff(this.value)">
+        <option value="" ${weeklyOffDay()<0?'selected':''}>無固定公休</option>
+        ${WD.map((w,i)=>`<option value="${i}" ${weeklyOffDay()===i?'selected':''}>週${w}</option>`).join('')}
+      </select>
+      <span class="muted">整店每週固定公休日,系統自動當公休、不用逐日加店休(目前:${weeklyOffDay()>=0?'週'+WD[weeklyOffDay()]:'無'})</span>
+    </div>
     <div class="row" style="margin-top:10px">
       <span>店休日:</span>
       ${S.closedDates.filter(d=>!isTyphoonClosed(d)).map(d=>`<span class="tag" style="background:#fee2e2;color:#b91c1c">${d} <a href="#" onclick="delClosed('${d}');return false" style="color:#b91c1c;text-decoration:none">✕</a></span>`).join('')}
