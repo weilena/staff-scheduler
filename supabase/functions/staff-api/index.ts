@@ -133,7 +133,8 @@ Deno.serve(async (req) => {
       return json({ me: { id: employee.id, name: employee.name, role: account.role, type: employee.type,
           canSchedulePractice: account.role === "manager" || (employee.type === "full" && !!employee.canSchedulePractice) }, stores: cfg.stores, themes: cfg.themes,
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches,
-        attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
+        attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations,
+        weeklyOffDay: cfg.settings?.weeklyOffDay ?? 4, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
 
     if (action === "manager-assign") {
