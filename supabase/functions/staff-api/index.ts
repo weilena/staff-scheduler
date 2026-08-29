@@ -64,17 +64,30 @@ Deno.serve(async (req) => {
       const publicEmployees = (cfg.employees ?? []).filter((e: any) => e.active).map((e: any) => account.role === "manager"
         ? { id: e.id, name: e.name, color: e.simplybookColor ?? "", type: e.type, skills: e.skills ?? {}, avail: e.avail ?? null, availX: e.availX ?? {} }
         : { id: e.id, name: e.name });
+      // bootstrap 只回前後 60 天，但 getContext 會載入完整歷史班次。候選人與撞班判斷
+      // 若每次都掃描全部歷史資料，班次超過 1000 筆後會讓 LINE 啟動逾時。
+      // 撞班只需要同一天；月工作量排序只需要同月份，因此先建立索引縮小運算範圍。
+      const shiftsByDate = new Map<string, any[]>(), shiftsByMonth = new Map<string, any[]>();
+      for (const shift of shifts) {
+        const date = String(shift.date ?? ""), month = date.slice(0, 7);
+        if (!shiftsByDate.has(date)) shiftsByDate.set(date, []);
+        shiftsByDate.get(date)!.push(shift);
+        if (!shiftsByMonth.has(month)) shiftsByMonth.set(month, []);
+        shiftsByMonth.get(month)!.push(shift);
+      }
       const publicShifts = shifts.filter((s: any) => s.date >= from && s.date <= to).map((s: any) => {
+        const dayShifts = shiftsByDate.get(String(s.date ?? "")) ?? [];
+        const monthShifts = shiftsByMonth.get(String(s.date ?? "").slice(0, 7)) ?? [];
         const cancelled = String(s.status ?? "").startsWith("cancelled");
         const emptyRoles = (s.assignments ?? []).filter((a: any) => !a.empId).map((a: any) => String(a.role ?? ""));
         const eligible = emptyRoles.length ? (cfg.employees ?? []).filter((candidate: any) => candidate.active &&
-          emptyRoles.some((role: string) => eligibilityErrors(candidate, s, role, shifts, cfg).length === 0)) : [];
-        const ranked = rankCandidatesByWorkload(eligible, shifts, s.date, 99);
-        const onSite = ranked.filter((candidate: any) => shifts.some((other: any) => other.id !== s.id && other.date === s.date &&
+          emptyRoles.some((role: string) => eligibilityErrors(candidate, s, role, dayShifts, cfg).length === 0)) : [];
+        const ranked = rankCandidatesByWorkload(eligible, monthShifts, s.date, 99);
+        const onSite = ranked.filter((candidate: any) => dayShifts.some((other: any) => other.id !== s.id && other.date === s.date &&
           other.storeId === s.storeId && !String(other.status ?? "").startsWith("cancelled") && (other.assignments ?? []).some((a: any) => a.empId === candidate.id)));
         const onSiteIds = new Set(onSite.map((candidate: any) => candidate.id));
         const assignedToMe = (s.assignments ?? []).some((a: any) => a.empId === employee.id);
-        const counterOnDuty = s.kind === "theme" && shifts.some((other: any) => other.date === s.date && other.storeId === s.storeId &&
+        const counterOnDuty = s.kind === "theme" && dayShifts.some((other: any) => other.date === s.date && other.storeId === s.storeId &&
           other.kind === "counter" && !String(other.status ?? "").startsWith("cancelled") && toMinutes(other.start) <= toMinutes(s.start) &&
           toMinutes(other.end) >= toMinutes(s.end) && (other.assignments ?? []).some((a: any) => a.empId === employee.id));
         const canSeeCustomer = account.role === "manager" || assignedToMe || counterOnDuty;
@@ -84,14 +97,14 @@ Deno.serve(async (req) => {
             replacementCandidates[String(assignment.empId)] = (cfg.employees ?? []).filter((candidate: any) =>
               candidate.id !== assignment.empId && employedOn(candidate, s.date) &&
               !(s.assignments ?? []).some((a: any) => a.empId === candidate.id) &&
-              eligibilityErrors(candidate, s, assignment.role, shifts, cfg, [s.id]).length === 0
+              eligibilityErrors(candidate, s, assignment.role, dayShifts, cfg, [s.id]).length === 0
             ).map((candidate: any) => ({ id: candidate.id, name: candidate.name }));
           }
         }
         const writebackTheme = (cfg.themes ?? []).find((theme: any) => theme.id === s.themeId);
         const writebackRole = writebackTheme && (Number(writebackTheme.payNPC) || 0) > 0 ? "NPC" : "場控";
         const writebackCandidates = account.role === "manager" && String(s.id).startsWith("sb_") && (s.assignments ?? []).some((a: any) => !a.empId && a.role === writebackRole)
-          ? (cfg.employees ?? []).filter((candidate: any) => candidate.active && eligibilityErrors(candidate, s, writebackRole, shifts, cfg, [s.id]).length === 0).map((candidate: any) => ({ id: candidate.id, name: candidate.name })) : [];
+          ? (cfg.employees ?? []).filter((candidate: any) => candidate.active && eligibilityErrors(candidate, s, writebackRole, dayShifts, cfg, [s.id]).length === 0).map((candidate: any) => ({ id: candidate.id, name: candidate.name })) : [];
         // 管理員 LINE 排班用:每個尚未排人的角色，列出「有資格＋當天有空＋不衝堂」的候選人(依場數少到多排序，供一鍵排)
         const roleCandidates: Record<string, Array<{ id: string; name: string; warnings: string[] }>> = {};
         // 詭獄／詭獄加場除了 SimplyBook 帶的 NPC，還可排場控(即使 assignments 尚無此欄位)。
@@ -101,10 +114,10 @@ Deno.serve(async (req) => {
         if (account.role === "manager" && s.kind === "theme" && !cancelled && roleSet.size) {
           const pool = (cfg.employees ?? []).filter((candidate: any) => candidate.active && employedOn(candidate, s.date) &&
             !(s.assignments ?? []).some((a: any) => a.empId === candidate.id));
-          const ranked = rankCandidatesByWorkload(pool, shifts, s.date, 99);
+          const ranked = rankCandidatesByWorkload(pool, monthShifts, s.date, 99);
           for (const role of roleSet) {
             // 未具技能/衝堂/跨店/休假等以 warnings 提示，不硬擋;合格者(無 warnings)優先。
-            roleCandidates[role] = ranked.map((candidate: any) => ({ id: candidate.id, name: candidate.name, warnings: eligibilityErrors(candidate, s, role, shifts, cfg, [s.id]) }))
+            roleCandidates[role] = ranked.map((candidate: any) => ({ id: candidate.id, name: candidate.name, warnings: eligibilityErrors(candidate, s, role, dayShifts, cfg, [s.id]) }))
               .sort((a: any, b: any) => (a.warnings.length ? 1 : 0) - (b.warnings.length ? 1 : 0));
           }
         }
