@@ -7,6 +7,10 @@ import { cors, distanceMeters, eligibilityErrors, employedOn, getContext, json, 
 
 const DAY = 86_400_000;
 const dateText = (d: Date) => d.toISOString().slice(0, 10);
+const isDepositPaid = (payment: any) => {
+  const status = String(payment?.depositStatus ?? "").trim().toLowerCase();
+  return ["paid", "completed", "success", "succeeded", "confirmed", "1", "true"].includes(status);
+};
 const SB_LOGIN_URL = "https://user-api.simplybook.asia/login";
 const SB_ADMIN_URL = "https://user-api.simplybook.asia/admin/";
 async function simplyBookRpc(url: string, headers: Record<string, string>, method: string, params: unknown[]) {
@@ -114,11 +118,6 @@ Deno.serve(async (req) => {
         const onSite = ranked.filter((candidate: any) => dayShifts.some((other: any) => other.id !== s.id && other.date === s.date &&
           other.storeId === s.storeId && !String(other.status ?? "").startsWith("cancelled") && (other.assignments ?? []).some((a: any) => a.empId === candidate.id)));
         const onSiteIds = new Set(onSite.map((candidate: any) => candidate.id));
-        const assignedToMe = (s.assignments ?? []).some((a: any) => a.empId === employee.id);
-        const counterOnDuty = s.kind === "theme" && dayShifts.some((other: any) => other.date === s.date && other.storeId === s.storeId &&
-          other.kind === "counter" && !String(other.status ?? "").startsWith("cancelled") && toMinutes(other.start) <= toMinutes(s.start) &&
-          toMinutes(other.end) >= toMinutes(s.end) && (other.assignments ?? []).some((a: any) => a.empId === employee.id));
-        const canSeeCustomer = account.role === "manager" || assignedToMe || counterOnDuty;
         const replacementCandidates: Record<string, Array<{ id: string; name: string }>> = {};
         if ((employee.type === "full" || account.role === "manager") && !cancelled) {
           for (const assignment of (s.assignments ?? []).filter((a: any) => a.empId)) {
@@ -153,9 +152,11 @@ Deno.serve(async (req) => {
           id: s.id, date: s.date, storeId: s.storeId, kind: s.kind, themeId: s.themeId, start: s.start, end: s.end,
           status: s.status ?? "active", assignments: s.assignments ?? [],
           linkedThemeAssignments: s.linkedThemeAssignments ?? [],
-          depositPaid: ["paid", "completed"].includes(String(s.payment?.depositStatus ?? "").toLowerCase()),
-          customer: canSeeCustomer && s.customer ? { name: s.customer.name ?? "", phone: s.customer.phone ?? "", email: s.customer.email ?? "", comment: s.customer.comment ?? "" } : null,
-          payment: canSeeCustomer && s.payment ? { depositAmount: s.payment.depositAmount ?? null, depositStatus: s.payment.depositStatus ?? "", system: s.payment.system ?? "", currency: s.payment.depositCurrency ?? s.payment.currency ?? "" } : null,
+          depositPaid: isDepositPaid(s.payment),
+          // 所有已綁定且仍在職的兼職、正職、管理員都可查看簡要客人資訊。
+          // LINE 前端只顯示姓名與訂金；電話需點開才呈現。Email、備註不送到員工端。
+          customer: s.customer ? { name: s.customer.name ?? "", phone: s.customer.phone ?? "" } : null,
+          payment: s.payment ? { depositAmount: s.payment.depositAmount ?? null, depositStatus: s.payment.depositStatus ?? "", system: s.payment.system ?? "", currency: s.payment.depositCurrency ?? s.payment.currency ?? "" } : null,
           replacementCandidates,
           writebackRole: writebackCandidates.length ? writebackRole : null,
           writebackCandidates,

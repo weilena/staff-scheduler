@@ -211,7 +211,8 @@ const handler = async (req: Request) => {
       const depAmt = pick(booking, ["deposit_invoice_amount"]);
       const payment = {
         depositAmount: depAmt ? Math.round(Number(depAmt)) : null,
-        depositStatus: String(pick(booking, ["deposit_payment_status"])),
+        // 新舊 SimplyBook 回應曾使用不同付款欄位名稱，保留相容性。
+        depositStatus: String(pick(booking, ["deposit_payment_status", "payment_status"])),
         system: String(pick(booking, ["deposit_payment_system", "payment_system"])),
         currency: String(pick(booking, ["deposit_invoice_currency"])),
         invoiceNo: String(pick(booking, ["deposit_invoice_number"])),
