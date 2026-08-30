@@ -70,6 +70,8 @@ th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 .pay-role{display:inline-block;margin:0 0 0 5px;padding:3px 9px;border-radius:999px;font-size:13px;font-weight:800;white-space:nowrap;vertical-align:middle}
 .pay-role.full{background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd}
 .pay-extra{color:#dc2626;font-weight:900}
+.pay-extra-count{color:#dc2626;font-size:inherit;font-weight:400}
+.pay-collision{color:var(--warn);font-size:inherit;font-weight:400}
 .pay-month-title{display:inline-block;margin-top:5px;padding:5px 10px;border-radius:8px;background:#dbeafe;color:#1e40af;font-size:16px;font-weight:800;letter-spacing:.02em}
 @media(max-width:760px){.payroll-table{font-size:11px;line-height:1.4}.payroll-table th{font-size:11px}.payroll-table th,.payroll-table td{padding:7px 3px}.pay-formula,.pay-review{font-size:10.5px}.pay-formula div{white-space:normal}.payroll-table .btn.sm{padding:4px;font-size:10px}.pay-emp-name{font-size:12px}.pay-role{font-size:10px;padding:2px 6px}.pay-source{font-size:9px}}
 .muted{color:var(--muted);font-size:13px}
@@ -2500,10 +2502,10 @@ function vPay(){
       ${rows.map(row=>{const {e,ss,hm,hp,estimateHourly,hourlyRates,collisionMinutes,sequence,base,am,otHr,otPay,total}=row;return `<tr>
         <td><a class="pay-emp-name" href="#" onclick="showEmpDetail('${e.id}');return false" style="color:var(--accent);text-decoration:none">${esc(e.name)}</a>${e.type==='full'?'<span class="pay-role full">正職</span>':''}<br><small class="muted">查看明細 ▸</small></td>
         <td><button class="btn gray sm" onclick="openAttendance('${e.id}','${payMonth}')">個人月表</button><br><span class="att-source pay-source">場次：派班／SimplyBook<br>時數：LINE打卡＋每日核准${hourlyRates.length?`（$${hourlyRates.join('／$')}）`:''}<br>加班：核准紀錄</span></td>
-        <td><span class="warn">撞場 ${sequence.filter(r=>r.type==='collision').length}</span><br>滾場 ${sequence.filter(r=>r.type==='rolling').length}${collisionMinutes?`<br><small>已核准加算 ${fmtHr(collisionMinutes)}</small>`:''}</td>
+        <td><span class="pay-collision">撞場 ${sequence.filter(r=>r.type==='collision').length}</span><br>滾場 ${sequence.filter(r=>r.type==='rolling').length}${collisionMinutes?`<br><span>已核准加算 ${fmtHr(collisionMinutes)}</span>`:''}</td>
         <td class="num">場控 ${ss.gm||0}<br>NPC ${ss.npc||0}</td>
-        <td class="num">${e.type==='full'?`${ss.total}<br><small class="${ss.extra?'pay-extra':''}">超過 ${ss.extra}</small>`:'—'}</td>
-        <td class="num">${e.type==='part'?`<small class="muted">預估</small> ${estimateHourly.minutes?fmtHr(estimateHourly.minutes):'—'}<br><small class="muted">約 $${estimateHourly.pay.toLocaleString()}</small><br><small>實際核准</small> ${hm?fmtHr(hm):'—'}${collisionMinutes?`<br><small class="warn">含撞場 ${fmtHr(collisionMinutes)}</small>`:''}<br><b>${hp?'$'+hp.toLocaleString():'—'}</b>`:'—'}</td>
+        <td class="num">${e.type==='full'?`${ss.total}<br><span class="${ss.extra?'pay-extra-count':''}">超過 ${ss.extra}</span>`:'—'}</td>
+        <td class="num">${e.type==='part'?`<small class="muted">預估</small> ${estimateHourly.minutes?fmtHr(estimateHourly.minutes):'—'}<br><small class="muted">約 $${estimateHourly.pay.toLocaleString()}</small><br><small>實際核准</small> ${hm?fmtHr(hm):'—'}${collisionMinutes?`<br><span class="pay-collision">含撞場 ${fmtHr(collisionMinutes)}</span>`:''}<br><b>${hp?'$'+hp.toLocaleString():'—'}</b>`:'—'}</td>
         <td class="num">月薪 ${base?'$'+base.toLocaleString():'—'}<br>論場 ${ss.pay?'$'+ss.pay.toLocaleString():'—'}</td>
         <td class="num">打卡 ${am?fmtHr(am):'—'}<br><span class="${e.type==='full'&&otHr>0?'pay-extra':''}">加班 ${otHr>0?otHr.toFixed(1)+'h':'—'}<br>${otPay?'$'+otPay.toLocaleString():'—'}</span></td>
         <td>${payrollFormulaHtml(row)}</td>
