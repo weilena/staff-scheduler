@@ -196,12 +196,9 @@ const handler = async (req: Request) => {
         ignored.push({ bookingId: code || "unknown", reason: !selectedTheme ? `找不到主題對應:${serviceName}` : "缺少日期或 ID" });
         continue;
       }
-      // 防呆:non_cancelled 分類偶爾會夾帶未確認/作廢單(is_confirm="0"),不當有效班次。
-      const confirmFlag = String(pick(booking, ["is_confirm"]));
-      if (confirmFlag === "0") {
-        ignored.push({ bookingId: code, reason: "未確認或作廢(is_confirm=0)" });
-        continue;
-      }
+      // getBookings(booking_type: "non_cancelled") 已由 SimplyBook 依正式規格篩選：
+      // is_confirmed=1，或使用審核功能時 approve status=new。不可再用舊的
+      // is_confirm 欄位二次過濾，否則會把已付款且有效的預約誤判為空場。
       const employee = matchedEmployee(cfg.employees ?? [], providerName);
       const role = (selectedTheme.payNPC ?? 0) > 0 ? "NPC" : "場控";
       // 客人與付款資訊僅存私人雲端；員工 API 只提供給該場人員、同店值班櫃台與管理員。
