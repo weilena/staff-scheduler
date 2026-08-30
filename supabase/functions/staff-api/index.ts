@@ -171,11 +171,21 @@ Deno.serve(async (req) => {
         review_state: p.review_state, voided_at: p.voided_at, void_reason: p.void_reason, shift_ids: p.shift_ids ?? [],
         work_item: p.raw?.work_item ?? null,
       }));
+      const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+      const leaveYear = today.slice(0, 4), annualQuota = Math.max(0, Number(employee.annualLeaveQuota) || 0);
+      const annualLeaveDates = Object.entries(employee.availX ?? {}).filter(([date, availability]: [string, any]) =>
+        date.slice(0, 4) === leaveYear && availability?.on === false && availability?.leaveType === "特休"
+      ).map(([date, availability]: [string, any]) => ({ date, days: Math.max(0, Number(availability?.leaveDays) || 1) })).sort((a, b) => a.date.localeCompare(b.date));
+      const usedLeave = annualLeaveDates.filter(item => item.date <= today), plannedLeave = annualLeaveDates.filter(item => item.date > today);
+      const usedDays = usedLeave.reduce((sum, item) => sum + item.days, 0), plannedDays = plannedLeave.reduce((sum, item) => sum + item.days, 0);
+      const annualLeave = employee.type === "full" ? { year: leaveYear, quotaDays: annualQuota, usedDays, plannedDays,
+        unusedDays: Math.max(0, annualQuota - usedDays), availableToPlanDays: Math.max(0, annualQuota - usedDays - plannedDays),
+        usedDates: usedLeave, plannedDates: plannedLeave, restNote: String(employee.restNote ?? "") } : null;
       return json({ me: { id: employee.id, name: employee.name, role: account.role, type: employee.type,
           canSchedulePractice: account.role === "manager" || (employee.type === "full" && !!employee.canSchedulePractice) }, stores: cfg.stores, themes: cfg.themes,
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches,
         attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations,
-        weeklyOffDay: cfg.settings?.weeklyOffDay ?? 4, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
+        annualLeave, weeklyOffDay: cfg.settings?.weeklyOffDay ?? 4, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
 
     if (action === "manager-assign") {

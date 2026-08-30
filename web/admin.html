@@ -2040,11 +2040,14 @@ function fullLeaveSummary(e,month){
     if(isWeeklyOff(d)&&!exempt){thu++;continue;}            // 每週固定公休(例外者不自動計)
     const a=effectiveAvail(e,d);if(a&&a.on===false){personal.push(d);if(a.leaveType==='特休')special.push(d);}  // 個人請假;特休另計
   }
-  // 年度特休已用:掃該員工整年 availX 標「特休」的天數(日曆寫「XX特休」自動帶入)
-  const year=month.slice(0,4);let annualSpecial=0;
-  for(const[dk,av]of Object.entries(e.availX||{}))if(dk.slice(0,4)===year&&av&&av.on===false&&av.leaveType==='特休')annualSpecial++;
+  // 特休與 LINE 共用 availX＋annualLeaveQuota；已休與未來已排分開，避免把未來日期誤寫成已用。
+  const year=month.slice(0,4),today=todayStr(),annualUsed=[],annualPlanned=[];
+  for(const[dk,av]of Object.entries(e.availX||{}))if(dk.slice(0,4)===year&&av&&av.on===false&&av.leaveType==='特休'){
+    const item={date:dk,days:Math.max(0,Number(av.leaveDays)||1)};(dk<=today?annualUsed:annualPlanned).push(item);
+  }
+  const annualUsedDays=annualUsed.reduce((n,x)=>n+x.days,0),annualPlannedDays=annualPlanned.reduce((n,x)=>n+x.days,0);
   return {actual:thu+closed+typhoon+personal.length,thu,closed,typhoon,personal,holidays,exempt,
-    special,annualSpecial,quota:Number(e.annualLeaveQuota)||0,
+    special,annualUsed,annualPlanned,annualUsedDays,annualPlannedDays,quota:Number(e.annualLeaveQuota)||0,
     nominal:weekendDays+holidayOnly,weekendDays,holidayOnly};
 }
 function fullLeaveSummaryHtml(e,month){
@@ -2061,7 +2064,7 @@ function fullLeaveSummaryHtml(e,month){
     <div class="muted" style="margin-top:4px;font-size:12.5px">
       行事曆應休(對照) <b>${s.nominal}</b> 天＝六日 ${s.weekendDays} ＋ 國定 ${s.holidayOnly}・本月國定假日:${holList}</div>
     <div style="margin-top:6px;padding-top:6px;border-top:1px dashed #fca5a5;font-size:12.5px">
-      🌴 特休:本月 <b>${s.special.length}</b> 天・年度已用 <b>${s.annualSpecial}</b> 天${s.quota?` / 額度 ${s.quota} 天・剩餘 <b style="color:#16a34a">${Math.max(0,s.quota-s.annualSpecial)}</b> 天`:'<span class="muted">(未設年度額度,可在員工資料填)</span>'}<span class="muted" style="margin-left:6px">Google 日曆寫「特休」自動帶入</span></div>
+      🌴 特休:本月登記 <b>${s.special.length}</b> 天・年度已休 <b>${s.annualUsedDays}</b> 天・已排尚未休 <b>${s.annualPlannedDays}</b> 天${s.quota?` / 額度 ${s.quota} 天・尚未休 <b style="color:#16a34a">${Math.max(0,s.quota-s.annualUsedDays)}</b> 天・尚可安排 <b style="color:#175cd3">${Math.max(0,s.quota-s.annualUsedDays-s.annualPlannedDays)}</b> 天`:'<span class="muted">(未設年度額度,可在員工資料填)</span>'}<br><span class="muted">已休：${s.annualUsed.map(x=>x.date.slice(5).replace('-','/')).join('、')||'無'}・尚未休：${s.annualPlanned.map(x=>x.date.slice(5).replace('-','/')).join('、')||'無'}；Google 日曆寫「特休」會自動同步</span></div>
   </div>`;
 }
 function attendanceMonthGrid(e,month){
