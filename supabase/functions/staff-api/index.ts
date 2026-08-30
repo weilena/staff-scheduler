@@ -21,6 +21,34 @@ const MANUAL_WORK_ITEMS: Record<string, string> = {
   burgundy_counter: "桌遊大忠店櫃台", weekly_cleaning: "每週大清潔", practice: "訓練場", floor_support: "場控／現場支援",
 };
 
+type AttendanceEstimate = { estimatedMinutes: number; estimatedSegments: Array<{ in: string; out: string }>; estimateAnomalies: string[] };
+function estimateAttendanceAfterRequest(existing: any[], requestType: string, requested: any): AttendanceEstimate | null {
+  if (requestType === "npc_checkin") return null;
+  const events = (existing ?? []).map((p: any) => ({ type: String(p.type), time: String(p.ts ?? "").slice(11, 16), virtual: false }));
+  if (requestType === "correction") events.push(
+    { type: "in", time: String(requested.inTime ?? ""), virtual: true },
+    { type: "out", time: String(requested.outTime ?? ""), virtual: true },
+  );
+  else events.push({ type: requestType === "missing_in" ? "in" : "out", time: String(requested.time ?? ""), virtual: true });
+  events.sort((a: any, b: any) => a.time.localeCompare(b.time) || Number(b.virtual) - Number(a.virtual) || (a.type === "in" ? -1 : 1));
+  let open: string | null = null, estimatedMinutes = 0;
+  const estimatedSegments: Array<{ in: string; out: string }> = [], estimateAnomalies: string[] = [];
+  for (const event of events) {
+    if (event.type === "in") {
+      if (open !== null) estimateAnomalies.push("重複上班卡");
+      open = event.time;
+    } else if (open === null) estimateAnomalies.push("缺上班卡");
+    else {
+      const minutes = Math.max(0, toMinutes(event.time) - toMinutes(open));
+      estimatedMinutes += minutes;
+      estimatedSegments.push({ in: open, out: event.time });
+      open = null;
+    }
+  }
+  if (open !== null) estimateAnomalies.push("缺下班卡");
+  return { estimatedMinutes, estimatedSegments, estimateAnomalies: [...new Set(estimateAnomalies)] };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "METHOD_NOT_ALLOWED" }, 405);
@@ -708,10 +736,19 @@ Deno.serve(async (req) => {
         ? r.request_type === requestType && String(r.requested?.shiftId ?? "") === String(requested.shiftId ?? "")
         : r.request_type === requestType && JSON.stringify(r.requested ?? {}) === JSON.stringify(requested));
       if (duplicate) return json({ error: "這個場次已有相同的待審補卡申請" }, 409);
+      let estimate: AttendanceEstimate | null = null;
+      if (requestType !== "npc_checkin") {
+        const nextDate = dateText(new Date(Date.parse(`${punchDate}T00:00:00Z`) + DAY));
+        const { data: dayPunches, error: punchError } = await sb.from("punches").select("id,ts,type").eq("emp_id", employee.id)
+          .is("voided_at", null).gte("ts", `${punchDate}T00:00:00`).lt("ts", `${nextDate}T00:00:00`).order("ts", { ascending: true });
+        if (punchError) throw punchError;
+        estimate = estimateAttendanceAfterRequest(dayPunches ?? [], requestType, requested);
+        if (estimate) Object.assign(requested, estimate, { estimateStatus: "pending_manager_review", estimatedAt: new Date().toISOString() });
+      }
       const { error } = await sb.from("attendance_requests").insert({ emp_id: employee.id, punch_date: punchDate,
         request_type: requestType, requested, reason });
       if (error) throw error;
-      return json({ ok: true });
+      return json({ ok: true, estimate });
     }
 
     return json({ error: "UNKNOWN_ACTION" }, 400);
