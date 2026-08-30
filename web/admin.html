@@ -2495,7 +2495,7 @@ function vPay(){
       <button class="btn gray sm" onclick="exportPayCSV()">匯出 CSV(含場次明細)</button>
     </div>
     <div class="payroll-wrap"><table class="payroll-table">
-      <colgroup><col style="width:11%"><col style="width:9%"><col style="width:6%"><col style="width:7%"><col style="width:6%"><col style="width:8%"><col style="width:7%"><col style="width:7%"><col style="width:22%"><col style="width:17%"></colgroup>
+      <colgroup><col style="width:11%"><col style="width:9%"><col style="width:6%"><col style="width:7%"><col style="width:6%"><col style="width:8%"><col style="width:7%"><col style="width:7%"><col style="width:26%"><col style="width:13%"></colgroup>
       <tr><th>員工身分</th><th>來源追蹤</th><th>場次關係</th><th class="num">場次統計<br><small>場控／NPC</small></th><th class="num">正職總場<br>超過40場</th><th class="num">核准工時<br>時薪費</th><th class="num">月薪<br>論場費</th><th class="num">打卡／加班</th><th>薪資加總公式</th><th class="num">管理員審核<br>合計</th></tr>
       ${rows.map(row=>{const {e,ss,hm,hp,estimateHourly,hourlyRates,collisionMinutes,sequence,base,am,otHr,otPay,total}=row;return `<tr>
         <td><a class="pay-emp-name" href="#" onclick="showEmpDetail('${e.id}');return false" style="color:var(--accent);text-decoration:none">${esc(e.name)}</a>${e.type==='full'?'<span class="pay-role full">正職</span>':''}<br><small class="muted">查看明細 ▸</small></td>
