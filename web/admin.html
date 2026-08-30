@@ -2499,7 +2499,7 @@ function vPay(){
         <td class="num">${e.type==='full'?`${ss.total}<br><small class="${ss.extra?'pay-extra':''}">超過 ${ss.extra}</small>`:'—'}</td>
         <td class="num">${e.type==='part'?`<small class="muted">預估</small> ${estimateHourly.minutes?fmtHr(estimateHourly.minutes):'—'}<br><small class="muted">約 $${estimateHourly.pay.toLocaleString()}</small><br><small>實際核准</small> ${hm?fmtHr(hm):'—'}${collisionMinutes?`<br><small class="warn">含撞場 ${fmtHr(collisionMinutes)}</small>`:''}<br><b>${hp?'$'+hp.toLocaleString():'—'}</b>`:'—'}</td>
         <td class="num">月薪 ${base?'$'+base.toLocaleString():'—'}<br>論場 ${ss.pay?'$'+ss.pay.toLocaleString():'—'}</td>
-        <td class="num">打卡 ${am?fmtHr(am):'—'}<br>加班 ${otHr>0?otHr.toFixed(1)+'h':'—'}<br>${otPay?'$'+otPay.toLocaleString():'—'}</td>
+        <td class="num">打卡 ${am?fmtHr(am):'—'}<br><span class="${e.type==='full'&&otHr>0?'pay-extra':''}">加班 ${otHr>0?otHr.toFixed(1)+'h':'—'}<br>${otPay?'$'+otPay.toLocaleString():'—'}</span></td>
         <td>${payrollFormulaHtml(row)}</td>
         <td class="num">${payrollReviewHtml(row)}<div style="margin-top:6px"><b>$${total.toLocaleString()}</b></div></td></tr>`}).join('')}
       <tr><td colspan="9" style="text-align:right"><b>目前篩選合計</b></td><td class="num"><b>$${total.toLocaleString()}</b></td></tr>
