@@ -528,7 +528,9 @@ Deno.serve(async (req) => {
       const { data: sites } = await sb.from("worksites").select("*").eq("enabled", true).not("latitude", "is", null);
       const ranked = (sites ?? []).map((s: any) => ({ ...s, distance: distanceMeters(lat, lng, Number(s.latitude), Number(s.longitude)) })).sort((a: any, b: any) => a.distance - b.distance);
       const site = ranked[0];
-      if (!site || site.id !== shift.storeId || site.distance > site.radius_m + Math.min(accuracy, 50)) return json({ error: "目前不在這個場次的店家打卡範圍內" }, 403);
+      // 員工可能同日跨大忠店與謎先生支援；只要人在任一核准工作地點，
+      // 即可回報被指派的主題，並保留實際定位店別供管理員核對。
+      if (!site || site.distance > site.radius_m + Math.min(accuracy, 50)) return json({ error: "目前不在允許的打卡地點範圍內" }, 403);
       const checkedInAt = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date()).replace(" ", "T");
       const { error } = await sb.from("session_checkins").insert({ emp_id: employee.id, shift_id: shift.id, checked_in_at: checkedInAt,
         worksite_id: site.id, latitude: lat, longitude: lng, accuracy_m: accuracy, verification: "line_location", source: "line", note: `${role}${shift.kind === "practice" ? "確認" : "場次完成"}` });
