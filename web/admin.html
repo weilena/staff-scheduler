@@ -55,6 +55,7 @@ th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 .pay-formula div{white-space:normal}
 .pay-review{font-size:11px;line-height:1.35;text-align:center}
 .pay-review .btn{margin-top:5px;white-space:normal}
+.pay-month-title{display:inline-block;margin-top:5px;padding:5px 10px;border-radius:8px;background:#dbeafe;color:#1e40af;font-size:16px;font-weight:800;letter-spacing:.02em}
 @media(max-width:760px){.payroll-table{font-size:9px}.payroll-table th,.payroll-table td{padding:4px 2px}.pay-formula,.pay-review{font-size:9px}.payroll-table .btn.sm{padding:3px 4px;font-size:9px}}
 .muted{color:var(--muted);font-size:13px}
 .badge{display:inline-block;padding:1px 8px;border-radius:20px;font-size:12px;color:#fff}
@@ -2471,7 +2472,7 @@ function vPay(){
   </div>
   <div class="card">
     <div class="row" style="margin-bottom:10px">
-      <div><h2 style="margin:0">薪資試算</h2><span class="muted">${payMonth.slice(0,4)} 年 ${Number(payMonth.slice(5,7))} 月</span></div>
+      <div><h2 style="margin:0">薪資試算</h2><span class="pay-month-title">${payMonth.slice(0,4)} 年 ${Number(payMonth.slice(5,7))} 月</span></div>
       <span class="grow"></span>
       <label style="margin:0">滾場空檔</label><input type="number" style="width:66px" min="0" value="${S.settings.rollingGapMin??30}" onchange="setSetting('rollingGapMin',this.value)"><span class="muted">分</span>
       <span class="muted">正職含</span><input type="number" style="width:52px" min="0" value="${S.settings.fullBaseSessions??40}" onchange="setSetting('fullBaseSessions',this.value);render()"><span class="muted">場,每</span><input type="number" style="width:46px" min="1" value="${Number(S.settings.fullBonusPer)||5}" onchange="setSetting('fullBonusPer',this.value);render()"><span class="muted">場獎金$</span><input type="number" style="width:70px" min="0" value="${Number(S.settings.fullBonusAmount)||1000}" onchange="setSetting('fullBonusAmount',this.value);render()">
