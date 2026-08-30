@@ -24,6 +24,33 @@ function pick(row: any, keys: string[]) {
   for (const key of keys) if (row?.[key] != null && row[key] !== "") return row[key];
   return "";
 }
+function pickDeep(row: any, keys: string[]): any {
+  if (!row || typeof row !== "object") return "";
+  for (const key of keys) if (row[key] != null && row[key] !== "") return row[key];
+  for (const value of Object.values(row)) {
+    const found = pickDeep(value, keys);
+    if (found !== "") return found;
+  }
+  return "";
+}
+function depositAmount(row: any): any {
+  const exact = pickDeep(row, ["deposit_invoice_amount", "deposit_amount", "deposit_paid_amount", "paid_deposit_amount"]);
+  if (exact !== "") return exact;
+  const walk = (node: any, path = ""): any => {
+    if (!node || typeof node !== "object") return "";
+    for (const [key, value] of Object.entries(node)) {
+      const nextPath = `${path}.${key}`.toLowerCase();
+      if (/(^|\.)deposit([_.]|$)/.test(nextPath) && ["amount", "total", "price"].includes(key.toLowerCase()) && value !== "") return value;
+      const found = walk(value, nextPath);
+      if (found !== "") return found;
+    }
+    return "";
+  };
+  return walk(row);
+}
+function paidStatus(row: any) {
+  return String(pickDeep(row, ["deposit_payment_status", "payment_status"])).trim().toLowerCase();
+}
 function selectedThemeName(cfg: any, themeId: string) {
   return cfg.themes?.find((theme: any) => theme.id === themeId)?.name ?? "場次";
 }
@@ -158,6 +185,20 @@ const handler = async (req: Request) => {
     const active = list(activeRaw);
     const cancelled = list(cancelledRaw);
     const providers = list(providersRaw);
+    // getBookings 有時只回「已付款」而省略訂金金額；僅針對這類預約補抓詳細資料。
+    const bookingDetails = new Map<string, any>();
+    const needsDetails = active.filter((booking: any) => {
+      const status = paidStatus(booking);
+      return ["paid", "completed", "success", "succeeded", "confirmed", "1", "true"].includes(status) && depositAmount(booking) === "";
+    });
+    for (let i = 0; i < needsDetails.length; i += 5) {
+      await Promise.all(needsDetails.slice(i, i + 5).map(async (booking: any) => {
+        const bookingId = String(pick(booking, ["id", "booking_id"]));
+        if (!bookingId) return;
+        try { bookingDetails.set(bookingId, await rpc(ADMIN_URL, headers, "getBookingDetails", [Number(bookingId)])); }
+        catch (error) { console.warn(`getBookingDetails ${bookingId} failed`, error); }
+      }));
+    }
 
     const [{ data: cfgRow, error: cfgError }, { data: existing, error: shiftsError }] = await Promise.all([
       supabase.from("config").select("data").eq("id", 1).single(),
@@ -208,16 +249,18 @@ const handler = async (req: Request) => {
         email: String(pick(booking, ["client_email"])),
         comment: String(pick(booking, ["comment"])),
       };
-      const depAmt = pick(booking, ["deposit_invoice_amount"]);
+      const bookingId = String(pick(booking, ["id", "booking_id"]));
+      const details = bookingDetails.get(bookingId);
+      const depAmt = depositAmount(details) || depositAmount(booking);
       const payment = {
         depositAmount: depAmt ? Math.round(Number(depAmt)) : null,
-        // 新舊 SimplyBook 回應曾使用不同付款欄位名稱，保留相容性。
-        depositStatus: String(pick(booking, ["deposit_payment_status", "payment_status"])),
-        system: String(pick(booking, ["deposit_payment_system", "payment_system"])),
-        currency: String(pick(booking, ["deposit_invoice_currency"])),
-        invoiceNo: String(pick(booking, ["deposit_invoice_number"])),
+        // 新舊 SimplyBook 回應及詳細資料曾使用不同付款欄位名稱，保留相容性。
+        depositStatus: String(pickDeep(details, ["deposit_payment_status", "payment_status"]) || pickDeep(booking, ["deposit_payment_status", "payment_status"])),
+        system: String(pickDeep(details, ["deposit_payment_system", "payment_system"]) || pickDeep(booking, ["deposit_payment_system", "payment_system"])),
+        currency: String(pickDeep(details, ["deposit_invoice_currency", "currency"]) || pickDeep(booking, ["deposit_invoice_currency", "currency"])),
+        invoiceNo: String(pickDeep(details, ["deposit_invoice_number", "invoice_number"]) || pickDeep(booking, ["deposit_invoice_number", "invoice_number"])),
         // 錢實際入帳時間,供日後營收報表使用
-        paidAt: String(pick(booking, ["deposit_invoice_datetime"])),
+        paidAt: String(pickDeep(details, ["deposit_invoice_datetime", "paid_at"]) || pickDeep(booking, ["deposit_invoice_datetime", "paid_at"])),
       };
       const shift = {
         id,
