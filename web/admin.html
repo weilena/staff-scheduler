@@ -47,16 +47,20 @@ table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:middle}
 th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 .payroll-wrap{width:100%;max-width:100%;overflow:hidden}
-.payroll-table{width:100%;max-width:100%;table-layout:fixed;font-size:11px}
-.payroll-table th,.payroll-table td{padding:6px 4px;vertical-align:top;overflow-wrap:anywhere;word-break:break-word;white-space:normal}
-.payroll-table th{line-height:1.25}
+.payroll-table{width:100%;max-width:100%;table-layout:fixed;font-size:13px;line-height:1.45}
+.payroll-table th,.payroll-table td{padding:9px 6px;vertical-align:top;overflow-wrap:anywhere;word-break:break-word;white-space:normal}
+.payroll-table th{line-height:1.3;font-size:13px;color:#334155}
 .payroll-table .num{text-align:right}
-.pay-formula{font-size:10.5px;line-height:1.38}
+.pay-formula{font-size:12px;line-height:1.5}
 .pay-formula div{white-space:normal}
-.pay-review{font-size:11px;line-height:1.35;text-align:center}
+.pay-review{font-size:12px;line-height:1.45;text-align:center}
 .pay-review .btn{margin-top:5px;white-space:normal}
+.pay-emp-name{font-size:14px;font-weight:800;line-height:1.35}
+.pay-role{display:inline-block;margin-top:5px;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:800;white-space:nowrap}
+.pay-role.full{background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd}
+.pay-role.part{background:#f3e8ff;color:#7e22ce;border:1px solid #d8b4fe}
 .pay-month-title{display:inline-block;margin-top:5px;padding:5px 10px;border-radius:8px;background:#dbeafe;color:#1e40af;font-size:16px;font-weight:800;letter-spacing:.02em}
-@media(max-width:760px){.payroll-table{font-size:9px}.payroll-table th,.payroll-table td{padding:4px 2px}.pay-formula,.pay-review{font-size:9px}.payroll-table .btn.sm{padding:3px 4px;font-size:9px}}
+@media(max-width:760px){.payroll-table{font-size:10.5px;line-height:1.35}.payroll-table th{font-size:10.5px}.payroll-table th,.payroll-table td{padding:6px 3px}.pay-formula,.pay-review{font-size:10px}.payroll-table .btn.sm{padding:4px;font-size:10px}.pay-emp-name{font-size:11px}.pay-role{font-size:10px;padding:2px 6px}}
 .muted{color:var(--muted);font-size:13px}
 .badge{display:inline-block;padding:1px 8px;border-radius:20px;font-size:12px;color:#fff}
 .tag{display:inline-block;padding:1px 7px;border-radius:6px;font-size:12px;background:#eef2ff;color:#3730a3;margin:1px}
@@ -2480,10 +2484,10 @@ function vPay(){
       <button class="btn gray sm" onclick="exportPayCSV()">匯出 CSV(含場次明細)</button>
     </div>
     <div class="payroll-wrap"><table class="payroll-table">
-      <colgroup><col style="width:9%"><col style="width:10%"><col style="width:8%"><col style="width:10%"><col style="width:8%"><col style="width:10%"><col style="width:8%"><col style="width:9%"><col style="width:18%"><col style="width:10%"></colgroup>
-      <tr><th>員工<br>身分</th><th>來源追蹤</th><th>場次關係</th><th class="num">場次統計<br><small>場控／NPC</small></th><th class="num">正職總場<br>超過40場</th><th class="num">核准工時<br>時薪費</th><th class="num">月薪<br>論場費</th><th class="num">打卡／加班</th><th>薪資加總公式</th><th class="num">管理員審核<br>合計</th></tr>
+      <colgroup><col style="width:10%"><col style="width:10%"><col style="width:8%"><col style="width:10%"><col style="width:8%"><col style="width:10%"><col style="width:8%"><col style="width:9%"><col style="width:17%"><col style="width:10%"></colgroup>
+      <tr><th>員工身分</th><th>來源追蹤</th><th>場次關係</th><th class="num">場次統計<br><small>場控／NPC</small></th><th class="num">正職總場<br>超過40場</th><th class="num">核准工時<br>時薪費</th><th class="num">月薪<br>論場費</th><th class="num">打卡／加班</th><th>薪資加總公式</th><th class="num">管理員審核<br>合計</th></tr>
       ${rows.map(row=>{const {e,ss,hm,hp,estimateHourly,hourlyRates,collisionMinutes,sequence,base,am,otHr,otPay,total}=row;return `<tr>
-        <td><a href="#" onclick="showEmpDetail('${e.id}');return false" style="color:var(--accent);text-decoration:none;font-weight:600">${esc(e.name)}</a><br><small>${e.type==='part'?'兼職':'正職'}・明細▸</small></td>
+        <td><a class="pay-emp-name" href="#" onclick="showEmpDetail('${e.id}');return false" style="color:var(--accent);text-decoration:none">${esc(e.name)}</a><br><span class="pay-role ${e.type==='part'?'part':'full'}">${e.type==='part'?'兼職':'正職'}</span><br><small class="muted">查看明細 ▸</small></td>
         <td><button class="btn gray sm" onclick="openAttendance('${e.id}','${payMonth}')">個人月表</button><br><span class="att-source">場次：派班／SimplyBook<br>時數：LINE打卡＋每日核准${hourlyRates.length?`（$${hourlyRates.join('／$')}）`:''}<br>加班：核准紀錄</span></td>
         <td><span class="warn">撞場 ${sequence.filter(r=>r.type==='collision').length}</span><br>滾場 ${sequence.filter(r=>r.type==='rolling').length}${collisionMinutes?`<br><small>已核准加算 ${fmtHr(collisionMinutes)}</small>`:''}</td>
         <td class="num">場控 ${ss.gm||0}<br>NPC ${ss.npc||0}</td>
