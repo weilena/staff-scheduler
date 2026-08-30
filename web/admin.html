@@ -58,7 +58,7 @@ th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 .payroll-table td:nth-child(10).num{text-align:center}
 .pay-source{font-size:11px;line-height:1.45;white-space:normal;display:inline-block;text-align:left}
 .pay-formula{font-size:17px;line-height:1.55}
-.pay-formula div{white-space:normal}
+.pay-formula div{white-space:nowrap}
 .pay-review{font-size:17px;line-height:1.45;text-align:center;display:flex;min-height:150px;flex-direction:column;align-items:center;justify-content:space-between;gap:9px}
 .pay-review-name{font-size:22px;font-weight:900;color:#1e3a8a;letter-spacing:.02em}
 .pay-review-total{font-size:22px;font-weight:900;color:#0f172a}
@@ -71,7 +71,7 @@ th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 .pay-role.full{background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd}
 .pay-extra{color:#dc2626;font-weight:900}
 .pay-month-title{display:inline-block;margin-top:5px;padding:5px 10px;border-radius:8px;background:#dbeafe;color:#1e40af;font-size:16px;font-weight:800;letter-spacing:.02em}
-@media(max-width:760px){.payroll-table{font-size:11px;line-height:1.4}.payroll-table th{font-size:11px}.payroll-table th,.payroll-table td{padding:7px 3px}.pay-formula,.pay-review{font-size:10.5px}.payroll-table .btn.sm{padding:4px;font-size:10px}.pay-emp-name{font-size:12px}.pay-role{font-size:10px;padding:2px 6px}.pay-source{font-size:9px}}
+@media(max-width:760px){.payroll-table{font-size:11px;line-height:1.4}.payroll-table th{font-size:11px}.payroll-table th,.payroll-table td{padding:7px 3px}.pay-formula,.pay-review{font-size:10.5px}.pay-formula div{white-space:normal}.payroll-table .btn.sm{padding:4px;font-size:10px}.pay-emp-name{font-size:12px}.pay-role{font-size:10px;padding:2px 6px}.pay-source{font-size:9px}}
 .muted{color:var(--muted);font-size:13px}
 .badge{display:inline-block;padding:1px 8px;border-radius:20px;font-size:12px;color:#fff}
 .tag{display:inline-block;padding:1px 7px;border-radius:6px;font-size:12px;background:#eef2ff;color:#3730a3;margin:1px}
@@ -2495,7 +2495,7 @@ function vPay(){
       <button class="btn gray sm" onclick="exportPayCSV()">匯出 CSV(含場次明細)</button>
     </div>
     <div class="payroll-wrap"><table class="payroll-table">
-      <colgroup><col style="width:12%"><col style="width:10%"><col style="width:7%"><col style="width:8%"><col style="width:7%"><col style="width:9%"><col style="width:8%"><col style="width:9%"><col style="width:15%"><col style="width:15%"></colgroup>
+      <colgroup><col style="width:11%"><col style="width:9%"><col style="width:6%"><col style="width:7%"><col style="width:6%"><col style="width:8%"><col style="width:7%"><col style="width:7%"><col style="width:22%"><col style="width:17%"></colgroup>
       <tr><th>員工身分</th><th>來源追蹤</th><th>場次關係</th><th class="num">場次統計<br><small>場控／NPC</small></th><th class="num">正職總場<br>超過40場</th><th class="num">核准工時<br>時薪費</th><th class="num">月薪<br>論場費</th><th class="num">打卡／加班</th><th>薪資加總公式</th><th class="num">管理員審核<br>合計</th></tr>
       ${rows.map(row=>{const {e,ss,hm,hp,estimateHourly,hourlyRates,collisionMinutes,sequence,base,am,otHr,otPay,total}=row;return `<tr>
         <td><a class="pay-emp-name" href="#" onclick="showEmpDetail('${e.id}');return false" style="color:var(--accent);text-decoration:none">${esc(e.name)}</a>${e.type==='full'?'<span class="pay-role full">正職</span>':''}<br><small class="muted">查看明細 ▸</small></td>
