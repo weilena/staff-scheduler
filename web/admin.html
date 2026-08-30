@@ -2450,9 +2450,9 @@ function payrollUnresolvedCount(empId,month){
 function payrollReviewHtml(row){
   const review=payrollReviewFor(row.e.id,payMonth),signature=payrollReviewSignature(row),unresolved=payrollUnresolvedCount(row.e.id,payMonth);
   const valid=review?.status==='approved'&&review?.snapshot?.signature===signature&&Number(review.total_amount)===Math.round(row.total);
-  const stale=review?.status==='approved'&&!valid,total=`$${Math.round(row.total).toLocaleString()}`,reviewName=`${Number(payMonth.slice(5,7))}月${esc(row.e.name)}`;
-  if(valid)return `<div class="pay-review"><div class="pay-review-name">${reviewName}</div><div class="pay-review-total">${total}</div><div class="pay-review-actions"><span class="tag" style="background:#dcfce7;color:#166534">✓ 已核准</span><button class="btn gray sm" onclick="reviewPayrollMonth('${row.e.id}','pending')">撤回</button></div></div>`;
-  return `<div class="pay-review"><div class="pay-review-name">${reviewName}</div><div class="pay-review-total">${total}</div>${unresolved?`<div class="pay-review-note">尚有 ${unresolved} 筆待處理</div>`:''}<div class="pay-review-actions">${stale?'<span class="tag" style="background:#fee2e2;color:#b91c1c">資料已變動</span>':'<span class="tag" style="background:#fef3c7;color:#92400e">待審核</span>'}<button class="btn sm" ${unresolved?'disabled title="請先完成工時、補卡或加班審核"':''} onclick="reviewPayrollMonth('${row.e.id}','approved')">${stale?'重新核准':'核准薪資'}</button></div></div>`;
+  const stale=review?.status==='approved'&&!valid,total=`$${Math.round(row.total).toLocaleString()}`;
+  if(valid)return `<div class="pay-review"><div class="pay-review-name">${esc(row.e.name)}</div><div class="pay-review-total">${total}</div><div class="pay-review-actions"><span class="tag" style="background:#dcfce7;color:#166534">✓ 已核准</span><button class="btn gray sm" onclick="reviewPayrollMonth('${row.e.id}','pending')">撤回</button></div></div>`;
+  return `<div class="pay-review"><div class="pay-review-name">${esc(row.e.name)}</div><div class="pay-review-total">${total}</div>${unresolved?`<div class="pay-review-note">尚有 ${unresolved} 筆待處理</div>`:''}<div class="pay-review-actions">${stale?'<span class="tag" style="background:#fee2e2;color:#b91c1c">資料已變動</span>':'<span class="tag" style="background:#fef3c7;color:#92400e">待審核</span>'}<button class="btn sm" ${unresolved?'disabled title="請先完成工時、補卡或加班審核"':''} onclick="reviewPayrollMonth('${row.e.id}','approved')">${stale?'重新核准':'核准薪資'}</button></div></div>`;
 }
 async function reviewPayrollMonth(empId,status){
   const e=emp(empId);if(!e)return alert('找不到員工資料');
