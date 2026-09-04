@@ -985,7 +985,7 @@ function shiftLabel(sh){
   if(sh.kind==='theme'){const t=theme(sh.themeId);return t?t.name:'(主題已刪)'}
   if(sh.kind==='floor')return '駐店場控';
   if(sh.kind==='cleaning')return '每周大清潔';
-  if(sh.kind==='practice')return '訓練場';
+  if(sh.kind==='practice'){const t=theme(sh.trainingThemeId);return t?`訓練場・${t.name}`:'訓練場'}
   if(sh.kind==='counter')return sh.storeId==='ms'?'謎先生櫃台':sh.storeId==='dz'?'桌遊大忠店櫃台':'櫃台班';
   return '其他班別';
 }
@@ -2356,7 +2356,7 @@ function empSessions(empId,month){
     const w=asgWindow(sh,a); // 櫃台/駐店個別時段
     rows.push({date:sh.date,start:w.start,end:w.end,
       kind:sh.kind,label:shiftLabel(sh),role:a.role,
-      store:store(sh.storeId)?.name||'',fee,cancelled:isCx(sh),cx:cxLabel(sh)});
+      store:store(sh.storeId)?.name||'',fee,rate:hourlyRateForShift(e,sh,a.role),cancelled:isCx(sh),cx:cxLabel(sh)});
     if(sh.kind==='theme')themeKeys.add(sh.id+'|'+a.role);
   }
   for(const source of S.shifts){
@@ -2411,6 +2411,9 @@ function showEmpDetail(empId){
       <td>${esc(r.label)}${r.cancelled?' <span class="warn">'+esc(r.cx)+'</span>':''}</td><td>${esc(r.store)}</td><td>${r.role}</td>
       ${showFee?`<td class="num">${r.fee?'$'+r.fee:'—'}</td>`:`<td class="num">${fmtHr(toMin(r.end)-toMin(r.start))}h</td>`}</tr>`).join('')}</table>`:'';
   const npcFee=npc.reduce((s,r)=>s+r.fee,0),gmFee=gm.reduce((s,r)=>s+r.fee,0);
+  const training=other.filter(r=>r.kind==='practice'&&!r.cancelled),trainingGroups=new Map();
+  for(const r of training){const key=`${r.label}|${r.role}|${r.rate}`,old=trainingGroups.get(key)||{label:r.label,role:r.role,rate:r.rate,minutes:0,pay:0};const minutes=Math.max(0,toMin(r.end)-toMin(r.start));old.minutes+=minutes;old.pay+=minutes/60*r.rate;trainingGroups.set(key,old)}
+  const trainingTable=trainingGroups.size?`<h3 style="margin:10px 0 6px">各主題訓練時數與預估費用</h3><table><tr><th>訓練主題</th><th>身分</th><th class="num">排定時數</th><th class="num">時薪</th><th class="num">預估費用</th></tr>${[...trainingGroups.values()].map(x=>`<tr><td>${esc(x.label)}</td><td>${esc(x.role)}</td><td class="num">${fmtHr(x.minutes)}h</td><td class="num">$${Number(x.rate).toLocaleString()}</td><td class="num">$${Math.round(x.pay).toLocaleString()}</td></tr>`).join('')}</table><p class="muted">未綁 LINE 的新人，請由管理員補登實際上下班並核准；正式薪資仍以核准工時為準。</p>`:'';
   const sequenceTable=sequence.length?`<h3 style="margin:10px 0 6px">場次關係（撞場 ${collisions.length} 組／滾場 ${rolling.length} 組）</h3>
     <table><tr><th>日期</th><th>判定</th><th>前場</th><th>後場</th><th>重疊／空檔</th><th>薪資處理</th></tr>
     ${sequence.map(r=>`<tr><td>${r.date}（週${WD[dateWD(r.date)]}）</td>
@@ -2426,7 +2429,7 @@ function showEmpDetail(empId){
        <b>櫃台/駐店/訓練 ${other.length} 筆</b>
        ${cx.length?`<span class="warn">取消 ${cx.length} 筆(不計費)</span>`:''}
      </div>`
-    +sequenceTable+tbl('場控場次',gm,true)+tbl('NPC 場次',npc,true)+tbl('櫃台/駐店/訓練場',other,false)+tbl('已取消',cx,true);
+    +trainingTable+sequenceTable+tbl('場控場次',gm,true)+tbl('NPC 場次',npc,true)+tbl('櫃台/駐店/訓練場',other,false)+tbl('已取消',cx,true);
   dlgDetail.showModal();
 }
 function exportEmpDetailCSV(){

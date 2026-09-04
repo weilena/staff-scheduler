@@ -150,6 +150,7 @@ Deno.serve(async (req) => {
         }
         return {
           id: s.id, date: s.date, storeId: s.storeId, kind: s.kind, themeId: s.themeId, start: s.start, end: s.end,
+          trainingThemeId: s.trainingThemeId ?? null,
           status: s.status ?? "active", assignments: s.assignments ?? [],
           linkedThemeAssignments: s.linkedThemeAssignments ?? [],
           depositPaid: isDepositPaid(s.payment),
@@ -253,7 +254,7 @@ Deno.serve(async (req) => {
         const key = `${shift.id}|${role}`; if (detailSeen.has(key)) return; detailSeen.add(key);
         const requiresReport = shift.kind === "practice" || (shift.kind === "theme" && ["NPC", "場控"].includes(String(role).toUpperCase() === "NPC" ? "NPC" : role));
         workItems.push({ id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind,
-          themeId: shift.themeId ?? null, role, linked, requiresReport, completed: completed.has(String(shift.id)) });
+          themeId: shift.themeId ?? null, trainingThemeId: shift.trainingThemeId ?? null, role, linked, requiresReport, completed: completed.has(String(shift.id)) });
       };
       for (const shift of shifts) for (const assignment of shift.assignments ?? []) if (assignment.empId === employee.id) { add(shift, assignment.role); addDetail(shift, assignment.role); }
       for (const source of shifts) for (const link of source.linkedThemeAssignments ?? []) {
@@ -339,7 +340,7 @@ Deno.serve(async (req) => {
         const attendance = (daily ?? []).filter((row: any) => row.emp_id === candidate.id), workItems: any[] = [];
         for (const shift of shifts) {
           if (String(shift.date ?? "").slice(0, 7) !== month || String(shift.status ?? "").startsWith("cancelled")) continue;
-          for (const assignment of shift.assignments ?? []) if (assignment.empId === candidate.id) workItems.push({ id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind, themeId: shift.themeId ?? null, role: assignment.role, linked: false });
+          for (const assignment of shift.assignments ?? []) if (assignment.empId === candidate.id) workItems.push({ id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind, themeId: shift.themeId ?? null, trainingThemeId: shift.trainingThemeId ?? null, role: assignment.role, linked: false });
           for (const link of shift.linkedThemeAssignments ?? []) if (link.empId === candidate.id) {
             const target = shifts.find((row: any) => String(row.id) === String(link.shiftId));
             if (target && !String(target.status ?? "").startsWith("cancelled")) workItems.push({ id: target.id, date: target.date, start: target.start, end: target.end, storeId: target.storeId, kind: target.kind, themeId: target.themeId ?? null, role: "場控", linked: true });
@@ -485,23 +486,25 @@ Deno.serve(async (req) => {
     if (action === "schedule-practice") {
       if (account.role !== "manager" && !(employee.type === "full" && employee.canSchedulePractice)) return json({ error: "你沒有安排新人訓練場的權限" }, 403);
       const date = String(input.date ?? ""), start = String(input.start ?? ""), end = String(input.end ?? ""), storeId = String(input.storeId ?? "");
-      const traineeId = String(input.traineeId ?? ""), companionId = String(input.companionId ?? ""), note = String(input.note ?? "").trim();
+      const traineeId = String(input.traineeId ?? ""), companionId = String(input.companionId ?? ""), trainingThemeId = String(input.trainingThemeId ?? ""), note = String(input.note ?? "").trim();
       const timeOk = (v: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !timeOk(start) || !timeOk(end) || toMinutes(end) <= toMinutes(start)) return json({ error: "請填寫正確的訓練日期與起訖時間" }, 400);
       if (!(cfg.stores ?? []).some((s: any) => s.id === storeId)) return json({ error: "訓練場地錯誤" }, 400);
+      const trainingTheme = (cfg.themes ?? []).find((t: any) => t.id === trainingThemeId && t.active !== false);
+      if (!trainingTheme || trainingTheme.storeId !== storeId) return json({ error: "請選擇這個場地的訓練主題" }, 400);
       const trainee = (cfg.employees ?? []).find((e: any) => e.id === traineeId && e.active), companion = (cfg.employees ?? []).find((e: any) => e.id === companionId && e.active);
       if (!trainee || !companion) return json({ error: "請選擇在職的受訓員工與陪練人員" }, 400);
       if (trainee.id === companion.id) return json({ error: "受訓員工與陪練人員不可為同一人" }, 400);
       const startsAt = new Date(`${date}T${start}:00+08:00`).getTime();
       if (startsAt <= Date.now()) return json({ error: "訓練場開始時間必須晚於現在" }, 409);
-      const id = `practice_${crypto.randomUUID()}`, target = { id, date, storeId, kind: "practice", themeId: null, start, end, status: "active", assignments: [] };
+      const id = `practice_${crypto.randomUUID()}`, target = { id, date, storeId, kind: "practice", themeId: null, trainingThemeId: trainingTheme.id, start, end, status: "active", assignments: [] };
       const traineeErrors = eligibilityErrors(trainee, target, "訓練場", shifts, cfg), companionErrors = eligibilityErrors(companion, target, "陪練", shifts, cfg);
       if (traineeErrors.length || companionErrors.length) return json({ error: [traineeErrors.length ? `${trainee.name}：${traineeErrors.join("、")}` : "", companionErrors.length ? `${companion.name}：${companionErrors.join("、")}` : ""].filter(Boolean).join("；") }, 409);
       const shift = { ...target, note, assignments: [{ role: "訓練場", empId: trainee.id }, { role: "陪練", empId: companion.id }],
         createdBy: employee.id, createdVia: "line_practice_scheduler" };
       const { error } = await sb.from("shifts").insert({ id, date, source: "manual", data: shift });
       if (error) throw error;
-      const label = `${date} ${start}–${end} ${(cfg.stores ?? []).find((s: any) => s.id === storeId)?.name ?? ""}`;
+      const label = `${date} ${start}–${end} ${(cfg.stores ?? []).find((s: any) => s.id === storeId)?.name ?? ""}・訓練主題：${trainingTheme.name}`;
       await queueNotification(sb, trainee.id, "practice_assigned", { title: "新人訓練場安排", text: `${label}，陪練：${companion.name}。請至 LINE 班表確認並依規定上下班打卡。` }, true, `practice:${id}:trainee`);
       await queueNotification(sb, companion.id, "practice_companion", { title: "陪練工作安排", text: `${label}，受訓員工：${trainee.name}。請至 LINE 班表確認並依規定上下班打卡。` }, true, `practice:${id}:companion`);
       const informed = new Set([trainee.id, companion.id, employee.id]);
@@ -510,7 +513,7 @@ Deno.serve(async (req) => {
         title: "訓練場已安排", text: `${employee.name}安排 ${label}：${trainee.name} 受訓，由 ${companion.name} 陪練。`,
       }, false, `practice:${id}:manager:${manager.emp_id}`);
       await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: "schedule_practice", target_type: "shift", target_id: id,
-        details: { traineeId: trainee.id, companionId: companion.id, date, start, end, storeId } });
+        details: { traineeId: trainee.id, traineeName: trainee.name, companionId: companion.id, trainingThemeId: trainingTheme.id, trainingThemeName: trainingTheme.name, date, start, end, storeId } });
       return json({ ok: true, message: "訓練場已建立，受訓員工、陪練人員與管理員都會收到資訊" });
     }
 
