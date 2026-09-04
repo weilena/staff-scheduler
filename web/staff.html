@@ -244,7 +244,9 @@ function reportSession(id){
   const task=todayWorkItems().find(x=>x.shift.id===id);if(!task)return alert('找不到今天的工作，請重新整理後再試。');
   const label=task.role.toUpperCase()==='NPC'?'NPC 報到':task.shift.kind==='practice'?'確認訓練場':'本場完成';
   if(!confirm(`確認「${label}」？\n\n${task.shift.start}–${task.shift.end} ${shiftName(task.shift)}（${task.role}）\n\n系統會重新驗證 LINE 本人身分與店內定位。場控時數仍以核准上下班打卡與場次重疊時間計算。`))return;
-  punchBusy=true;render();navigator.geolocation.getCurrentPosition(async p=>{try{const x=await api({action:'session-report',shiftId:id,latitude:p.coords.latitude,longitude:p.coords.longitude,accuracy:p.coords.accuracy});alert(`${label}成功\n時間：${x.ts.replace('T',' ')}\n地點：${x.site}`);await load();show('home')}catch(e){alert(e.message)}finally{punchBusy=false;render()}},e=>{punchBusy=false;render();alert('無法取得定位：'+e.message)},{enableHighAccuracy:true,timeout:20000,maximumAge:0})
+  // 放鳥:僅 NPC 場詢問;客人沒到 → 記 1 小時放鳥時數(場控放鳥無薪,故不詢問)
+  const noShow=task.role.toUpperCase()==='NPC'&&confirm('這一場客人「放鳥」（沒有到場）嗎？\n\n按「確定」＝客人放鳥（記 1 小時放鳥時數）\n按「取消」＝客人有正常到場');
+  punchBusy=true;render();navigator.geolocation.getCurrentPosition(async p=>{try{const x=await api({action:'session-report',shiftId:id,latitude:p.coords.latitude,longitude:p.coords.longitude,accuracy:p.coords.accuracy,noShow});alert(`${label}成功${x.noShow?'（已記客人放鳥）':''}\n時間：${x.ts.replace('T',' ')}\n地點：${x.site}`);await load();show('home')}catch(e){alert(e.message)}finally{punchBusy=false;render()}},e=>{punchBusy=false;render();alert('無法取得定位：'+e.message)},{enableHighAccuracy:true,timeout:20000,maximumAge:0})
 }
 function requestHauntedPrisonGmAssist(id){
   if(punchBusy)return;if(!navigator.geolocation)return alert('此手機不支援定位回報');

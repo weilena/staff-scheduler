@@ -538,10 +538,13 @@ Deno.serve(async (req) => {
       // 即可回報被指派的主題，並保留實際定位店別供管理員核對。
       if (!site || site.distance > site.radius_m + Math.min(accuracy, 50)) return json({ error: "目前不在允許的打卡地點範圍內" }, 403);
       const checkedInAt = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date()).replace(" ", "T");
+      // 放鳥:客人沒到場。只有 NPC 場放鳥才有薪水(1 小時),場控放鳥無薪,故僅 NPC 記錄放鳥旗標。
+      const noShow = String(role).toUpperCase() === "NPC" && !!input.noShow;
       const { error } = await sb.from("session_checkins").insert({ emp_id: employee.id, shift_id: shift.id, checked_in_at: checkedInAt,
-        worksite_id: site.id, latitude: lat, longitude: lng, accuracy_m: accuracy, verification: "line_location", source: "line", note: `${role}${shift.kind === "practice" ? "確認" : "場次完成"}` });
+        worksite_id: site.id, latitude: lat, longitude: lng, accuracy_m: accuracy, verification: "line_location", source: "line",
+        no_show: noShow, note: `${role}${shift.kind === "practice" ? "確認" : "場次完成"}${noShow ? "・客人放鳥" : ""}` });
       if (error) return json({ error: error.code === "23505" ? "這個場次已經回報過" : error.message }, error.code === "23505" ? 409 : 500);
-      return json({ ok: true, ts: checkedInAt, site: site.name, role });
+      return json({ ok: true, ts: checkedInAt, site: site.name, role, noShow });
     }
 
     if (action === "request-haunted-prison-gm-assist") {

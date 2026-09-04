@@ -1108,7 +1108,8 @@ function moveMonth(n){
 }
 /* ============ 主題場次統計(每月各主題累計排班場次) ============ */
 let themeStatsAnchor=monthStr();
-let themeStatsLoading=false, themeStatsRows=[], themeStatsRowsMonth='', empThemeStatsRows=[];
+let themeStatsLoading=false, themeStatsRows=[], themeStatsRowsMonth='', empThemeStatsRows=[], empStatSel='';
+function toggleEmpStatRow(id){empStatSel=empStatSel===id?'':id;render();}
 function moveThemeStatsMonth(n){
   const[y,m]=themeStatsAnchor.split('-').map(Number);
   const d=new Date(y,m-1+n,1);
@@ -1126,12 +1127,13 @@ async function loadThemeStatsCounts(manual){
   catch(e){if(manual)alert('讀取失敗:'+(e.message||e));}
   themeStatsLoading=false;if(tab==='themestats')render();
 }
-/* 匯出「計薪每日場次」CSV:員工×店×主題(詭獄加場併入詭獄)×角色,平日/國定分列(角色欄標「(國定)」),對應薪資表每日格子。放鳥場次待 LINE@ 放鳥鍵完成後併入。 */
+/* 匯出「計薪每日場次」CSV:員工×店×主題(詭獄加場併入詭獄)×角色,平日/國定分列(角色欄標「(國定)」);另含 NPC「放鳥場次」列(客人沒到,來自 LINE@ 放鳥鍵)。對應薪資表每日格子。 */
 async function exportPayrollDayCSV(){
   if(isDemo())return alert('試玩模式無資料可匯出。');
   const[y,m]=themeStatsAnchor.split('-').map(Number),from=themeStatsAnchor+'-01',lastDay=new Date(y,m,0).getDate(),to=fmtDate(new Date(y,m,0));
-  let rows;
-  try{const r=await sbc.rpc('emp_payroll_day_counts',{p_from:from,p_to:to});if(r.error)return alert('匯出失敗:'+r.error.message);rows=r.data||[];}
+  let rows,noshow;
+  try{const[r,ns]=await Promise.all([sbc.rpc('emp_payroll_day_counts',{p_from:from,p_to:to}),sbc.rpc('npc_noshow_day_counts',{p_from:from,p_to:to})]);
+    if(r.error)return alert('匯出失敗:'+r.error.message);rows=r.data||[];noshow=ns.error?[]:(ns.data||[]);}
   catch(e){return alert('匯出失敗:'+(e.message||e));}
   if(!rows.length)return alert('本月沒有可匯出的場次。');
   const holidays=new Set((S.settings&&S.settings.holidays)||[]);
@@ -1146,7 +1148,16 @@ async function exportPayrollDayCSV(){
     const day=Number(row.d.slice(8,10));
     e.days[day]=(e.days[day]||0)+Number(row.cnt);e.total+=Number(row.cnt);
   }
-  const roleOrder=r=>({'NPC':0,'場控':1,'櫃台':2}[r]??9);
+  // 放鳥場次(NPC 客人沒到):獨立一列「放鳥場次」,不分平日/國定(統一 1 小時放鳥時數)
+  for(const row of noshow){
+    const t=theme(row.theme_id);if(!t)continue;
+    const base=baseThemeName(t),key=[row.emp_id,row.store_id,base,'放鳥場次',0].join('|');
+    let e=map.get(key);
+    if(!e){e={emp:row.emp_id,store:row.store_id,base,role:'放鳥場次',hol:false,days:{},total:0};map.set(key,e);}
+    const day=Number(row.d.slice(8,10));
+    e.days[day]=(e.days[day]||0)+Number(row.cnt);e.total+=Number(row.cnt);
+  }
+  const roleOrder=r=>({'NPC':0,'場控':1,'放鳥場次':2,'櫃台':3}[r]??9);
   const arr=[...map.values()].sort((a,b)=>
     (emp(a.emp)?.name||'').localeCompare(emp(b.emp)?.name||'','zh-Hant')
     ||(stOrder[a.store]??9)-(stOrder[b.store]??9)
@@ -1231,10 +1242,11 @@ function vThemeStats(){
     <div class="row" style="align-items:baseline;margin-bottom:4px"><h2 style="margin:0">員工 × 主題場次</h2><span class="grow"></span><span class="muted">本月合計 <b style="font-size:18px">${empGrand}</b> 人次</span></div>
     <p class="muted" style="margin:0 0 12px">每位員工本月在各主題排了幾場(含 NPC／場控等所有角色;跟著上方月份切換)。</p>
     <div style="overflow-x:auto">
-    <table style="width:100%;border-collapse:collapse;white-space:nowrap;font-size:14px">
-      <tr><th style="text-align:left;padding:6px 10px;position:sticky;left:0;background:var(--card,#fff)">員工</th>${empBases.map(b=>`<th class="num" style="padding:6px 10px"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${baseColor[b]};margin-right:4px"></span>${esc(b)}</th>`).join('')}<th class="num" style="padding:6px 10px">總計</th></tr>
-      ${empRows.map(e=>`<tr style="border-top:1px solid #eef2f7"><td style="text-align:left;padding:6px 10px;position:sticky;left:0;background:var(--card,#fff)"><b>${esc(emp(e.id)?.name||e.id)}</b></td>${empBases.map(b=>{const v=e.byBase[b]||0;return `<td class="num" style="padding:6px 10px;color:${v?'inherit':'#cbd5e1'}">${v||'·'}</td>`;}).join('')}<td class="num" style="padding:6px 10px"><b style="font-size:15px">${e.total}</b></td></tr>`).join('')}
-      <tr style="border-top:2px solid #e2e8f0"><td style="text-align:left;padding:6px 10px;position:sticky;left:0;background:var(--card,#fff)"><b>合計</b></td>${empBases.map(b=>`<td class="num" style="padding:6px 10px"><b>${baseTotals[b]}</b></td>`).join('')}<td class="num" style="padding:6px 10px"><b>${empGrand}</b></td></tr>
+    <p class="muted" style="margin:-6px 0 10px;font-size:12px">點任一員工可將整列變粗、方便對照。</p>
+    <table style="width:100%;border-collapse:collapse;white-space:nowrap;font-size:16px">
+      <tr><th style="text-align:left;padding:8px 12px;position:sticky;left:0;background:var(--card,#fff)">員工</th>${empBases.map(b=>`<th class="num" style="padding:8px 12px"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${baseColor[b]};margin-right:4px"></span>${esc(b)}</th>`).join('')}<th class="num" style="padding:8px 12px">總計</th></tr>
+      ${empRows.map(e=>{const sel=empStatSel===e.id;return `<tr onclick="toggleEmpStatRow('${e.id}')" style="border-top:1px solid #eef2f7;cursor:pointer;${sel?'background:#fef9c3;font-weight:800':''}"><td style="text-align:left;padding:8px 12px;position:sticky;left:0;background:${sel?'#fef9c3':'var(--card,#fff)'}"><b style="font-size:17px">${esc(emp(e.id)?.name||e.id)}</b></td>${empBases.map(b=>{const v=e.byBase[b]||0;return `<td class="num" style="padding:8px 12px;color:${v?'inherit':'#cbd5e1'}">${v||'·'}</td>`;}).join('')}<td class="num" style="padding:8px 12px"><b style="font-size:17px">${e.total}</b></td></tr>`;}).join('')}
+      <tr style="border-top:2px solid #e2e8f0"><td style="text-align:left;padding:8px 12px;position:sticky;left:0;background:var(--card,#fff)"><b>合計</b></td>${empBases.map(b=>`<td class="num" style="padding:8px 12px"><b>${baseTotals[b]}</b></td>`).join('')}<td class="num" style="padding:8px 12px"><b>${empGrand}</b></td></tr>
     </table></div></div>`:'';
   return `${nav}
     <p class="muted" style="margin:0 4px 12px">各主題本月排班場次(不含已取消)。占比為該主題占<b>全部場次</b>的比例,顏色與下方圓餅圖一致。<b>點任一主題</b>可看當月每一場的日期與時段明細。</p>
