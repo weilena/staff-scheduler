@@ -1,11 +1,14 @@
 // 回寫 SimplyBook:把系統裡指定場次的「負責人」回寫到 SimplyBook 預約(試驗功能)
-// - 只能由「已登入的管理者」從後台按鈕觸發(部署時保留 JWT 驗證,勿加 --no-verify-jwt)
+// - 只能由「已登入的管理者」從後台按鈕觸發:函式內以 userClient.auth.getUser() 驗證,匿名一律擋掉。
+// - 部署要用 --no-verify-jwt:否則 Supabase 閘道會把瀏覽器的 CORS 預檢(OPTIONS,不帶授權)擋成 401,
+//   前端會出現「Failed to send a request to the Edge Function」。安全性由函式內部的登入驗證把關,不受影響。
 // - 一次只改一筆、按了才改;失敗時 SimplyBook 不會有任何變動
 // - 注意:SimplyBook 端可能因異動寄通知信給客人(依其通知設定)
 //
-// 部署:supabase functions deploy sb-writeback
+// 部署:supabase functions deploy sb-writeback --no-verify-jwt
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { cors, json } from "../_shared/common.ts";
 
 const LOGIN_URL = "https://user-api.simplybook.asia/login";
 const ADMIN_URL = "https://user-api.simplybook.asia/admin/";
@@ -22,6 +25,7 @@ async function rpc(url: string, headers: Record<string, string>, method: string,
 }
 
 Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
     // 1. 必須是登入中的管理者(不接受匿名 key)
     const authHeader = req.headers.get("Authorization") ?? "";
@@ -31,11 +35,11 @@ Deno.serve(async (req) => {
       { global: { headers: { Authorization: authHeader } } },
     );
     const { data: { user } } = await userClient.auth.getUser();
-    if (!user) return Response.json({ error: "需要管理者登入" }, { status: 401 });
+    if (!user) return json({ error: "需要管理者登入" }, 401);
 
     const { shiftId } = await req.json();
     if (!shiftId || !String(shiftId).startsWith("sb_")) {
-      return Response.json({ error: "只有 SimplyBook 來源的場次(sb_ 開頭)可以回寫" }, { status: 400 });
+      return json({ error: "只有 SimplyBook 來源的場次(sb_ 開頭)可以回寫" }, 400);
     }
     const code = String(shiftId).slice(3);
 
@@ -44,7 +48,7 @@ Deno.serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
     const { data: row } = await supa.from("shifts").select("data").eq("id", shiftId).single();
-    if (!row) return Response.json({ error: "查無此場次" }, { status: 404 });
+    if (!row) return json({ error: "查無此場次" }, 404);
     const shift = row.data;
 
     const { data: cfgRow } = await supa.from("config").select("data").eq("id", 1).single();
@@ -55,14 +59,14 @@ Deno.serve(async (req) => {
     const primaryRole = themeRow && (Number(themeRow.payNPC) || 0) > 0 ? "NPC" : "場控";
     const primary = shift.assignments?.find((a: any) => a.empId && a.role === primaryRole);
     if (!primary) {
-      return Response.json({
+      return json({
         error: `此場次尚未指定「${primaryRole}」人員`,
         hint: `SimplyBook 這個主題的服務供應者對應的是${primaryRole};請先在場次的${primaryRole}欄位選人再回寫。`,
-      }, { status: 400 });
+      }, 400);
     }
     const empId = primary.empId;
     const employee = cfg.employees.find((e: any) => e.id === empId);
-    if (!employee) return Response.json({ error: "查無此員工" }, { status: 400 });
+    if (!employee) return json({ error: "查無此員工" }, 400);
 
     // 2. SimplyBook 管理 API
     const company = Deno.env.get("SB_COMPANY")!;
@@ -76,11 +80,11 @@ Deno.serve(async (req) => {
     const names = [employee.name, ...(employee.aliases ?? [])];
     const unit = units.find((u: any) => names.includes(String(u.name ?? "").trim()));
     if (!unit) {
-      return Response.json({
+      return json({
         error: `SimplyBook 找不到叫「${employee.name}」的服務供應者`,
         simplybook_units: units.map((u: any) => u.name),
         hint: "若名稱不同,請在系統員工資料的 aliases 加上 SimplyBook 用的名字",
-      }, { status: 400 });
+      }, 400);
     }
 
     // 4. 以 code 找出 SimplyBook 的預約 id
@@ -88,21 +92,21 @@ Deno.serve(async (req) => {
       [{ date_from: shift.date, date_to: shift.date, booking_type: "non_cancelled" }]);
     const blist = Array.isArray(bookings) ? bookings : Object.values(bookings ?? {});
     const bk = blist.find((b: any) => String(b.code ?? "") === code || String(b.id ?? "") === code);
-    if (!bk) return Response.json({ error: `SimplyBook 查無預約(code=${code})` }, { status: 404 });
+    if (!bk) return json({ error: `SimplyBook 查無預約(code=${code})` }, 404);
     if (String(bk.unit_id ?? bk.unit?.id ?? "") === String(unit.id)) {
-      return Response.json({ ok: true, message: "SimplyBook 上已經是這位負責人,無需變更" });
+      return json({ ok: true, message: "SimplyBook 上已經是這位負責人,無需變更" });
     }
 
     // 5. 回寫負責人(editBook)
     const result = await rpc(ADMIN_URL, H, "editBook", [Number(bk.id), { unit_id: Number(unit.id) }]);
 
-    return Response.json({
+    return json({
       ok: true, booking_code: code,
       changed_to: { unit_id: unit.id, name: unit.name },
       simplybook_result: result,
       note: "SimplyBook 端可能會依其通知設定寄信給客人",
     });
   } catch (e) {
-    return Response.json({ error: "回寫失敗: " + (e as Error).message }, { status: 500 });
+    return json({ error: "回寫失敗: " + (e as Error).message }, 500);
   }
 });
