@@ -47,11 +47,8 @@ export function employedOn(emp: any, date: string) {
 
 function availability(emp: any, date: string) {
   if (emp?.availX?.[date]) return emp.availX[date];
-  // Full-time staff report leave rather than ordinary availability. A date
-  // without a date-specific leave entry is therefore available by default.
-  if (emp?.type === "full") return { on: true, start: "09:00", end: "22:30", assumedFullTime: true };
   const day = new Date(`${date}T00:00:00+08:00`).getDay();
-  return emp?.avail?.[day] ?? emp?.avail?.[String(day)];
+  return emp?.avail?.[day] ?? emp?.avail?.[String(day)] ?? { on: true, start: "09:00", end: "22:30", assumedAvailable: true };
 }
 
 export function eligibilityErrors(emp: any, target: any, role: string, shifts: any[], cfg: any, ignoreIds: string[] = []) {
@@ -62,6 +59,8 @@ export function eligibilityErrors(emp: any, target: any, role: string, shifts: a
   const avail = availability(emp, target.date);
   const prep = Number(cfg.settings?.prepMin ?? 10), travel = Number(cfg.settings?.travelMin ?? 12);
   const start = toMinutes(target.start) - prep, end = toMinutes(target.end);
+  const weeklyOff = cfg.settings?.weeklyOffDay === "" || cfg.settings?.weeklyOffDay === null ? -1 : Number(cfg.settings?.weeklyOffDay ?? 4);
+  if (weeklyOff >= 0 && new Date(`${target.date}T00:00:00+08:00`).getDay() === weeklyOff) errors.push("每週固定公休");
   if (!avail?.on) errors.push("當日未設定可上班");
   else if (toMinutes(avail.start) > start || toMinutes(avail.end) < end) errors.push("超出可上班時間");
   if (role === "櫃台" && !(emp.counters ?? []).includes(target.storeId)) errors.push("未具此店櫃台資格");

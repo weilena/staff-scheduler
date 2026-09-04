@@ -84,7 +84,10 @@ Deno.serve(async (req) => {
 
     if (action === "bootstrap") {
       const now = new Date(), from = dateText(new Date(now.getTime() - 60 * DAY)), to = dateText(new Date(now.getTime() + 60 * DAY));
-      const [{ data: worksites }, { data: punches }, { data: sessionCheckins }, { data: shiftConfirmations }, { data: attendanceDays }, { data: attendanceRequests }, { data: overtimeReviews }, { data: availabilityRequests }] = await Promise.all([
+      const availabilityConfirmationQuery = account.role === "manager"
+        ? sb.from("availability_month_confirmations").select("emp_id,month,confirmed_at").gte("month", from.slice(0, 7)).order("month", { ascending: true })
+        : sb.from("availability_month_confirmations").select("emp_id,month,confirmed_at").eq("emp_id", employee.id).gte("month", from.slice(0, 7)).order("month", { ascending: true });
+      const [{ data: worksites }, { data: punches }, { data: sessionCheckins }, { data: shiftConfirmations }, { data: attendanceDays }, { data: attendanceRequests }, { data: overtimeReviews }, { data: availabilityRequests }, { data: availabilityConfirmations }] = await Promise.all([
         sb.from("worksites").select("id,name,radius_m,enabled").eq("enabled", true),
         sb.from("punches").select("id,ts,type,worksite_id,verification,review_state,voided_at,void_reason,shift_ids,raw").eq("emp_id", employee.id).gte("ts", from).order("ts", { ascending: false }).limit(60),
         sb.from("session_checkins").select("id,shift_id,checked_in_at,worksite_id,verification,source,note").eq("emp_id", employee.id).gte("checked_in_at", from).order("checked_in_at", { ascending: false }).limit(100),
@@ -92,7 +95,8 @@ Deno.serve(async (req) => {
         sb.from("attendance_daily").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: false }).limit(70),
         sb.from("attendance_requests").select("*").eq("emp_id", employee.id).order("created_at", { ascending: false }).limit(30),
         sb.from("overtime_reviews").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: false }).limit(70),
-        sb.from("availability_requests").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: true }).limit(120),
+        sb.from("availability_requests").select("*").eq("emp_id", employee.id).gte("work_date", from).order("created_at", { ascending: false }).limit(120),
+        availabilityConfirmationQuery,
       ]);
       const publicEmployees = (cfg.employees ?? []).filter((e: any) => e.active).map((e: any) => account.role === "manager"
         ? { id: e.id, name: e.name, color: e.simplybookColor ?? "", type: e.type, skills: e.skills ?? {}, avail: e.avail ?? null, availX: e.availX ?? {} }
@@ -188,7 +192,7 @@ Deno.serve(async (req) => {
           canSchedulePractice: account.role === "manager" || (employee.type === "full" && !!employee.canSchedulePractice) }, stores: cfg.stores, themes: cfg.themes,
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches,
         attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations,
-        availabilityRequests, availability: employee.availX ?? {},
+        availabilityRequests, availabilityConfirmations, availability: employee.availX ?? {},
         annualLeave, weeklyOffDay: cfg.settings?.weeklyOffDay ?? 4, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
 
@@ -767,11 +771,13 @@ Deno.serve(async (req) => {
       const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
       const timeOk = (value: unknown) => /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value ?? ""));
       const allowedLeave = employee.type === "full" ? ["休假", "特休", "事假", "病假"] : ["不可上班"];
+      const weeklyOff = cfg.settings?.weeklyOffDay === "" || cfg.settings?.weeklyOffDay === null ? -1 : Number(cfg.settings?.weeklyOffDay ?? 4);
       const normalized: any[] = [];
       for (const source of entries) {
         const date = String(source?.date ?? ""), on = source?.on === true;
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date.slice(0, 7) !== month || date < today) return json({ error: `日期 ${date || "空白"} 不在可申請範圍` }, 400);
-        const requested: any = { on, source: "line_request" };
+        if (weeklyOff >= 0 && new Date(`${date}T00:00:00+08:00`).getDay() === weeklyOff) return json({ error: `${date} 為固定公休，不用另外填寫` }, 400);
+        const requested: any = { on, source: "line_direct" };
         if (on) {
           const start = String(source?.start ?? ""), end = String(source?.end ?? "");
           if (!timeOk(start) || !timeOk(end) || start >= end) return json({ error: `${date} 的可上班時間不正確` }, 400);
@@ -786,17 +792,33 @@ Deno.serve(async (req) => {
         requested.affectedShifts = affected;
         normalized.push({ date, requestKind: on ? "available" : "leave", requested });
       }
-      const dates = normalized.map(row => row.date), batchId = crypto.randomUUID();
+      const dates = normalized.map(row => row.date), batchId = crypto.randomUUID(), appliedEntries: Record<string, any> = {};
+      for (const row of normalized) appliedEntries[row.date] = { ...row.requested, source: "line_direct", updatedAt: new Date().toISOString() };
+      const { data: applied, error: applyError } = await sb.rpc("apply_line_availability", { p_emp_id: employee.id, p_entries: appliedEntries });
+      if (applyError) throw applyError;
+      if (!applied?.ok) return json({ error: applied?.msg ?? "儲存可上班資料失敗" }, 500);
       const { error: deleteError } = await sb.from("availability_requests").delete().eq("emp_id", employee.id).eq("status", "pending").in("work_date", dates);
       if (deleteError) throw deleteError;
       const { error } = await sb.from("availability_requests").insert(normalized.map(row => ({ batch_id: batchId, emp_id: employee.id,
-        work_date: row.date, request_kind: row.requestKind, requested: row.requested })));
+        work_date: row.date, request_kind: row.requestKind, requested: row.requested, status: "approved", reviewed_at: new Date().toISOString() })));
       if (error) throw error;
+      await sb.from("availability_month_confirmations").delete().eq("emp_id", employee.id).eq("month", month);
       await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: "submit_monthly_availability",
-        target_type: "availability_batch", target_id: batchId, details: { month, dates, count: normalized.length } });
+        target_type: "availability_batch", target_id: batchId, details: { month, dates, count: normalized.length, direct: true } });
       const affectedCount = normalized.reduce((sum, row) => sum + row.requested.affectedShifts.length, 0);
       return json({ ok: true, batchId, count: normalized.length, affectedCount,
-        message: `已送出 ${normalized.length} 天，等待管理員審核${affectedCount ? `；其中 ${affectedCount} 個既有班次會特別提醒` : ""}` });
+        message: `已儲存 ${normalized.length} 天，不需管理員審核。全部調整完後，請再按「確認本月已填完」${affectedCount ? `；其中 ${affectedCount} 個既有班次不會自動刪除` : ""}` });
+    }
+
+    if (action === "availability-confirm-month") {
+      const month = String(input.month ?? ""), today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month) || month < today.slice(0, 7)) return json({ error: "請選擇本月或未來月份" }, 400);
+      const confirmedAt = new Date().toISOString();
+      const { error } = await sb.from("availability_month_confirmations").upsert({ emp_id: employee.id, month, confirmed_at: confirmedAt, updated_at: confirmedAt }, { onConflict: "emp_id,month" });
+      if (error) throw error;
+      await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: "confirm_monthly_availability",
+        target_type: "availability_month", target_id: `${employee.id}:${month}`, details: { month, blankMeansAvailable: true } });
+      return json({ ok: true, month, confirmedAt, message: `已確認 ${month.replace("-", " 年 ")} 月的可上班／休假已填完` });
     }
 
     if (action === "attendance-request") {

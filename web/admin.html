@@ -423,7 +423,7 @@ function seedThemes(){
 }
 /* ============ 雲端儲存層(Supabase)============ */
 let S=null,sbc=null,currentAdminUser=null,ADMIN_USERS=[],adminUsersLoaded=false,adminUsersLoading=false;
-let LINE={accounts:[],worksites:[],requests:[],responses:[],guestReports:[],attendance:[],overtime:[],usage:[],outbox:[],syncRuns:[]};
+let LINE={accounts:[],worksites:[],requests:[],responses:[],guestReports:[],attendance:[],overtime:[],usage:[],outbox:[],syncRuns:[],availability:[],availabilityConfirmations:[]};
 function isDemo(){return (window.CFG&&CFG.DEMO)||/[?&]demo=1/.test(location.search)}
 function seedConfig(){
   return {
@@ -570,10 +570,10 @@ function startSyncHealthTicker(){
   },60000);
 }
 async function loadLineAdmin(){
-  if(isDemo()){LINE={accounts:[],worksites:S.stores.map(s=>({id:s.id,name:s.name,radius_m:200,enabled:true})),requests:[],responses:[],guestReports:[],attendance:[],daily:[],overtime:[],usage:[],outbox:[],syncRuns:[],payrollReviews:[],availability:[]};return}
-  const names=['line_accounts','worksites','shift_requests','shift_request_responses','attendance_requests','attendance_daily','overtime_reviews','message_usage','notification_outbox','integration_sync_runs','payroll_month_reviews','availability_requests'];
+  if(isDemo()){LINE={accounts:[],worksites:S.stores.map(s=>({id:s.id,name:s.name,radius_m:200,enabled:true})),requests:[],responses:[],guestReports:[],attendance:[],daily:[],overtime:[],usage:[],outbox:[],syncRuns:[],payrollReviews:[],availability:[],availabilityConfirmations:[]};return}
+  const names=['line_accounts','worksites','shift_requests','shift_request_responses','attendance_requests','attendance_daily','overtime_reviews','message_usage','notification_outbox','integration_sync_runs','payroll_month_reviews','availability_requests','availability_month_confirmations'];
   const [rs,guests]=await Promise.all([Promise.all(names.map(n=>sbc.from(n).select('*'))),guestAdminApi({action:'list'})]);
-  LINE={accounts:rs[0].data||[],worksites:rs[1].data||[],requests:rs[2].data||[],responses:rs[3].data||[],guestReports:guests.reports||[],attendance:rs[4].data||[],daily:rs[5].data||[],overtime:rs[6].data||[],usage:rs[7].data||[],outbox:rs[8].data||[],syncRuns:(rs[9].data||[]).sort((a,b)=>String(b.started_at).localeCompare(String(a.started_at))).slice(0,20),payrollReviews:rs[10].data||[],availability:rs[11].data||[]};
+  LINE={accounts:rs[0].data||[],worksites:rs[1].data||[],requests:rs[2].data||[],responses:rs[3].data||[],guestReports:guests.reports||[],attendance:rs[4].data||[],daily:rs[5].data||[],overtime:rs[6].data||[],usage:rs[7].data||[],outbox:rs[8].data||[],syncRuns:(rs[9].data||[]).sort((a,b)=>String(b.started_at).localeCompare(String(a.started_at))).slice(0,20),payrollReviews:rs[10].data||[],availability:rs[11].data||[],availabilityConfirmations:rs[12].data||[]};
 }
 async function guestAdminApi(body){
   const session=await sbc.auth.getSession(),token=session.data?.session?.access_token;if(!token)throw new Error('管理員登入已過期，請重新登入');
@@ -682,8 +682,7 @@ function dateWD(ds){return new Date(ds+'T00:00:00').getDay()}
 /* 當日有效可上班時間:特定日期回報 > 每週固定 */
 function effectiveAvail(e,ds){
   if(e.availX&&e.availX[ds])return e.availX[ds];
-  if(e.type==='full')return {on:true,start:'09:00',end:'22:30',assumedFullTime:true};
-  return e.avail?.[dateWD(ds)];
+  return e.avail?.[dateWD(ds)]||{on:true,start:'09:00',end:'22:30',assumedAvailable:true};
 }
 function employedOn(e,ds){
   return !!e.active&&(!e.startDate||ds>=e.startDate)&&(!e.endDate||ds<=e.endDate);
@@ -2888,7 +2887,14 @@ function tglCounter(empId,storeId,on){
 }
 
 /* ============ 可上班時間 ============ */
-let availEmp='';
+let availEmp='',availOverviewMonth=(()=>{const d=new Date();d.setDate(1);d.setMonth(d.getMonth()+1);return fmtDate(d).slice(0,7)})();
+function setAvailOverviewMonth(value){if(value){availOverviewMonth=value;render()}}
+function availabilityOverviewHtml(actives){
+  const [y,m]=availOverviewMonth.split('-').map(Number),days=new Date(y,m,0).getDate(),dates=Array.from({length:days},(_,i)=>`${availOverviewMonth}-${String(i+1).padStart(2,'0')}`),confirmed=new Set((LINE.availabilityConfirmations||[]).filter(x=>x.month===availOverviewMonth).map(x=>x.emp_id)),done=actives.filter(e=>confirmed.has(e.id)).length;
+  const head=dates.map(d=>`<th style="min-width:43px;text-align:center;${isWeeklyOff(d)?'background:#eef2f6;color:#667085':''}">${Number(d.slice(8))}<br><small>週${WD[dateWD(d)]}</small></th>`).join('');
+  const rows=actives.map(e=>`<tr><th style="position:sticky;left:0;z-index:1;background:#fff;min-width:125px;text-align:left">${esc(e.name)}<br><span class="pill ${confirmed.has(e.id)?'in':'out'}">${confirmed.has(e.id)?'已填完':'未填完'}</span></th>${dates.map(d=>{if(isWeeklyOff(d))return '<td style="background:#f2f4f7;color:#667085;text-align:center">公休</td>';const a=e.availX?.[d];if(!a)return '<td style="background:#f0fdf4;color:#166534;text-align:center">可</td>';if(a.on)return `<td style="background:#eff8ff;color:#175cd3;text-align:center;white-space:nowrap">可<br><small>${esc(a.start||'')}–${esc(a.end||'')}</small></td>`;return `<td style="background:#fef3f2;color:#b42318;text-align:center;white-space:nowrap">${esc(a.leaveType||'休假')}</td>`}).join('')}</tr>`).join('');
+  return `<div class="card"><div class="row"><h2 class="grow">📋 全員整月可上班／休假統整</h2><input type="month" value="${availOverviewMonth}" onchange="setAvailOverviewMonth(this.value)" style="width:auto"><span class="pill ${done===actives.length?'in':'out'}">已填完 ${done}／${actives.length}</span></div><p class="muted">空白日期＝可上班；每週四自動公休。「已填完」以員工在 LINE@ 按下確認鍵為準。</p><div style="overflow:auto;max-width:100%;border:1px solid #e4e7ec;border-radius:10px"><table style="min-width:${130+days*58}px;margin:0"><tr><th style="position:sticky;left:0;z-index:2;background:#f8fafc">員工／狀態</th>${head}</tr>${rows}</table></div></div>`;
+}
 function vAvail(){
   const actives=S.employees.filter(e=>e.active);
   if(availEmp&&!actives.some(e=>e.id===availEmp))availEmp='';
@@ -2896,8 +2902,8 @@ function vAvail(){
   const e=availEmp?emp(availEmp):null;
   if(!actives.length)return `<div class="card"><h2>可上班時間</h2><p class="muted">請先到「員工」頁新增員工。</p></div>`;
   const xs=Object.entries(e.availX||{}).sort((a,b)=>a[0].localeCompare(b[0]));
-  return `<div class="card"><h2>📅 Google 行事曆（可上班時間的來源）</h2>
-    <p class="muted" style="margin-bottom:8px">員工把可上班／休假寫在「謎先生＆大忠店排班表」日曆(例：「1830後可以」「1700前」「❌」「休」)。系統<b>唯讀</b>抓取並一鍵解析成排班用的可上班時段,不會更動你的日曆。正職休假可在「打卡出勤 → 個人月打卡」的休假列查看。</p>
+  return `${availabilityOverviewHtml(actives)}<div class="card"><h2>📅 選用：Google 日曆舊資料匯入</h2>
+    <p class="muted" style="margin-bottom:8px">日常的整月可上班／休假請直接使用 LINE@，不需綁定 Google。此區只保留給舊資料手動匯入，不會後台自動抓取，也不會覆蓋 LINE 已儲存的回報。</p>
     <div class="row" style="margin-bottom:8px">
       <input id="icalUrl" class="grow" placeholder="貼上 Google 日曆的私人 iCal 網址(.ics 結尾)" value="${esc(S.icalUrl||'')}">
       <button class="btn gray sm" onclick="saveIcalUrl()">儲存網址</button>
@@ -2921,7 +2927,7 @@ function vAvail(){
           <select onchange="availEmp=this.value;render()">${actives.map(x=>`<option value="${x.id}" ${x.id===availEmp?'selected':''}>${esc(x.name)}</option>`).join('')}</select>
           <span class="muted">改動即時儲存。判斷順序:特定日期回報 > 每週固定。</span></div>
         <h3 style="margin:6px 0 8px">每週固定(基本盤)</h3>
-        <p class="muted" style="margin-bottom:8px">正職未填特定日期休假時，一律視為可上班；兼職依每週固定與逐日回報判斷。</p>
+        <p class="muted" style="margin-bottom:8px">正職與兼職未填特定日期時，一律視為可上班；特定日期回報優先於每週固定設定。</p>
         <table><tr><th>星期</th><th>可上班</th><th>從</th><th>到</th></tr>
         ${[1,2,3,4,5,6,0].map(d=>{
           const a=e.avail?.[d]||{on:false,start:'09:00',end:'22:00'};
@@ -3047,10 +3053,10 @@ async function loadIcal(doImport){
         if(!e){continue}
         const av=parseGCalAvail(ev.summary);
         if(!av){unparsed.push(ev.summary);continue}
-        e.availX=e.availX||{};if(e.availX[ev.date]?.source==='line_approved'){protectedLine++;continue}e.availX[ev.date]=av;applied++;
+        e.availX=e.availX||{};if(['line_approved','line_direct'].includes(e.availX[ev.date]?.source)){protectedLine++;continue}e.availX[ev.date]=av;applied++;
       }
       save();
-      box.innerHTML=`<p class="ok" style="color:#059669">✅ 已匯入 ${applied} 筆到 ${m} 可上班時間。${protectedLine?` 已保留 ${protectedLine} 筆管理員核准的 LINE 回報。`:''}`
+      box.innerHTML=`<p class="ok" style="color:#059669">✅ 已匯入 ${applied} 筆到 ${m} 可上班時間。${protectedLine?` 已保留 ${protectedLine} 筆 LINE 已儲存回報。`:''}`
         +(unparsed.length?` 有 ${unparsed.length} 筆無法辨識(維持原樣):${unparsed.slice(0,8).map(esc).join('、')}`:'')
         +`</p><p class="muted">切到「排班表」即可看到更新後的每日人力。無法辨識的可在上方「特定日期回報」手動補。</p>`;
       return;

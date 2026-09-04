@@ -39,6 +39,24 @@ Deno.serve(async (req) => {
   const tomorrow = new Date(new Date(`${localDate}T00:00:00+08:00`).getTime() + 86_400_000);
   const tomorrowDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(tomorrow);
   const { cfg, shifts } = await getContext(sb);
+  const portal = Deno.env.get("LINE_LIFF_URL") ?? (Deno.env.get("LINE_LIFF_ID") ? `https://liff.line.me/${Deno.env.get("LINE_LIFF_ID")}` : "");
+  const link = (tab: string) => `${portal}${portal.includes("?") ? "&" : "?"}tab=${tab}`;
+
+  // 每月 20 日提醒還沒有確認填完的員工，同一人同一月只發一則。
+  const localDay = Number(parts.day);
+  if (localDay === 20) {
+    const monthDate = new Date(`${localDate}T00:00:00+08:00`); monthDate.setMonth(monthDate.getMonth() + 1, 1);
+    const nextMonth = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit" }).format(monthDate);
+    const { data: confirmations } = await sb.from("availability_month_confirmations").select("emp_id").eq("month", nextMonth);
+    const confirmed = new Set((confirmations ?? []).map((row: any) => String(row.emp_id)));
+    const activeEmployees = new Set((cfg.employees ?? []).filter((row: any) => row.active).map((row: any) => String(row.id)));
+    const { data: accounts } = await sb.from("line_accounts").select("emp_id").eq("active", true);
+    for (const row of accounts ?? []) if (activeEmployees.has(String(row.emp_id)) && !confirmed.has(String(row.emp_id))) await queueNotification(sb, String(row.emp_id), "availability_reminder", {
+      title: `${nextMonth.replace("-", "年")} 月班表填寫提醒`, text: "你尚未確認下個月的可上班／休假已填完，請完成填寫並按「確認本月已填完」。空白日期視為可上班，週四自動公休。",
+      links: portal ? [{ label: "填寫下個月班表", uri: link("availability") }] : [],
+    }, false, `availability-reminder:${nextMonth}:${row.emp_id}`);
+  }
+
   const reminderHour = Math.min(22, Math.max(0, Number(cfg.settings?.reminderHour ?? 20)));
   if (localHour >= reminderHour && localHour <= 22) {
     const grouped = new Map<string, any[]>();
@@ -48,8 +66,6 @@ Deno.serve(async (req) => {
         grouped.set(String(assignment.empId), [...(grouped.get(String(assignment.empId)) ?? []), { ...shift, role: assignment.role }]);
       }
     }
-    const portal = Deno.env.get("LINE_LIFF_URL") ?? (Deno.env.get("LINE_LIFF_ID") ? `https://liff.line.me/${Deno.env.get("LINE_LIFF_ID")}` : "");
-    const link = (tab: string) => `${portal}${portal.includes("?") ? "&" : "?"}tab=${tab}`;
     for (const [empId, jobs] of grouped) {
       jobs.sort((a, b) => String(a.start).localeCompare(String(b.start)));
       const lines = jobs.map((s) => {
