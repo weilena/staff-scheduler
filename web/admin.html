@@ -1126,6 +1126,43 @@ async function loadThemeStatsCounts(manual){
   catch(e){if(manual)alert('讀取失敗:'+(e.message||e));}
   themeStatsLoading=false;if(tab==='themestats')render();
 }
+/* 匯出「計薪每日場次」CSV:員工×店×主題(詭獄加場併入詭獄)×角色,平日/國定分列(角色欄標「(國定)」),對應薪資表每日格子。放鳥場次待 LINE@ 放鳥鍵完成後併入。 */
+async function exportPayrollDayCSV(){
+  if(isDemo())return alert('試玩模式無資料可匯出。');
+  const[y,m]=themeStatsAnchor.split('-').map(Number),from=themeStatsAnchor+'-01',lastDay=new Date(y,m,0).getDate(),to=fmtDate(new Date(y,m,0));
+  let rows;
+  try{const r=await sbc.rpc('emp_payroll_day_counts',{p_from:from,p_to:to});if(r.error)return alert('匯出失敗:'+r.error.message);rows=r.data||[];}
+  catch(e){return alert('匯出失敗:'+(e.message||e));}
+  if(!rows.length)return alert('本月沒有可匯出的場次。');
+  const holidays=new Set((S.settings&&S.settings.holidays)||[]);
+  const stOrder={ms:0,dz:1};
+  const map=new Map();
+  for(const row of rows){
+    const t=theme(row.theme_id);if(!t)continue;
+    const base=baseThemeName(t),hol=holidays.has(row.d);
+    const key=[row.emp_id,row.store_id,base,row.role,hol?1:0].join('|');
+    let e=map.get(key);
+    if(!e){e={emp:row.emp_id,store:row.store_id,base,role:row.role,hol,days:{},total:0};map.set(key,e);}
+    const day=Number(row.d.slice(8,10));
+    e.days[day]=(e.days[day]||0)+Number(row.cnt);e.total+=Number(row.cnt);
+  }
+  const roleOrder=r=>({'NPC':0,'場控':1,'櫃台':2}[r]??9);
+  const arr=[...map.values()].sort((a,b)=>
+    (emp(a.emp)?.name||'').localeCompare(emp(b.emp)?.name||'','zh-Hant')
+    ||(stOrder[a.store]??9)-(stOrder[b.store]??9)
+    ||a.base.localeCompare(b.base,'zh-Hant')
+    ||roleOrder(a.role)-roleOrder(b.role)
+    ||(a.hol?1:0)-(b.hol?1:0));
+  const q=s=>{s=String(s??'');return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
+  const header=['員工','店','主題','角色',...Array.from({length:lastDay},(_,i)=>String(i+1)),'總計'];
+  const lines=[header.map(q).join(',')];
+  for(const e of arr){
+    const roleLabel=e.role+(e.hol?'(國定)':'');
+    const cells=Array.from({length:lastDay},(_,i)=>e.days[i+1]||'');
+    lines.push([emp(e.emp)?.name||e.emp, store(e.store)?.name||e.store, e.base, roleLabel, ...cells, e.total].map(q).join(','));
+  }
+  dl('﻿'+lines.join('\r\n'),`計薪每日場次_${themeStatsAnchor}.csv`,'text/csv;charset=utf-8');
+}
 function vThemeStats(){
   if(themeStatsRowsMonth!==themeStatsAnchor&&!themeStatsLoading)loadThemeStatsCounts(false);
   const[y,m]=themeStatsAnchor.split('-').map(Number);
@@ -1145,6 +1182,7 @@ function vThemeStats(){
       <button class="btn gray sm" onclick="moveThemeStatsMonth(1)">→</button>
       <button class="btn gray sm" onclick="themeStatsAnchor=monthStr();render()">回本月</button>
       <button class="btn gray sm" onclick="loadThemeStatsCounts(true)" ${themeStatsLoading?'disabled':''}>${themeStatsLoading?'更新中…':'🔄 重新整理'}</button>
+      <button class="btn gray sm" onclick="exportPayrollDayCSV()" title="匯出本月每日場次(員工×店×主題×角色,平日/國定分列)供貼入薪資表">⬇ 計薪每日場次 CSV</button>
       <span class="grow"></span>
       <span class="muted">${themeStatsLoading?'更新中… ':''}全店合計 <b style="font-size:18px">${grand}</b> 場</span></div>`;
   // 全主題統一配色(圓餅圖與占比條共用),占比一律以「占全部場次」為準
