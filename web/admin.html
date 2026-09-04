@@ -286,7 +286,7 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
   </div>
   <div class="dlg-f">
     <button class="btn red" id="sfDelete" onclick="deleteShift()">刪除</button>
-    <button class="btn gray" id="sfWriteback" onclick="writebackShift()" title="把此場次的負責人回寫到 SimplyBook(可能觸發客人通知信)">⇪ 回寫 SimplyBook</button>
+    <button class="btn gray" id="sfWriteback" onclick="writebackShift()" title="把此場次的負責人回寫到 SimplyBook(可能觸發客人通知信)" hidden>⇪ 回寫 SimplyBook</button>
     <span class="grow"></span>
     <button class="btn gray" onclick="dlgShift.close()">取消</button>
     <button class="btn" onclick="saveShift()">儲存</button>
@@ -1421,7 +1421,7 @@ function openShift(id,presetDate,preset){
   const sh=id?byId(S.shifts,id):null;
   document.getElementById('dlgShiftTitle').textContent=sh?'編輯班次':'新增班次';
   document.getElementById('sfDelete').style.display=sh?'':'none';
-  document.getElementById('sfWriteback').style.display=(sh&&String(sh.id).indexOf('sb_')===0&&!isDemo())?'':'none';
+  document.getElementById('sfWriteback').style.display='none'; // 回寫 SimplyBook 功能暫時關閉(要重開:改回 (sh&&String(sh.id).indexOf('sb_')===0&&!isDemo())?'':'none' 並移除按鈕的 hidden)
   fillStoreSelect(document.getElementById('sfStore'),sh?sh.storeId:(preset?preset.storeId:S.stores[0].id));
   document.getElementById('sfDate').value=sh?sh.date:(presetDate||todayStr());
   document.getElementById('sfKind').value=sh?sh.kind:(preset?.kind||'theme');
