@@ -551,7 +551,8 @@ Deno.serve(async (req) => {
       const shift = shifts.find((s: any) => String(s.id) === shiftId && s.kind === "theme" && !String(s.status ?? "").startsWith("cancelled"));
       const theme = (cfg.themes ?? []).find((row: any) => row.id === shift?.themeId);
       const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
-      if (!shift || shift.date !== today || !String(theme?.name ?? "").startsWith("詭獄")) return json({ error: "只能登記今天的詭獄或詭獄加場" }, 403);
+      const allowedThemes = new Set(["詭獄", "詭獄加場"]);
+      if (!shift || shift.date !== today || !allowedThemes.has(String(theme?.name ?? "").trim())) return json({ error: "正職只能選填今天的詭獄－場控或詭獄加場－場控" }, 403);
       if ((shift.assignments ?? []).some((row: any) => row.empId === employee.id && row.role === "場控")) return json({ error: "你已經是這一場的場控，不需要重複登記協助" }, 409);
       const { data: existingCheckin } = await sb.from("session_checkins").select("id").eq("emp_id", employee.id).eq("shift_id", shift.id).maybeSingle();
       if (existingCheckin) return json({ error: "這個場次已經完成回報" }, 409);

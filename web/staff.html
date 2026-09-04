@@ -285,13 +285,14 @@ function todayWorkItems(){
 function todayHauntedPrisonAssistItems(){
   if(D.me.type!=='full')return [];
   const today=taipeiDate();
-  return D.shifts.filter(s=>s.date===today&&s.kind==='theme'&&!isCancelled(s)&&String(themeName(s.themeId)).startsWith('詭獄')&&
+  const allowedThemes=new Set(['詭獄','詭獄加場']);
+  return D.shifts.filter(s=>s.date===today&&s.kind==='theme'&&!isCancelled(s)&&allowedThemes.has(String(themeName(s.themeId)).trim())&&
     !(s.assignments||[]).some(a=>a.empId===D.me.id&&a.role==='場控')&&!(D.sessionCheckins||[]).some(x=>x.shift_id===s.id))
     .sort((a,b)=>a.start.localeCompare(b.start)||a.end.localeCompare(b.end));
 }
 function hauntedPrisonAssistHtml(items,on){
   if(!items.length)return '';
-  return `<div class="assist-section"><h3>正職協助詭獄場控</h3><p class="muted">若你實際協助詭獄或詭獄加場，可在上班中登記。管理員核准後才會加入正式場控、月場次與薪資來源。</p>${items.map(s=>{const request=(D.attendanceRequests||[]).find(r=>r.status==='pending'&&r.request_type==='gm_assist'&&String(r.requested?.shiftId)===String(s.id));return `<div class="shift ${request?'attendance-working':'today'}"><b>${esc(s.start)}–${esc(s.end)}　${esc(shiftName(s))}</b><br>${esc(storeName(s.storeId))}・協助身分：場控${request?'<div class="task-complete">等待管理員審核</div>':`<button class="task-action secondary" ${on&&!punchBusy?'':'disabled'} onclick="requestHauntedPrisonGmAssist('${esc(s.id)}')">${on?'登記協助詭獄場控':'請先完成上班定位打卡'}</button>`}</div>`}).join('')}</div>`;
+  return `<div class="assist-section"><h3>正職選填場控</h3><p class="muted">正職只能選填「詭獄－場控」或「詭獄加場－場控」。管理員核准後才會加入正式場控、月場次與薪資來源。</p>${items.map(s=>{const request=(D.attendanceRequests||[]).find(r=>r.status==='pending'&&r.request_type==='gm_assist'&&String(r.requested?.shiftId)===String(s.id));return `<div class="shift ${request?'attendance-working':'today'}"><b>${esc(s.start)}–${esc(s.end)}　${esc(shiftName(s))}</b><br>${esc(storeName(s.storeId))}・選填身分：場控${request?'<div class="task-complete">等待管理員審核</div>':`<button class="task-action secondary" ${on&&!punchBusy?'':'disabled'} onclick="requestHauntedPrisonGmAssist('${esc(s.id)}')">${on?'選填此場場控':'請先完成上班定位打卡'}</button>`}</div>`}).join('')}</div>`;
 }
 function confirmableTask(task){const role=String(task.role).toUpperCase()==='NPC'?'NPC':task.role;return task.shift.kind==='practice'||(task.shift.kind==='theme'&&(role==='NPC'||role==='場控'))}
 function completedTask(task){return (D.sessionCheckins||[]).find(x=>x.shift_id===task.shift.id)}
