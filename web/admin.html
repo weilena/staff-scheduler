@@ -1108,7 +1108,7 @@ function moveMonth(n){
 }
 /* ============ 主題場次統計(每月各主題累計排班場次) ============ */
 let themeStatsAnchor=monthStr();
-let themeStatsLoading=false, themeStatsRows=[], themeStatsRowsMonth='';
+let themeStatsLoading=false, themeStatsRows=[], themeStatsRowsMonth='', empThemeStatsRows=[];
 function moveThemeStatsMonth(n){
   const[y,m]=themeStatsAnchor.split('-').map(Number);
   const d=new Date(y,m-1+n,1);
@@ -1120,7 +1120,9 @@ async function loadThemeStatsCounts(manual){
   if(themeStatsLoading||isDemo())return;
   const[y,m]=themeStatsAnchor.split('-').map(Number),from=themeStatsAnchor+'-01',to=fmtDate(new Date(y,m,0)),want=themeStatsAnchor;
   themeStatsLoading=true;if(manual&&tab==='themestats')render();
-  try{const r=await sbc.rpc('theme_month_counts',{p_from:from,p_to:to});if(!r.error){themeStatsRows=r.data||[];themeStatsRowsMonth=want;}else if(manual)alert('讀取失敗:'+r.error.message);}
+  try{const[r,re]=await Promise.all([sbc.rpc('theme_month_counts',{p_from:from,p_to:to}),sbc.rpc('emp_theme_month_counts',{p_from:from,p_to:to})]);
+    if(!r.error){themeStatsRows=r.data||[];themeStatsRowsMonth=want;}else if(manual)alert('讀取失敗:'+r.error.message);
+    if(!re.error){empThemeStatsRows=re.data||[];}else if(manual)alert('員工統計讀取失敗:'+re.error.message);}
   catch(e){if(manual)alert('讀取失敗:'+(e.message||e));}
   themeStatsLoading=false;if(tab==='themestats')render();
 }
@@ -1175,9 +1177,30 @@ function vThemeStats(){
         ${allGroups.map(g=>{const p=grand?Math.round(g.total/grand*100):0;return `<div class="row" style="gap:8px;align-items:center"><span style="width:13px;height:13px;border-radius:3px;background:${colorOf[g.storeId+'|'+g.base]};flex:0 0 auto"></span><span style="flex:1">${esc(g.base)} <span class="muted" style="font-size:11px">${esc(g.storeName)}</span></span><b>${g.total}</b><span class="muted" style="min-width:40px;text-align:right">${p}%</span></div>`;}).join('')}
       </div>
     </div></div>`:'';
+  // 員工 × 主題:本月各員工在各主題各跑幾場(跟著上方月份切換;數字來自 emp_theme_month_counts RPC)
+  const empMap={},baseTotals={};
+  for(const row of empThemeStatsRows){
+    const t=theme(row.theme_id);if(!t)continue;
+    const base=baseThemeName(t),c=Number(row.cnt)||0;
+    const e=empMap[row.emp_id]||(empMap[row.emp_id]={id:row.emp_id,total:0,byBase:{}});
+    e.byBase[base]=(e.byBase[base]||0)+c;e.total+=c;baseTotals[base]=(baseTotals[base]||0)+c;
+  }
+  const empBases=Object.keys(baseTotals).sort((a,c)=>baseTotals[c]-baseTotals[a]);
+  const empRows=Object.values(empMap).sort((a,c)=>c.total-a.total);
+  const baseColor={};empBases.forEach((b,i)=>baseColor[b]=PIE_COLORS[i%PIE_COLORS.length]);
+  const empGrand=empRows.reduce((s,e)=>s+e.total,0);
+  const empMatrix=empRows.length?`<div class="card">
+    <div class="row" style="align-items:baseline;margin-bottom:4px"><h2 style="margin:0">員工 × 主題場次</h2><span class="grow"></span><span class="muted">本月合計 <b style="font-size:18px">${empGrand}</b> 人次</span></div>
+    <p class="muted" style="margin:0 0 12px">每位員工本月在各主題排了幾場(含 NPC／場控等所有角色;跟著上方月份切換)。</p>
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse;white-space:nowrap;font-size:14px">
+      <tr><th style="text-align:left;padding:6px 10px;position:sticky;left:0;background:var(--card,#fff)">員工</th>${empBases.map(b=>`<th class="num" style="padding:6px 10px"><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${baseColor[b]};margin-right:4px"></span>${esc(b)}</th>`).join('')}<th class="num" style="padding:6px 10px">總計</th></tr>
+      ${empRows.map(e=>`<tr style="border-top:1px solid #eef2f7"><td style="text-align:left;padding:6px 10px;position:sticky;left:0;background:var(--card,#fff)"><b>${esc(emp(e.id)?.name||e.id)}</b></td>${empBases.map(b=>{const v=e.byBase[b]||0;return `<td class="num" style="padding:6px 10px;color:${v?'inherit':'#cbd5e1'}">${v||'·'}</td>`;}).join('')}<td class="num" style="padding:6px 10px"><b style="font-size:15px">${e.total}</b></td></tr>`).join('')}
+      <tr style="border-top:2px solid #e2e8f0"><td style="text-align:left;padding:6px 10px;position:sticky;left:0;background:var(--card,#fff)"><b>合計</b></td>${empBases.map(b=>`<td class="num" style="padding:6px 10px"><b>${baseTotals[b]}</b></td>`).join('')}<td class="num" style="padding:6px 10px"><b>${empGrand}</b></td></tr>
+    </table></div></div>`:'';
   return `${nav}
     <p class="muted" style="margin:0 4px 12px">各主題本月排班場次(不含已取消)。占比為該主題占<b>全部場次</b>的比例,顏色與下方圓餅圖一致。<b>點任一主題</b>可看當月每一場的日期與時段明細。</p>
-    ${cards||'<div class="card"><p class="muted">本月尚無主題場次。</p></div>'}${pie}`;
+    ${cards||'<div class="card"><p class="muted">本月尚無主題場次。</p></div>'}${empMatrix}${pie}`;
 }
 /* 主題「時段明細」彈窗:列出當月每一場的日期與時段(像場次明細) */
 let themeSessionsCtx=null;
