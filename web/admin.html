@@ -570,10 +570,10 @@ function startSyncHealthTicker(){
   },60000);
 }
 async function loadLineAdmin(){
-  if(isDemo()){LINE={accounts:[],worksites:S.stores.map(s=>({id:s.id,name:s.name,radius_m:200,enabled:true})),requests:[],responses:[],guestReports:[],attendance:[],daily:[],overtime:[],usage:[],outbox:[],syncRuns:[],payrollReviews:[]};return}
-  const names=['line_accounts','worksites','shift_requests','shift_request_responses','attendance_requests','attendance_daily','overtime_reviews','message_usage','notification_outbox','integration_sync_runs','payroll_month_reviews'];
+  if(isDemo()){LINE={accounts:[],worksites:S.stores.map(s=>({id:s.id,name:s.name,radius_m:200,enabled:true})),requests:[],responses:[],guestReports:[],attendance:[],daily:[],overtime:[],usage:[],outbox:[],syncRuns:[],payrollReviews:[],availability:[]};return}
+  const names=['line_accounts','worksites','shift_requests','shift_request_responses','attendance_requests','attendance_daily','overtime_reviews','message_usage','notification_outbox','integration_sync_runs','payroll_month_reviews','availability_requests'];
   const [rs,guests]=await Promise.all([Promise.all(names.map(n=>sbc.from(n).select('*'))),guestAdminApi({action:'list'})]);
-  LINE={accounts:rs[0].data||[],worksites:rs[1].data||[],requests:rs[2].data||[],responses:rs[3].data||[],guestReports:guests.reports||[],attendance:rs[4].data||[],daily:rs[5].data||[],overtime:rs[6].data||[],usage:rs[7].data||[],outbox:rs[8].data||[],syncRuns:(rs[9].data||[]).sort((a,b)=>String(b.started_at).localeCompare(String(a.started_at))).slice(0,20),payrollReviews:rs[10].data||[]};
+  LINE={accounts:rs[0].data||[],worksites:rs[1].data||[],requests:rs[2].data||[],responses:rs[3].data||[],guestReports:guests.reports||[],attendance:rs[4].data||[],daily:rs[5].data||[],overtime:rs[6].data||[],usage:rs[7].data||[],outbox:rs[8].data||[],syncRuns:(rs[9].data||[]).sort((a,b)=>String(b.started_at).localeCompare(String(a.started_at))).slice(0,20),payrollReviews:rs[10].data||[],availability:rs[11].data||[]};
 }
 async function guestAdminApi(body){
   const session=await sbc.auth.getSession(),token=session.data?.session?.access_token;if(!token)throw new Error('管理員登入已過期，請重新登入');
@@ -2992,16 +2992,16 @@ async function loadIcal(doImport){
     if(!evs.length){box.innerHTML='<p class="muted">該月沒有事件。</p>';return}
     if(doImport){
       if(!confirm('將把 '+m+' 的 Google 日曆回報解析後,寫入各員工的「特定日期回報」(會覆蓋該月同日的既有回報),確定?'))return;
-      let applied=0;const unmatched=new Set(),unparsed=[];
+      let applied=0,protectedLine=0;const unmatched=new Set(),unparsed=[];
       for(const ev of evs){
         const e=matchEmpByText(ev.summary);
         if(!e){continue}
         const av=parseGCalAvail(ev.summary);
         if(!av){unparsed.push(ev.summary);continue}
-        e.availX=e.availX||{};e.availX[ev.date]=av;applied++;
+        e.availX=e.availX||{};if(e.availX[ev.date]?.source==='line_approved'){protectedLine++;continue}e.availX[ev.date]=av;applied++;
       }
       save();
-      box.innerHTML=`<p class="ok" style="color:#059669">✅ 已匯入 ${applied} 筆到 ${m} 可上班時間。`
+      box.innerHTML=`<p class="ok" style="color:#059669">✅ 已匯入 ${applied} 筆到 ${m} 可上班時間。${protectedLine?` 已保留 ${protectedLine} 筆管理員核准的 LINE 回報。`:''}`
         +(unparsed.length?` 有 ${unparsed.length} 筆無法辨識(維持原樣):${unparsed.slice(0,8).map(esc).join('、')}`:'')
         +`</p><p class="muted">切到「排班表」即可看到更新後的每日人力。無法辨識的可在上方「特定日期回報」手動補。</p>`;
       return;
@@ -3051,10 +3051,12 @@ function vLineAdmin(){
   const completedTrades=LINE.requests.filter(r=>r.status==='completed'&&(r.request_type==='give'||r.request_type==='swap'));
   const pendingAtt=LINE.attendance.filter(r=>r.status==='pending');
   const pendingOt=LINE.overtime.filter(r=>(r.status==='pending'||r.status==='anomaly')&&emp(r.emp_id)?.type==='full');
+  const pendingAvail=(LINE.availability||[]).filter(r=>r.status==='pending').sort((a,b)=>String(a.work_date).localeCompare(String(b.work_date))),availBatches=[...new Map(pendingAvail.map(r=>[r.batch_id,r])).keys()];
   return `<div class="card"><div class="row"><h2 class="grow">LINE 員工系統</h2><button class="btn gray sm" onclick="refreshLineAdmin()">重新整理</button></div>
     <div class="row" style="margin-top:10px"><span class="pill ${usage>=160?'out':'in'}">本月主動訊息 ${usage}/200</span><span class="muted">160則後只發緊急通知，保留40則。</span></div>
     <div class="row" style="margin-top:10px"><label style="margin:0">前一日上班提醒時間 <select id="reminderHour" style="width:auto">${Array.from({length:10},(_,i)=>i+13).map(h=>`<option value="${h}" ${Number(S.settings.reminderHour)===h?'selected':''}>${String(h).padStart(2,'0')}:00</option>`).join('')}</select></label><button class="btn sm" onclick="saveReminderHour()">儲存</button><span class="muted">同一員工隔日多個班次合併成一則通知。</span></div>
     <p class="muted" style="margin-top:10px">員工入口：<a href="staff.html" target="_blank">staff.html</a>　｜　<a href="line-preview.html" target="_blank">📱 A／B／C 手機介面預覽</a>　｜　<a href="https://script.google.com/macros/s/AKfycbwfFHhK4W6Q9mLttUg_-Kryo5-fmnn4IMhyxsh5n60lRkGgzN9SLkKKdm_3_GqKhCsx/exec" target="_blank" rel="noopener">開啟謎先生備品系統</a></p></div>
+  <div class="card"><div class="row"><h2 class="grow">整月可上班／休假待審（${pendingAvail.length} 天）</h2>${availBatches.length?`<span class="muted">共 ${availBatches.length} 批</span>`:''}</div><p class="muted">核准後才會寫入排班使用的特定日期資料；若當天已有班，請先確認是否需要另行換班。</p>${availBatches.map(batch=>{const rows=pendingAvail.filter(r=>r.batch_id===batch),person=emp(rows[0]?.emp_id),affected=rows.reduce((n,r)=>n+(r.requested?.affectedShifts||[]).length,0);return `<details style="border:1px solid #e4e7ec;border-radius:10px;margin:9px 0"><summary style="padding:11px;cursor:pointer"><b>${esc(person?.name||rows[0]?.emp_id)}・${rows.length} 天</b>${affected?` <span class="warn">⚠ 影響 ${affected} 個既有班次</span>`:''}</summary><div style="padding:0 11px 11px">${rows.map(r=>`<div class="row" style="padding:8px 0;border-bottom:1px solid #eee"><span class="grow"><b>${r.work_date}（週${WD[dateWD(r.work_date)]}）</b><br><span class="muted">${r.request_kind==='available'?`${esc(r.requested?.start||'')}–${esc(r.requested?.end||'')} 可上班`:esc(r.requested?.leaveType||'休假')}${(r.requested?.affectedShifts||[]).length?`・影響 ${(r.requested.affectedShifts||[]).length} 班`:''}</span></span><button class="btn sm" onclick="reviewAvailability('${r.id}','approved')">核准</button><button class="btn red sm" onclick="reviewAvailability('${r.id}','rejected')">不同意</button></div>`).join('')}<div class="row" style="margin-top:10px"><button class="btn green sm" onclick="reviewAvailabilityBatch('${batch}','approved')">整批核准</button><button class="btn red sm" onclick="reviewAvailabilityBatch('${batch}','rejected')">整批不同意</button></div></div></details>`}).join('')||'<p class="muted">目前沒有待審可上班／休假申請</p>'}</div>
   <div class="card"><h2>LINE 身分綁定</h2><p class="muted">為員工產生一次性驗證碼，有效24小時。員工在 LINE 入口輸入後即綁定本人。</p>
     <table><tr><th>員工</th><th>LINE狀態</th><th>權限</th><th></th></tr>${S.employees.map(e=>{const a=LINE.accounts.find(x=>x.emp_id===e.id);return `<tr><td>${esc(e.name)}</td><td>${a?`✅ ${esc(a.display_name||'已綁定')}`:'尚未綁定'}</td><td>${a?.role==='manager'?'管理員':'員工'}</td><td>${a?`<button class="btn gray sm" onclick="unbindLine('${e.id}')">解除</button>`:`<button class="btn sm" onclick="makeBindCode('${e.id}','employee')">產生員工碼</button> <button class="btn gray sm" onclick="makeBindCode('${e.id}','manager')">管理員碼</button>`}</td></tr>`}).join('')}</table></div>
   <div class="card"><h2>兩間店定位</h2><p class="muted">請在店內用手機地圖確認緯度、經度。半徑建議先設200公尺，測試後再縮小。</p>
@@ -3067,6 +3069,8 @@ function vLineAdmin(){
   <div class="card"><div class="row"><h2 class="grow">加班候選（${pendingOt.length}）</h2><button class="btn gray sm" onclick="calculateOvertime()">重新計算本月</button></div>${pendingOt.map(r=>`<div class="row" style="padding:9px 0;border-bottom:1px solid #eee"><span class="grow"><b>${esc(emp(r.emp_id)?.name||r.emp_id)}・${r.work_date}</b><br><span class="muted">排班 ${r.scheduled_minutes}分／實際 ${r.actual_minutes}分／候選 ${r.candidate_minutes}分・${fmtStatus(r.status)}</span></span><input id="ot_${r.id}" type="number" min="0" value="${r.candidate_minutes}" style="width:80px"><button class="btn sm" onclick="reviewOvertime('${r.id}','approved')">核准</button><button class="btn red sm" onclick="reviewOvertime('${r.id}','rejected')">拒絕</button></div>`).join('')||'<p class="muted">目前沒有待審加班</p>'}</div>
   <div class="card"><h2>通知紀錄</h2><table><tr><th>時間</th><th>類型</th><th>員工</th><th>狀態</th></tr>${LINE.outbox.slice().sort((a,b)=>b.created_at.localeCompare(a.created_at)).slice(0,30).map(n=>`<tr><td>${n.created_at.slice(0,16).replace('T',' ')}</td><td>${esc(n.category)}</td><td>${esc(emp(n.recipient_emp_id)?.name||n.recipient_emp_id||'')}</td><td>${esc(n.status)}${n.error?`<br><span class="warn">${esc(n.error)}</span>`:''}</td></tr>`).join('')||'<tr><td colspan="4" class="muted">尚無紀錄</td></tr>'}</table></div>`;
 }
+async function reviewAvailability(id,status){if(!confirm(status==='approved'?'確定核准這一天並更新可上班資料？':'確定不同意這一天？'))return;const r=await sbc.rpc('review_availability_request',{p_request:id,p_status:status});if(r.error||!r.data?.ok)return alert('處理失敗：'+(r.error?.message||r.data?.msg||'未知錯誤'));await afterLogin()}
+async function reviewAvailabilityBatch(batch,status){if(!confirm(status==='approved'?'確定整批核准並更新所有日期？':'確定整批不同意？'))return;const r=await sbc.rpc('review_availability_batch',{p_batch:batch,p_status:status});if(r.error||!r.data?.ok)return alert('處理失敗：'+(r.error?.message||r.data?.msg||'未知錯誤'));alert(`已處理 ${r.data.count||0} 天`);await afterLogin()}
 async function refreshLineAdmin(){await loadLineAdmin();render()}
 function saveReminderHour(){S.settings.reminderHour=Number(document.getElementById('reminderHour').value)||20;save();alert('提醒時間已儲存')}
 async function makeBindCode(empId,role){
