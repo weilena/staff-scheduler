@@ -771,12 +771,10 @@ Deno.serve(async (req) => {
       const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
       const timeOk = (value: unknown) => /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value ?? ""));
       const allowedLeave = employee.type === "full" ? ["休假", "特休", "事假", "病假"] : ["不可上班"];
-      const weeklyOff = cfg.settings?.weeklyOffDay === "" || cfg.settings?.weeklyOffDay === null ? -1 : Number(cfg.settings?.weeklyOffDay ?? 4);
       const normalized: any[] = [];
       for (const source of entries) {
         const date = String(source?.date ?? ""), on = source?.on === true;
         if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date.slice(0, 7) !== month || date < today) return json({ error: `日期 ${date || "空白"} 不在可申請範圍` }, 400);
-        if (weeklyOff >= 0 && new Date(`${date}T00:00:00+08:00`).getDay() === weeklyOff) return json({ error: `${date} 為固定公休，不用另外填寫` }, 400);
         const requested: any = { on, source: "line_direct" };
         if (on) {
           const start = String(source?.start ?? ""), end = String(source?.end ?? "");

@@ -59,8 +59,6 @@ export function eligibilityErrors(emp: any, target: any, role: string, shifts: a
   const avail = availability(emp, target.date);
   const prep = Number(cfg.settings?.prepMin ?? 10), travel = Number(cfg.settings?.travelMin ?? 12);
   const start = toMinutes(target.start) - prep, end = toMinutes(target.end);
-  const weeklyOff = cfg.settings?.weeklyOffDay === "" || cfg.settings?.weeklyOffDay === null ? -1 : Number(cfg.settings?.weeklyOffDay ?? 4);
-  if (weeklyOff >= 0 && new Date(`${target.date}T00:00:00+08:00`).getDay() === weeklyOff) errors.push("每週固定公休");
   if (!avail?.on) errors.push("當日未設定可上班");
   else if (toMinutes(avail.start) > start || toMinutes(avail.end) < end) errors.push("超出可上班時間");
   if (role === "櫃台" && !(emp.counters ?? []).includes(target.storeId)) errors.push("未具此店櫃台資格");

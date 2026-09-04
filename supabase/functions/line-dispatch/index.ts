@@ -52,7 +52,7 @@ Deno.serve(async (req) => {
     const activeEmployees = new Set((cfg.employees ?? []).filter((row: any) => row.active).map((row: any) => String(row.id)));
     const { data: accounts } = await sb.from("line_accounts").select("emp_id").eq("active", true);
     for (const row of accounts ?? []) if (activeEmployees.has(String(row.emp_id)) && !confirmed.has(String(row.emp_id))) await queueNotification(sb, String(row.emp_id), "availability_reminder", {
-      title: `${nextMonth.replace("-", "年")} 月班表填寫提醒`, text: "你尚未確認下個月的可上班／休假已填完，請完成填寫並按「確認本月已填完」。空白日期視為可上班，週四自動公休。",
+      title: `${nextMonth.replace("-", "年")} 月班表填寫提醒`, text: "你尚未確認下個月的可上班／休假已填完，請完成填寫並按「確認本月已填完」。空白日期視為可上班，週四也請依本人狀況填寫。",
       links: portal ? [{ label: "填寫下個月班表", uri: link("availability") }] : [],
     }, false, `availability-reminder:${nextMonth}:${row.emp_id}`);
   }
