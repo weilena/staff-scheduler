@@ -854,6 +854,7 @@ async function ensureYijiaCounterSchedule(){
   if(result.error)console.error('翊嘉固定櫃台班自動建立失敗',result.error);
 }
 async function ensureMsCounterFromThemeControl(){
+  return; // 謎先生櫃台已停用(老闆 2026-09-04:目前不需要);要重開把這行 return 移除即可。
   const firstDay=monthStr()+'-01',prefix='auto_ms_counter_theme_';
   const groups=new Map();
   for(const sh of S.shifts){
@@ -1240,12 +1241,12 @@ function vThemeStats(){
   const empGrand=empRows.reduce((s,e)=>s+e.total,0);
   const empMatrix=empRows.length?`<div class="card">
     <div class="row" style="align-items:baseline;margin-bottom:4px"><h2 style="margin:0">員工 × 主題場次</h2><span class="grow"></span><span class="muted">本月合計 <b style="font-size:18px">${empGrand}</b> 人次</span></div>
-    <p class="muted" style="margin:0 0 12px">每位員工本月在各主題排了幾場(含 NPC／場控等所有角色;跟著上方月份切換)。</p>
+    <p class="muted" style="margin:0 0 12px">每位員工本月在各主題排了幾場(含 NPC／場控等所有角色;跟著上方月份切換)。主題格內小字%=該員工<b>占該主題</b>的比例;總計後(％)=該員工<b>占兩館所有場次</b>的比例。</p>
     <div style="overflow-x:auto">
     <p class="muted" style="margin:-6px 0 10px;font-size:12px">點任一員工可將整列變粗、方便對照。</p>
-    <table style="width:100%;border-collapse:collapse;white-space:nowrap;font-size:16px">
+    <table style="width:100%;border-collapse:collapse;white-space:nowrap;font-size:18px">
       <tr><th style="text-align:left;padding:8px 12px;position:sticky;left:0;background:var(--card,#fff)">員工</th>${empBases.map(b=>`<th class="num" style="padding:8px 12px"><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${baseColor[b]};margin-right:4px"></span>${esc(b)}</th>`).join('')}<th class="num" style="padding:8px 12px">總計</th></tr>
-      ${empRows.map(e=>{const sel=empStatSel===e.id;return `<tr onclick="toggleEmpStatRow('${e.id}')" style="border-top:1px solid #eef2f7;cursor:pointer;${sel?'background:#fef9c3;font-weight:800':''}"><td style="text-align:left;padding:8px 12px;position:sticky;left:0;background:${sel?'#fef9c3':'var(--card,#fff)'}"><b style="font-size:17px">${esc(emp(e.id)?.name||e.id)}</b></td>${empBases.map(b=>{const v=e.byBase[b]||0;return `<td class="num" style="padding:8px 12px;color:${v?'inherit':'#cbd5e1'}">${v||'·'}</td>`;}).join('')}<td class="num" style="padding:8px 12px"><b style="font-size:17px">${e.total}</b></td></tr>`;}).join('')}
+      ${empRows.map(e=>{const sel=empStatSel===e.id;return `<tr onclick="toggleEmpStatRow('${e.id}')" style="border-top:1px solid #eef2f7;cursor:pointer;${sel?'background:#fef9c3;font-weight:800':''}"><td style="text-align:left;padding:8px 12px;position:sticky;left:0;background:${sel?'#fef9c3':'var(--card,#fff)'}"><b style="font-size:19px">${esc(emp(e.id)?.name||e.id)}</b></td>${empBases.map(b=>{const v=e.byBase[b]||0,pct=v&&baseTotals[b]?Math.round(v/baseTotals[b]*100):0;return `<td class="num" style="padding:8px 12px;color:${v?'inherit':'#cbd5e1'}">${v?`${v} <span class="muted" style="font-size:11px">${pct}%</span>`:'·'}</td>`;}).join('')}<td class="num" style="padding:8px 12px"><b style="font-size:19px">${e.total}</b> <span class="muted" style="font-size:13px">(${empGrand?Math.round(e.total/empGrand*100):0}%)</span></td></tr>`;}).join('')}
       <tr style="border-top:2px solid #e2e8f0"><td style="text-align:left;padding:8px 12px;position:sticky;left:0;background:var(--card,#fff)"><b>合計</b></td>${empBases.map(b=>`<td class="num" style="padding:8px 12px"><b>${baseTotals[b]}</b></td>`).join('')}<td class="num" style="padding:8px 12px"><b>${empGrand}</b></td></tr>
     </table></div></div>`:'';
   return `${nav}
@@ -1317,8 +1318,7 @@ function vMonth(){
       <div class="mnum">${Number(ds.slice(8))}${filterEmp&&av==='avon'?' <span style="color:#059669;font-size:11px">可</span>':filterEmp&&av==='avoff'?' <span style="color:#94a3b8;font-size:11px">休</span>':''}</div>
       ${S.closedDates.includes(ds)?'<div class="chip" style="background:#dc2626;color:#fff">店休</div>':''}
       ${counterCoverageChip(ds,'dz')}
-      ${counterCoverageChip(ds,'ms')}
-      ${shifts.map(sh=>{
+            ${shifts.map(sh=>{
         const missing=isShiftUnstaffed(sh),staffed=!missing;
         const names=assignedTags(sh,false);const who=filterEmp?'':(names?' · '+names+(missing?' ⚠未排完整':''):' ⚠未排');
         return `<div class="chip ${isCx(sh)?'cancelled':staffed?'':'unstaffed'}${bulkClass(sh)}" style="${chipStyle(sh)}"
@@ -1452,8 +1452,7 @@ function vWeek(){
           <span class="muted">可上班 ${avail.length} 人</span><br>${manpowerTags(ds,true)}
         </div>
         ${counterCoverageChip(ds,'dz')}
-        ${counterCoverageChip(ds,'ms')}
-        ${shifts.map(sh=>{
+                ${shifts.map(sh=>{
           const who=assignedTags(sh,true)||'<i>未排人</i>',missing=isShiftUnstaffed(sh);
           return `<div class="shift ${isCx(sh)?'cancelled':''}${bulkClass(sh)}" style="${chipStyle(sh)}" onclick="${shiftAction(sh)}">
             ${bulkMode?`<span class="bulk-check">${bulkSelected.has(sh.id)?'☑':'☐'}</span>`:''}<b>${sh.start||''}–${sh.end||''}</b> ${esc(shiftLabel(sh))}${isCx(sh)?' ('+cxLabel(sh)+')':''}${missing?' ⚠未排完整':''}<br><span class="who">${who}</span></div>`;
