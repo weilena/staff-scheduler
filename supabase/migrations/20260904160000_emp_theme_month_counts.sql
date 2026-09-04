@@ -13,4 +13,5 @@ language sql stable security definer set search_path to 'public' as $fn$
     and coalesce(a->>'empId','') <> ''
   group by 1,2,3;
 $fn$;
-grant execute on function public.emp_theme_month_counts(text,text) to anon, authenticated, service_role;
+revoke all on function public.emp_theme_month_counts(text,text) from public, anon;
+grant execute on function public.emp_theme_month_counts(text,text) to service_role;

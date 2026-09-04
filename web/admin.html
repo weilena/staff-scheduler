@@ -1120,9 +1120,9 @@ async function loadThemeStatsCounts(manual){
   if(themeStatsLoading||isDemo())return;
   const[y,m]=themeStatsAnchor.split('-').map(Number),from=themeStatsAnchor+'-01',to=fmtDate(new Date(y,m,0)),want=themeStatsAnchor;
   themeStatsLoading=true;if(manual&&tab==='themestats')render();
-  try{const[r,re]=await Promise.all([sbc.rpc('theme_month_counts',{p_from:from,p_to:to}),sbc.rpc('emp_theme_month_counts',{p_from:from,p_to:to})]);
+  try{const[r,re]=await Promise.all([sbc.rpc('theme_month_counts',{p_from:from,p_to:to}),adminUsersApi({action:'emp-theme-month-counts',from,to})]);
     if(!r.error){themeStatsRows=r.data||[];themeStatsRowsMonth=want;}else if(manual)alert('讀取失敗:'+r.error.message);
-    if(!re.error){empThemeStatsRows=re.data||[];}else if(manual)alert('員工統計讀取失敗:'+re.error.message);}
+    empThemeStatsRows=re.rows||[];}
   catch(e){if(manual)alert('讀取失敗:'+(e.message||e));}
   themeStatsLoading=false;if(tab==='themestats')render();
 }

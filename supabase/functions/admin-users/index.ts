@@ -38,6 +38,16 @@ Deno.serve(async (req) => {
       return json({ users });
     }
 
+    if (action === "emp-theme-month-counts") {
+      const from = String(input.from ?? ""), to = String(input.to ?? "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return json({ error: "統計日期格式錯誤" }, 400);
+      const span = Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`);
+      if (!Number.isFinite(span) || span > 370 * 86_400_000) return json({ error: "統計區間不可超過一年" }, 400);
+      const { data, error } = await sb.rpc("emp_theme_month_counts", { p_from: from, p_to: to });
+      if (error) throw error;
+      return json({ rows: data ?? [] });
+    }
+
     if (action === "create") {
       if (actorRole !== "owner") return json({ error: "只有帳號擁有者可以新增管理者" }, 403);
       const email = String(input.email ?? "").trim().toLowerCase();
