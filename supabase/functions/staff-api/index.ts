@@ -539,6 +539,34 @@ Deno.serve(async (req) => {
       return json({ ok: true, ts: checkedInAt, site: site.name, role });
     }
 
+    if (action === "request-haunted-prison-gm-assist") {
+      if (employee.type !== "full") return json({ error: "只有正職可以登記協助詭獄場控" }, 403);
+      const shiftId = String(input.shiftId ?? ""), lat = Number(input.latitude), lng = Number(input.longitude), accuracy = Number(input.accuracy ?? 9999);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(accuracy) || accuracy <= 0 || accuracy > 250) return json({ error: "定位精確度不足" }, 403);
+      const shift = shifts.find((s: any) => String(s.id) === shiftId && s.kind === "theme" && !String(s.status ?? "").startsWith("cancelled"));
+      const theme = (cfg.themes ?? []).find((row: any) => row.id === shift?.themeId);
+      const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+      if (!shift || shift.date !== today || !String(theme?.name ?? "").startsWith("詭獄")) return json({ error: "只能登記今天的詭獄或詭獄加場" }, 403);
+      if ((shift.assignments ?? []).some((row: any) => row.empId === employee.id && row.role === "場控")) return json({ error: "你已經是這一場的場控，不需要重複登記協助" }, 409);
+      const { data: existingCheckin } = await sb.from("session_checkins").select("id").eq("emp_id", employee.id).eq("shift_id", shift.id).maybeSingle();
+      if (existingCheckin) return json({ error: "這個場次已經完成回報" }, 409);
+      const { data: latestPunch } = await sb.from("punches").select("type,ts").eq("emp_id", employee.id).is("voided_at", null).order("ts", { ascending: false }).limit(1).maybeSingle();
+      if (!latestPunch || latestPunch.type !== "in" || String(latestPunch.ts ?? "").slice(0, 10) !== today) return json({ error: "請先完成今天的上班定位打卡，再登記協助場控" }, 409);
+      const { data: sites } = await sb.from("worksites").select("*").eq("enabled", true).not("latitude", "is", null);
+      const ranked = (sites ?? []).map((site: any) => ({ ...site, distance: distanceMeters(lat, lng, Number(site.latitude), Number(site.longitude)) })).sort((a: any, b: any) => a.distance - b.distance);
+      const site = ranked[0];
+      if (!site || site.distance > site.radius_m + Math.min(accuracy, 50)) return json({ error: "目前不在允許的打卡地點範圍內" }, 403);
+      const { data: pendingDetails } = await sb.from("attendance_requests").select("id,requested").eq("emp_id", employee.id).eq("punch_date", today).eq("request_type", "gm_assist").eq("status", "pending");
+      if ((pendingDetails ?? []).some((row: any) => String(row.requested?.shiftId ?? "") === shift.id)) return json({ error: "這一場已有待審的協助登記" }, 409);
+      const requestedAt = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date()).replace(" ", "T");
+      const requested = { shiftId: shift.id, time: requestedAt.slice(11, 16), requestedAt, role: "場控", themeName: theme.name,
+        worksiteId: site.id, latitude: lat, longitude: lng, accuracy, workItem: { code: "haunted_prison", labels: [`${shift.start}–${shift.end} ${theme.name}（協助場控）`], source: "gm_assist_request" } };
+      const { error } = await sb.from("attendance_requests").insert({ emp_id: employee.id, punch_date: today, request_type: "gm_assist", requested, reason: "正職協助詭獄場控" });
+      if (error) throw error;
+      await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: "request_haunted_prison_gm_assist", target_type: "shift", target_id: shift.id, details: { worksiteId: site.id, requestedAt } });
+      return json({ ok: true, message: "已送交管理員審核；核准後才會計入詭獄場控與薪資紀錄" });
+    }
+
     if (action === "punch") {
       const type = String(input.type), lat = Number(input.latitude), lng = Number(input.longitude), accuracy = Number(input.accuracy ?? 9999);
       if (!["in", "out"].includes(type) || !Number.isFinite(lat) || !Number.isFinite(lng)) return json({ error: "打卡資料不完整" }, 400);
