@@ -193,7 +193,7 @@ Deno.serve(async (req) => {
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches,
         attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations,
         availabilityRequests, availabilityConfirmations, availability: employee.availX ?? {},
-        annualLeave, weeklyOffDay: cfg.settings?.weeklyOffDay ?? 4, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
+        annualLeave, weeklyOffDay: cfg.settings?.weeklyOffDay ?? 4, holidays: cfg.settings?.holidays ?? {}, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
 
     if (action === "manager-assign") {

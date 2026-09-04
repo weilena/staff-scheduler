@@ -1136,12 +1136,11 @@ async function exportPayrollDayCSV(){
     if(r.error)return alert('匯出失敗:'+r.error.message);rows=r.data||[];noshow=ns.error?[]:(ns.data||[]);}
   catch(e){return alert('匯出失敗:'+(e.message||e));}
   if(!rows.length)return alert('本月沒有可匯出的場次。');
-  const holidays=new Set((S.settings&&S.settings.holidays)||[]);
   const stOrder={ms:0,dz:1};
   const map=new Map();
   for(const row of rows){
     const t=theme(row.theme_id);if(!t)continue;
-    const base=baseThemeName(t),hol=holidays.has(row.d);
+    const base=baseThemeName(t),hol=isHolidayRate(row.d);// 國定假日=雙倍薪,與 holidayName/系統一致
     const key=[row.emp_id,row.store_id,base,row.role,hol?1:0].join('|');
     let e=map.get(key);
     if(!e){e={emp:row.emp_id,store:row.store_id,base,role:row.role,hol,days:{},total:0};map.set(key,e);}
@@ -1315,7 +1314,7 @@ function vMonth(){
     const cls=`mday ${inMonth?'':'dim'} ${ds===td?'today':''} ${hasUnstaffed&&!filterEmp?'hasunstaffed':''} ${av}`;
     return `<div class="${cls}" onclick="dayAnchor='${ds}';setViewMode('day')">
       <div class="mnum">${Number(ds.slice(8))}${filterEmp&&av==='avon'?' <span style="color:#059669;font-size:11px">可</span>':filterEmp&&av==='avoff'?' <span style="color:#94a3b8;font-size:11px">休</span>':''}</div>
-      ${S.closedDates.includes(ds)?'<div class="chip" style="background:#dc2626;color:#fff">店休</div>':''}
+      ${S.closedDates.includes(ds)?'<div class="chip" style="background:#dc2626;color:#fff">店休</div>':''}${holidayName(ds)?`<div class="chip" style="background:#b45309;color:#fff" title="${esc(holidayName(ds))}・國定假日出勤加倍工資">💰雙倍薪</div>`:''}
       ${counterCoverageChip(ds,'dz')}
             ${shifts.map(sh=>{
         const missing=isShiftUnstaffed(sh),staffed=!missing;
@@ -1446,7 +1445,7 @@ function vWeek(){
       const hasUnstaffed=shifts.some(isShiftUnstaffed)||yijiaNeedsDzCoverage(ds);
       const avail=S.employees.filter(e=>employedOn(e,ds)&&(()=>{const a=effectiveAvail(e,ds);return a&&a.on})());
       return `<div class="day ${ds===td?'today':''}" style="${hasUnstaffed?'background:#fef3c7;border-color:#f59e0b':''}">
-        <h4><span>${ds.slice(5)}(${WD[dateWD(ds)]})${isTyphoonClosed(ds)?' <span class="leavered" style="padding:0 4px;border-radius:4px">🌀颱風停班</span>':S.closedDates.includes(ds)?' <span class="leavered" style="padding:0 4px;border-radius:4px">店休</span>':''}</span><a href="#" onclick="openShift(null,'${ds}');return false" style="text-decoration:none;color:var(--accent)">＋</a></h4>
+        <h4><span>${ds.slice(5)}(${WD[dateWD(ds)]})${isTyphoonClosed(ds)?' <span class="leavered" style="padding:0 4px;border-radius:4px">🌀颱風停班</span>':S.closedDates.includes(ds)?' <span class="leavered" style="padding:0 4px;border-radius:4px">店休</span>':''}${holidayName(ds)?` <span style="background:#b45309;color:#fff;padding:0 5px;border-radius:4px">💰雙倍薪·${esc(holidayName(ds))}</span>`:''}</span><a href="#" onclick="openShift(null,'${ds}');return false" style="text-decoration:none;color:var(--accent)">＋</a></h4>
         <div style="font-size:11px;line-height:1.5;margin-bottom:4px;border-bottom:1px dashed var(--line);padding-bottom:4px">
           <span class="muted">可上班 ${avail.length} 人</span><br>${manpowerTags(ds,true)}
         </div>
