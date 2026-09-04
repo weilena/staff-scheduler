@@ -8,6 +8,19 @@ const DEFAULT_EMPLOYEE_COLORS: Record<string, string> = {
   "庭瑋": "#2782e8",
   "翊嘉": "#28c75f",
 };
+// SimplyBook 一筆預約只會帶回一位服務供應者，但部分主題實際上同時需要
+// NPC 與場控。同步時必須建立完整角色欄位，否則「只看未安排人」會把
+// 已有 NPC、但仍缺場控的詭獄場次誤判為已排滿。
+const REQUIRED_THEME_ROLES: Record<string, string[]> = {
+  "詭廁": ["NPC"],
+  "詭獄": ["場控", "NPC"],
+  "詭獄加場": ["場控", "NPC"],
+  "詭店": ["NPC"],
+  "孤兒怨": ["場控"],
+  "屎力全開": ["場控"],
+  "越獄者": ["場控"],
+  "外婆": ["場控"],
+};
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function dstr(d: Date) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
@@ -63,6 +76,22 @@ function matchedEmployee(employees: any[], providerName: string) {
   const normalized = providerName.trim();
   return employees.find((item: any) => item.name === normalized ||
     (item.aliases ?? []).includes(normalized) || (normalized === "穆穆" && item.name === "宏穆"));
+}
+
+function syncedAssignments(theme: any, providerRole: string, employeeId: string) {
+  const required = REQUIRED_THEME_ROLES[String(theme?.name ?? "")] ?? [];
+  const gmCount = Math.max(Math.max(0, Number(theme?.needGM) || 0), required.includes("場控") ? 1 : 0);
+  const npcCount = Math.max(Math.max(0, Number(theme?.needNPC) || 0), required.includes("NPC") ? 1 : 0);
+  const assignments = [
+    ...Array.from({ length: gmCount }, () => ({ role: "場控", empId: "" })),
+    ...Array.from({ length: npcCount }, () => ({ role: "NPC", empId: "" })),
+  ];
+  if (!assignments.some((item) => item.role === providerRole)) assignments.push({ role: providerRole, empId: "" });
+  if (employeeId) {
+    const providerSlot = assignments.find((item) => item.role === providerRole && !item.empId);
+    if (providerSlot) providerSlot.empId = employeeId;
+  }
+  return assignments;
 }
 
 async function rpc(url: string, headers: Record<string, string>, method: string, params: unknown[]) {
@@ -275,7 +304,7 @@ const handler = async (req: Request) => {
         payment,
         status: previous?.status === "cancelled" ? "active" : (previous?.status ?? "active"),
         sourceUpdatedAt: new Date().toISOString(),
-        assignments: previous?.manualEdit ? previous.assignments : [{ role, empId: employee?.id ?? "" }],
+        assignments: previous?.manualEdit ? previous.assignments : syncedAssignments(selectedTheme, role, employee?.id ?? ""),
         ...(previous?.manualEdit ? { manualEdit: true } : {}),
         ...(previous?.rebook ? { rebook: previous.rebook } : {}),
         ...(previous?.rebookFrom ? { rebookFrom: previous.rebookFrom } : {}),
