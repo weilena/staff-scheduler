@@ -187,13 +187,27 @@ Deno.serve(async (req) => {
       });
       let meetingResponses: any[] = [];
       const meetingIds = publicShifts.filter((shift: any) => shift.kind === "meeting" && !String(shift.status ?? "").startsWith("cancelled")).map((shift: any) => String(shift.id));
+      const meetingAudience: Record<string, Array<{ id: string; name: string }>> = {};
+      for (const meeting of publicShifts.filter((shift: any) => shift.kind === "meeting" && !String(shift.status ?? "").startsWith("cancelled") &&
+        (account.role === "manager" || String(shift.hostId ?? "") === employee.id))) {
+        meetingAudience[String(meeting.id)] = (cfg.employees ?? []).filter((item: any) => item.active && ["full", "part"].includes(String(item.type)) && employedOn(item, meeting.date))
+          .map((item: any) => ({ id: String(item.id), name: String(item.name ?? "") }));
+      }
       if (account.role === "manager" && meetingIds.length) {
         const { data, error } = await sb.from("shift_confirmations").select("shift_id,emp_id,status,confirmed_at").in("shift_id", meetingIds);
         if (error) throw error;
         meetingResponses = data ?? [];
       } else {
-        meetingResponses = (shiftConfirmations ?? []).filter((row: any) => meetingIds.includes(String(row.shift_id)) && ["attending", "declined"].includes(String(row.status)))
+        // 一般員工只能看到自己的回覆；若本人是該場主持人，才額外取得該場全體出缺席。
+        const hostedMeetingIds = publicShifts.filter((shift: any) => shift.kind === "meeting" && String(shift.hostId ?? "") === employee.id &&
+          !String(shift.status ?? "").startsWith("cancelled")).map((shift: any) => String(shift.id));
+        const ownResponses = (shiftConfirmations ?? []).filter((row: any) => meetingIds.includes(String(row.shift_id)) && ["attending", "declined"].includes(String(row.status)))
           .map((row: any) => ({ ...row, emp_id: employee.id }));
+        if (hostedMeetingIds.length) {
+          const { data, error } = await sb.from("shift_confirmations").select("shift_id,emp_id,status,confirmed_at").in("shift_id", hostedMeetingIds);
+          if (error) throw error;
+          meetingResponses = [...new Map([...ownResponses, ...(data ?? [])].map((row: any) => [`${row.shift_id}|${row.emp_id}`, row])).values()];
+        } else meetingResponses = ownResponses;
       }
       const publicPunches = (punches ?? []).map((p: any) => ({
         id: p.id, ts: p.ts, type: p.type, worksite_id: p.worksite_id, verification: p.verification,
@@ -213,7 +227,7 @@ Deno.serve(async (req) => {
       return json({ me: { id: employee.id, name: employee.name, role: account.role, type: employee.type,
           canSchedulePractice: account.role === "manager" || (employee.type === "full" && !!employee.canSchedulePractice) }, stores: cfg.stores, themes: cfg.themes,
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches,
-        attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations, meetingResponses,
+        attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations, meetingResponses, meetingAudience,
         availabilityRequests, availabilityConfirmations, availability: employee.availX ?? {}, myAvail: employee.avail ?? {},
         annualLeave, weeklyOffDay: cfg.settings?.weeklyOffDay ?? 4, holidays: cfg.settings?.holidays ?? {}, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
