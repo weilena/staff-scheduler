@@ -231,6 +231,38 @@ Deno.serve(async (req) => {
       return json({ ok: true, assignments });
     }
 
+    if (action === "fulltime-controller-self-assign") {
+      if (employee.type !== "full") return json({ error: "只有正職可以使用場控選填" }, 403);
+      const shiftId = String(input.shiftId ?? ""), assign = input.assign !== false;
+      const shift = shifts.find((item: any) => String(item.id) === shiftId);
+      if (!shift || shift.kind !== "theme" || String(shift.status ?? "").startsWith("cancelled")) return json({ error: "找不到可選填的主題場次" }, 404);
+      const theme = (cfg.themes ?? []).find((item: any) => item.id === shift.themeId), themeName = String(theme?.name ?? "").trim();
+      if (!["詭獄", "詭獄加場"].includes(themeName)) return json({ error: "正職只能選填詭獄或詭獄加場的場控" }, 403);
+      if (new Date(`${shift.date}T${shift.start}:00+08:00`).getTime() <= Date.now()) return json({ error: "已開始或已結束的場次不能再選填" }, 409);
+      const assignments = (shift.assignments ?? []).map((item: any) => ({ ...item }));
+      const controller = assignments.find((item: any) => item.role === "場控");
+      if (assign) {
+        if (controller?.empId && controller.empId !== employee.id) return json({ error: "這一場已由其他人擔任場控" }, 409);
+        const warnings = eligibilityErrors(employee, shift, "場控", shifts.filter((item: any) => item.date === shift.date), cfg, [shift.id]);
+        if (warnings.length) return json({ error: `目前不能選填：${warnings.join("、")}` }, 409);
+        if (controller) controller.empId = employee.id; else assignments.push({ role: "場控", empId: employee.id });
+      } else {
+        if (!controller || controller.empId !== employee.id) return json({ error: "這一場不是由你選填的場控" }, 409);
+        controller.empId = "";
+      }
+      const updated = { ...shift, assignments, manualEdit: true, sourceUpdatedAt: new Date().toISOString() };
+      const source = String(shift.id).startsWith("sb_") ? "simplybook" : "manual";
+      const { error } = await sb.from("shifts").upsert({ id: shift.id, date: shift.date, source, data: updated });
+      if (error) throw error;
+      const { data: managers } = await sb.from("line_accounts").select("emp_id").eq("role", "manager").eq("active", true);
+      for (const manager of managers ?? []) await queueNotification(sb, manager.emp_id, "fulltime_controller_self_assign", {
+        title: assign ? "正職已選填場控" : "正職取消場控選填", text: `${employee.name}${assign ? "選填" : "取消"} ${shift.date} ${shift.start}–${shift.end} ${themeName}－場控。`,
+      }, false, `fulltime-controller:${shift.id}:${employee.id}:${assign ? "assign" : "clear"}:${Date.now()}`);
+      await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: assign ? "fulltime_controller_self_assign" : "fulltime_controller_self_clear",
+        target_type: "shift", target_id: shift.id, details: { date: shift.date, start: shift.start, end: shift.end, themeId: shift.themeId, themeName } });
+      return json({ ok: true, message: assign ? `已選填 ${themeName}－場控，並通知管理員` : `已取消 ${themeName}－場控選填，並通知管理員` });
+    }
+
     if (action === "monthly-summary") {
       const month = String(input.month ?? "");
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: "月份格式錯誤" }, 400);
