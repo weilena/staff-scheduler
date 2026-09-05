@@ -165,6 +165,11 @@ Deno.serve(async (req) => {
           createdBy: s.kind === "meeting" ? String(s.createdBy ?? "") : null,
           status: s.status ?? "active", assignments: s.assignments ?? [],
           linkedThemeAssignments: s.linkedThemeAssignments ?? [],
+          fulltimeControllerAssignment: s.fulltimeControllerAssignment ? {
+            assignedBy: String(s.fulltimeControllerAssignment.assignedBy ?? ""),
+            assignedEmpId: String(s.fulltimeControllerAssignment.assignedEmpId ?? ""),
+            assignedAt: String(s.fulltimeControllerAssignment.assignedAt ?? ""),
+          } : null,
           depositPaid: isDepositPaid(s.payment),
           // 所有已綁定且仍在職的兼職、正職、管理員都可查看簡要客人資訊。
           // LINE 前端只顯示姓名與訂金；電話需點開才呈現。Email、備註不送到員工端。
@@ -243,36 +248,46 @@ Deno.serve(async (req) => {
       return json({ ok: true, assignments });
     }
 
-    if (action === "fulltime-controller-self-assign") {
+    if (action === "fulltime-controller-self-assign" || action === "fulltime-controller-assign") {
       if (employee.type !== "full") return json({ error: "只有正職可以使用場控選填" }, 403);
       const shiftId = String(input.shiftId ?? ""), assign = input.assign !== false;
       const shift = shifts.find((item: any) => String(item.id) === shiftId);
       if (!shift || shift.kind !== "theme" || String(shift.status ?? "").startsWith("cancelled")) return json({ error: "找不到可選填的主題場次" }, 404);
       const theme = (cfg.themes ?? []).find((item: any) => item.id === shift.themeId), themeName = String(theme?.name ?? "").trim();
       if (!["詭獄", "詭獄加場"].includes(themeName)) return json({ error: "正職只能選填詭獄或詭獄加場的場控" }, 403);
-      if (new Date(`${shift.date}T${shift.start}:00+08:00`).getTime() <= Date.now()) return json({ error: "已開始或已結束的場次不能再選填" }, 409);
       const assignments = (shift.assignments ?? []).map((item: any) => ({ ...item }));
       const controller = assignments.find((item: any) => item.role === "場控");
+      const requestedEmpId = String(input.empId ?? controller?.empId ?? employee.id);
+      const targetEmployee = (cfg.employees ?? []).find((item: any) => item.id === requestedEmpId && item.active);
+      if (!targetEmployee) return json({ error: "找不到這位在職員工" }, 400);
+      const worksThatDay = shifts.some((item: any) => item.id !== shift.id && item.date === shift.date &&
+        !String(item.status ?? "").startsWith("cancelled") && (item.assignments ?? []).some((assignment: any) => assignment.empId === requestedEmpId));
+      if (requestedEmpId !== employee.id && !worksThatDay) return json({ error: `${targetEmployee.name} 當天沒有其他已排班工作，正職不能替他選填` }, 403);
       if (assign) {
-        if (controller?.empId && controller.empId !== employee.id) return json({ error: "這一場已由其他人擔任場控" }, 409);
-        const warnings = eligibilityErrors(employee, shift, "場控", shifts.filter((item: any) => item.date === shift.date), cfg, [shift.id]);
-        if (warnings.length) return json({ error: `目前不能選填：${warnings.join("、")}` }, 409);
-        if (controller) controller.empId = employee.id; else assignments.push({ role: "場控", empId: employee.id });
+        if (controller?.empId && controller.empId !== requestedEmpId) return json({ error: `這一場已由 ${((cfg.employees ?? []).find((item: any) => item.id === controller.empId)?.name ?? "其他人")} 擔任場控` }, 409);
+        if (controller) controller.empId = requestedEmpId; else assignments.push({ role: "場控", empId: requestedEmpId });
       } else {
-        if (!controller || controller.empId !== employee.id) return json({ error: "這一場不是由你選填的場控" }, 409);
+        const record = shift.fulltimeControllerAssignment;
+        const mayClear = record?.assignedBy === employee.id || (!record && controller?.empId === employee.id);
+        if (!controller || controller.empId !== requestedEmpId || !mayClear) return json({ error: "只能取消由你本人完成的場控選填" }, 409);
         controller.empId = "";
       }
-      const updated = { ...shift, assignments, manualEdit: true, sourceUpdatedAt: new Date().toISOString() };
+      const updated = { ...shift, assignments, manualEdit: true, sourceUpdatedAt: new Date().toISOString(),
+        fulltimeControllerAssignment: assign ? { assignedBy: employee.id, assignedEmpId: requestedEmpId, assignedAt: new Date().toISOString() } : null };
       const source = String(shift.id).startsWith("sb_") ? "simplybook" : "manual";
       const { error } = await sb.from("shifts").upsert({ id: shift.id, date: shift.date, source, data: updated });
       if (error) throw error;
       const { data: managers } = await sb.from("line_accounts").select("emp_id").eq("role", "manager").eq("active", true);
-      for (const manager of managers ?? []) await queueNotification(sb, manager.emp_id, "fulltime_controller_self_assign", {
-        title: assign ? "正職已選填場控" : "正職取消場控選填", text: `${employee.name}${assign ? "選填" : "取消"} ${shift.date} ${shift.start}–${shift.end} ${themeName}－場控。`,
-      }, false, `fulltime-controller:${shift.id}:${employee.id}:${assign ? "assign" : "clear"}:${Date.now()}`);
-      await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: assign ? "fulltime_controller_self_assign" : "fulltime_controller_self_clear",
-        target_type: "shift", target_id: shift.id, details: { date: shift.date, start: shift.start, end: shift.end, themeId: shift.themeId, themeName } });
-      return json({ ok: true, message: assign ? `已選填 ${themeName}－場控，並通知管理員` : `已取消 ${themeName}－場控選填，並通知管理員` });
+      const actionText = assign ? "選填" : "取消", targetText = requestedEmpId === employee.id ? employee.name : `${targetEmployee.name}`;
+      for (const manager of managers ?? []) await queueNotification(sb, manager.emp_id, "fulltime_controller_assign", {
+        title: assign ? "正職已選填場控" : "正職已取消場控選填", text: `${employee.name}已替 ${targetText}${actionText} ${shift.date} ${shift.start}–${shift.end} ${themeName}－場控。`,
+      }, false, `fulltime-controller:${shift.id}:${requestedEmpId}:${assign ? "assign" : "clear"}:${Date.now()}`);
+      if (requestedEmpId !== employee.id) await queueNotification(sb, requestedEmpId, "fulltime_controller_assignment", {
+        title: assign ? "場控工作已選填" : "場控選填已取消", text: `${employee.name}已替你${actionText} ${shift.date} ${shift.start}–${shift.end} ${themeName}－場控。`,
+      }, false, `fulltime-controller-target:${shift.id}:${requestedEmpId}:${assign ? "assign" : "clear"}:${Date.now()}`);
+      await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: assign ? "fulltime_controller_assign" : "fulltime_controller_clear",
+        target_type: "shift", target_id: shift.id, details: { targetEmpId: requestedEmpId, targetName: targetEmployee.name, date: shift.date, start: shift.start, end: shift.end, themeId: shift.themeId, themeName } });
+      return json({ ok: true, message: assign ? `已替 ${targetText} 選填 ${themeName}－場控，並通知管理員` : `已取消 ${targetText} 的 ${themeName}－場控選填，並通知管理員` });
     }
 
     if (action === "monthly-summary") {
