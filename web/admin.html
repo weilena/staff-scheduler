@@ -2240,10 +2240,10 @@ function updateDailyReviewToolbar(){
 function toggleDailyReview(empId,date,on){const k=dailyReviewKey(empId,date);if(on)dailyReviewSelected.add(k);else dailyReviewSelected.delete(k);updateDailyReviewToolbar()}
 const TAIWAN_HOLIDAYS_2026={
   '2026-01-01':'元旦','2026-02-16':'除夕','2026-02-17':'春節初一','2026-02-18':'春節初二','2026-02-19':'春節初三',
-  '2026-02-28':'和平紀念日','2026-04-04':'兒童節','2026-04-05':'清明節','2026-05-01':'勞動節',
-  '2026-06-19':'端午節','2026-09-25':'中秋節','2026-09-28':'教師節','2026-10-10':'國慶日',
-  '2026-10-25':'臺灣光復節','2026-12-25':'行憲紀念日'
-};
+  '2026-02-27':'和平紀念日補假','2026-04-03':'兒童節補假','2026-04-06':'清明節補假','2026-05-01':'勞動節',
+  '2026-06-19':'端午節','2026-09-25':'中秋節','2026-09-28':'教師節','2026-10-09':'國慶日補假',
+  '2026-10-26':'臺灣光復節補假','2026-12-25':'行憲紀念日'
+};// 國定假日逢週六日順延補假,雙倍薪落在補假日(與 settings.holidays 一致)
 function holidayName(date){return (S.settings.holidays||{})[date]||TAIWAN_HOLIDAYS_2026[date]||''}
 function isHolidayRate(date){return !!holidayName(date)}
 function themeSessionRate(t,role,date){
