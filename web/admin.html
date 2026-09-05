@@ -2895,6 +2895,13 @@ function tglCounter(empId,storeId,on){
 /* ============ 可上班時間 ============ */
 let availEmp='',availOverviewMonth=(()=>{const d=new Date();d.setDate(1);d.setMonth(d.getMonth()+1);return fmtDate(d).slice(0,7)})();
 function setAvailOverviewMonth(value){if(value){availOverviewMonth=value;render()}}
+/* 全員整週固定可上班時段總覽(排班基本盤;特定日期回報會覆蓋) */
+function weeklyFixedOverviewHtml(actives){
+  const wds=[1,2,3,4,5,6,0];
+  const head=wds.map(d=>`<th style="min-width:66px;text-align:center;${weeklyOffDay()===d?'background:#f8fafc;color:#667085':''}">週${WD[d]}${weeklyOffDay()===d?'<br><small>公休</small>':''}</th>`).join('');
+  const rows=actives.map(e=>`<tr><th style="position:sticky;left:0;z-index:1;background:#fff;min-width:96px;text-align:left">${esc(e.name)}<br><span class="pill ${e.type==='full'?'in':'out'}" style="font-size:11px">${e.type==='full'?'正職':'兼職'}</span></th>${wds.map(d=>{const a=e.avail?.[d];if(a&&a.on)return `<td style="background:#eff8ff;color:#175cd3;text-align:center;white-space:nowrap;font-size:12px">${esc(a.start)}<br>–${esc(a.end)}</td>`;if(a&&a.on===false)return '<td style="background:#fef3f2;color:#b42318;text-align:center;font-size:12px">固定休</td>';return `<td style="background:#f8fafc;color:#98a2b3;text-align:center;font-size:12px">${e.type==='full'?'全天':'未設'}</td>`}).join('')}</tr>`).join('');
+  return `<div class="card"><div class="row"><h2 class="grow">🕒 全員整週固定可上班時段</h2></div><p class="muted">每位員工「每週固定」的可上班時段,是排班的基本盤(特定日期回報會覆蓋這裡)。在下方「每人可上班時段設定」調整。正職未設＝全天可上班;兼職未設＝需回報。</p><div style="overflow:auto;max-width:100%;border:1px solid #e4e7ec;border-radius:10px"><table style="min-width:100%;margin:0"><tr><th style="position:sticky;left:0;z-index:2;background:#f8fafc">員工</th>${head}</tr>${rows}</table></div></div>`;
+}
 function availabilityOverviewHtml(actives){
   const [y,m]=availOverviewMonth.split('-').map(Number),days=new Date(y,m,0).getDate(),dates=Array.from({length:days},(_,i)=>`${availOverviewMonth}-${String(i+1).padStart(2,'0')}`),confirmed=new Set((LINE.availabilityConfirmations||[]).filter(x=>x.month===availOverviewMonth).map(x=>x.emp_id)),done=actives.filter(e=>confirmed.has(e.id)).length;
   const head=dates.map(d=>`<th style="min-width:43px;text-align:center;${isWeeklyOff(d)?'background:#f8fafc;color:#667085':''}">${Number(d.slice(8))}<br><small>週${WD[dateWD(d)]}${isWeeklyOff(d)?'<br>公休':''}</small></th>`).join('');
@@ -2908,7 +2915,7 @@ function vAvail(){
   const e=availEmp?emp(availEmp):null;
   if(!actives.length)return `<div class="card"><h2>可上班時間</h2><p class="muted">請先到「員工」頁新增員工。</p></div>`;
   const xs=Object.entries(e.availX||{}).sort((a,b)=>a[0].localeCompare(b[0]));
-  return `${availabilityOverviewHtml(actives)}<div class="card"><h2>📅 選用：Google 日曆舊資料匯入</h2>
+  return `${availabilityOverviewHtml(actives)}${weeklyFixedOverviewHtml(actives)}<details style="margin:0 0 16px"><summary style="cursor:pointer;color:#64748b;padding:8px 4px;font-weight:600">📅 Google 日曆（已隱藏 · 已改用 LINE 回報；點開僅供舊資料手動匯入）</summary><div class="card" style="margin-top:8px"><h2>📅 選用：Google 日曆舊資料匯入</h2>
     <p class="muted" style="margin-bottom:8px">日常的整月可上班／不可上班請直接使用 LINE@，不需綁定 Google。此區只保留給舊資料手動匯入，不會後台自動抓取，也不會覆蓋 LINE 已儲存的回報。</p>
     <div class="row" style="margin-bottom:8px">
       <input id="icalUrl" class="grow" placeholder="貼上 Google 日曆的私人 iCal 網址(.ics 結尾)" value="${esc(S.icalUrl||'')}">
@@ -2924,10 +2931,10 @@ function vAvail(){
       <button class="btn gray sm" onclick="saveGoogleCalendarId()">儲存日曆</button>
     </div>
     <iframe title="Google 排班日曆" src="${googleCalendarEmbedUrl()}" style="width:100%;height:680px;border:1px solid #e2e8f0;border-radius:10px" loading="lazy"></iframe>
-  </div>
+  </div></details>
   <div class="card">
-    <details>
-      <summary style="cursor:pointer;font-weight:600;font-size:15px">⚙️ 進階：手動微調可上班時間(平常用不到,日曆匯入抓錯時才用)</summary>
+    <details open>
+      <summary style="cursor:pointer;font-weight:600;font-size:15px">🕒 每人可上班時段設定(每週固定基本盤 ＋ 特定日期例外)</summary>
       <div style="margin-top:12px">
         <div class="row" style="margin-bottom:12px">
           <select onchange="availEmp=this.value;render()">${actives.map(x=>`<option value="${x.id}" ${x.id===availEmp?'selected':''}>${esc(x.name)}</option>`).join('')}</select>

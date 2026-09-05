@@ -62,7 +62,7 @@ function schMonday(d){const wd=(d.getDay()+6)%7,m=new Date(d);m.setDate(d.getDat
 const SCH_THEME_COLOR={gy:'#7c3aed',gyx:'#db2777',wp:'#0891b2',gd:'#2563eb',gc:'#16a34a',yyz:'#ea580c',gea:'#b45309',slqk:'#ca8a04'};
 function schThemeColor(id){return SCH_THEME_COLOR[id]||SCH_PAL[Math.max(0,D.themes.findIndex(t=>t.id===id))%SCH_PAL.length]}
 function schEmpColor(e){if(e.color)return e.color;const i=D.employees.findIndex(x=>x.id===e.id);return SCH_PAL[(i<0?0:i)%SCH_PAL.length]||'#64748b'}
-function schEmpAvail(e,date){if(e.availX&&e.availX[date])return e.availX[date];return e.type==='full'?{on:true,start:'09:00',end:'22:30',assumedAvailable:true}:{on:false,start:'',end:'',leaveType:'未回報',unreported:true}}
+function schEmpAvail(e,date){if(e.availX&&e.availX[date])return e.availX[date];const wd=new Date(date+'T12:00:00+08:00').getDay(),wk=e.avail&&(e.avail[wd]||e.avail[String(wd)]);if(wk&&wk.on)return{on:true,start:wk.start,end:wk.end,weeklyDefault:true};if(wk&&wk.on===false)return{on:false,start:'',end:'',leaveType:'固定休',weeklyDefault:true};return e.type==='full'?{on:true,start:'09:00',end:'22:30',assumedAvailable:true}:{on:false,start:'',end:'',leaveType:'未回報',unreported:true}}
 function schRoleSlots(s){const t=D.themes.find(x=>x.id===s.themeId),slots=(s.assignments||[]).map(a=>({role:a.role,empId:a.empId}));if(t&&String(t.name).startsWith('詭獄')&&!slots.some(x=>x.role==='場控'))slots.push({role:'場控',empId:''});return slots}
 function setSchStore(id){schStore=id;schThemes=[];schSlot=null;render()}
 function toggleSchTheme(id){const i=schThemes.indexOf(id);if(i>=0)schThemes.splice(i,1);else schThemes.push(id);schSlot=null;render()}
