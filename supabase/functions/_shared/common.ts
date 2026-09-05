@@ -47,6 +47,11 @@ export function employedOn(emp: any, date: string) {
 
 function availability(emp: any, date: string) {
   if (emp?.availX?.[date]) return emp.availX[date];
+  // 每週固定時段(基本盤):特定日期未回報時採用,與前端 schEmpAvail / 後台 effectiveAvail 一致。
+  const wd = new Date(`${date}T12:00:00+08:00`).getDay();
+  const wk = emp?.avail?.[wd] ?? emp?.avail?.[String(wd)];
+  if (wk?.on) return { on: true, start: wk.start, end: wk.end, weeklyDefault: true };
+  if (wk && wk.on === false) return { on: false, start: "", end: "", leaveType: "固定休", weeklyDefault: true };
   return emp?.type === "full"
     ? { on: true, start: "09:00", end: "22:30", assumedAvailable: true }
     : { on: false, start: "", end: "", leaveType: "未回報", unreported: true };

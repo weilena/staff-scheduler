@@ -214,7 +214,7 @@ Deno.serve(async (req) => {
           canSchedulePractice: account.role === "manager" || (employee.type === "full" && !!employee.canSchedulePractice) }, stores: cfg.stores, themes: cfg.themes,
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches,
         attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations, meetingResponses,
-        availabilityRequests, availabilityConfirmations, availability: employee.availX ?? {},
+        availabilityRequests, availabilityConfirmations, availability: employee.availX ?? {}, myAvail: employee.avail ?? {},
         annualLeave, weeklyOffDay: cfg.settings?.weeklyOffDay ?? 4, holidays: cfg.settings?.holidays ?? {}, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
 
