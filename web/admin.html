@@ -988,6 +988,7 @@ function shiftLabel(sh){
   if(sh.kind==='floor')return '駐店場控';
   if(sh.kind==='cleaning')return '每周大清潔';
   if(sh.kind==='practice'){const t=theme(sh.trainingThemeId);return t?`訓練場・${t.name}`:'訓練場'}
+  if(sh.kind==='meeting')return `開會（${sh.paid?'計薪':'不計薪'}）${sh.hostName?'・主持人：'+sh.hostName:''}`;
   if(sh.kind==='counter')return sh.storeId==='ms'?'謎先生櫃台':sh.storeId==='dz'?'桌遊大忠店櫃台':'櫃台班';
   return '其他班別';
 }

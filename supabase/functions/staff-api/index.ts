@@ -156,6 +156,11 @@ Deno.serve(async (req) => {
         return {
           id: s.id, date: s.date, storeId: s.storeId, kind: s.kind, themeId: s.themeId, start: s.start, end: s.end,
           trainingThemeId: s.trainingThemeId ?? null,
+          paid: s.kind === "meeting" ? !!s.paid : null,
+          audience: s.kind === "meeting" ? String(s.audience ?? "") : null,
+          hostId: s.kind === "meeting" ? String(s.hostId ?? "") : null,
+          hostName: s.kind === "meeting" ? String(s.hostName ?? "") : null,
+          note: s.kind === "meeting" ? String(s.note ?? "") : null,
           status: s.status ?? "active", assignments: s.assignments ?? [],
           linkedThemeAssignments: s.linkedThemeAssignments ?? [],
           depositPaid: isDepositPaid(s.payment),
@@ -260,7 +265,8 @@ Deno.serve(async (req) => {
         const key = `${shift.id}|${role}`; if (detailSeen.has(key)) return; detailSeen.add(key);
         const requiresReport = shift.kind === "practice" || (shift.kind === "theme" && ["NPC", "場控"].includes(String(role).toUpperCase() === "NPC" ? "NPC" : role));
         workItems.push({ id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind,
-          themeId: shift.themeId ?? null, trainingThemeId: shift.trainingThemeId ?? null, role, linked, requiresReport, completed: completed.has(String(shift.id)) });
+          themeId: shift.themeId ?? null, trainingThemeId: shift.trainingThemeId ?? null, paid: shift.kind === "meeting" ? !!shift.paid : null,
+          hostId: shift.hostId ?? null, hostName: shift.hostName ?? null, role, linked, requiresReport, completed: completed.has(String(shift.id)) });
       };
       for (const shift of shifts) for (const assignment of shift.assignments ?? []) if (assignment.empId === employee.id) { add(shift, assignment.role); addDetail(shift, assignment.role); }
       for (const source of shifts) for (const link of source.linkedThemeAssignments ?? []) {
@@ -346,7 +352,7 @@ Deno.serve(async (req) => {
         const attendance = (daily ?? []).filter((row: any) => row.emp_id === candidate.id), workItems: any[] = [];
         for (const shift of shifts) {
           if (String(shift.date ?? "").slice(0, 7) !== month || String(shift.status ?? "").startsWith("cancelled")) continue;
-          for (const assignment of shift.assignments ?? []) if (assignment.empId === candidate.id) workItems.push({ id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind, themeId: shift.themeId ?? null, trainingThemeId: shift.trainingThemeId ?? null, role: assignment.role, linked: false });
+          for (const assignment of shift.assignments ?? []) if (assignment.empId === candidate.id) workItems.push({ id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind, themeId: shift.themeId ?? null, trainingThemeId: shift.trainingThemeId ?? null, paid: shift.kind === "meeting" ? !!shift.paid : null, hostId: shift.hostId ?? null, hostName: shift.hostName ?? null, role: assignment.role, linked: false });
           for (const link of shift.linkedThemeAssignments ?? []) if (link.empId === candidate.id) {
             const target = shifts.find((row: any) => String(row.id) === String(link.shiftId));
             if (target && !String(target.status ?? "").startsWith("cancelled")) workItems.push({ id: target.id, date: target.date, start: target.start, end: target.end, storeId: target.storeId, kind: target.kind, themeId: target.themeId ?? null, role: "場控", linked: true });
@@ -489,6 +495,50 @@ Deno.serve(async (req) => {
       return json({ ok: true, message: "已確認收到這個班次" });
     }
 
+    if (action === "schedule-meeting") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以建立開會提醒" }, 403);
+      const date = String(input.date ?? ""), start = String(input.start ?? ""), end = String(input.end ?? ""), storeId = String(input.storeId ?? "");
+      const hostId = String(input.hostId ?? ""), paid = input.paid === true, note = String(input.note ?? "").trim().slice(0, 300);
+      const timeOk = (value: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !timeOk(start) || !timeOk(end) || toMinutes(end) <= toMinutes(start)) return json({ error: "請填寫正確的會議日期與起訖時間" }, 400);
+      if (new Date(`${date}T${start}:00+08:00`).getTime() <= Date.now()) return json({ error: "會議開始時間必須晚於現在" }, 409);
+      const store = (cfg.stores ?? []).find((item: any) => item.id === storeId);
+      if (!store) return json({ error: "請選擇會議地點" }, 400);
+      const host = (cfg.employees ?? []).find((item: any) => item.id === hostId && item.active && employedOn(item, date));
+      if (!host || !["full", "part"].includes(String(host.type))) return json({ error: "請選擇會議當日在職的主持人" }, 400);
+      const attendees = (cfg.employees ?? []).filter((item: any) => item.active && ["full", "part"].includes(String(item.type)) && employedOn(item, date));
+      const id = `meeting_${crypto.randomUUID()}`;
+      const assignments = paid ? attendees.map((item: any) => ({ role: item.id === host.id ? "會議主持（計薪）" : "參加會議（計薪）", empId: item.id })) : [];
+      const meeting = { id, date, storeId, kind: "meeting", themeId: null, start, end, status: "active", paid, audience: "all", hostId: host.id, hostName: host.name,
+        note, assignments, createdBy: employee.id, createdVia: "line_manager_meeting" };
+      const { error } = await sb.from("shifts").insert({ id, date, source: "manual", data: meeting });
+      if (error) throw error;
+      const payText = paid ? "本次會議計薪，請依規定上下班定位打卡；工時仍須管理員核准。" : "本次會議不計薪，只需查看提醒，不需打卡。";
+      const label = `${date} ${start}–${end} ${store.name}・主持人：${host.name}`;
+      for (const attendee of attendees) await queueNotification(sb, attendee.id, "meeting_reminder", {
+        title: `${paid ? "計薪" : "不計薪"}會議提醒`, text: `${label}。${note ? `內容：${note}。` : ""}${payText}`,
+      }, true, `meeting:${id}:${attendee.id}`);
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "schedule_meeting", target_type: "shift", target_id: id,
+        details: { date, start, end, storeId, hostId: host.id, hostName: host.name, paid, note, attendeeCount: attendees.length } });
+      return json({ ok: true, message: `會議已建立，將提醒 ${attendees.length} 位在職正職與兼職` });
+    }
+
+    if (action === "cancel-meeting") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以取消會議" }, 403);
+      const shiftId = String(input.shiftId ?? ""), meeting = shifts.find((item: any) => item.id === shiftId && item.kind === "meeting" && !String(item.status ?? "").startsWith("cancelled"));
+      if (!meeting) return json({ error: "找不到可取消的會議" }, 404);
+      const cancelled = { ...meeting, status: "cancelled_manual", cancelledAt: new Date().toISOString(), cancelledBy: employee.id };
+      const { error } = await sb.from("shifts").upsert({ id: meeting.id, date: meeting.date, source: "manual", data: cancelled });
+      if (error) throw error;
+      const attendees = (cfg.employees ?? []).filter((item: any) => item.active && ["full", "part"].includes(String(item.type)) && employedOn(item, meeting.date));
+      for (const attendee of attendees) await queueNotification(sb, attendee.id, "meeting_cancelled", {
+        title: "會議取消", text: `${meeting.date} ${meeting.start}–${meeting.end} ${(cfg.stores ?? []).find((item: any) => item.id === meeting.storeId)?.name ?? ""} 的會議已取消。`,
+      }, true, `meeting-cancelled:${meeting.id}:${attendee.id}`);
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "cancel_meeting", target_type: "shift", target_id: meeting.id,
+        details: { date: meeting.date, start: meeting.start, end: meeting.end, paid: !!meeting.paid, hostId: meeting.hostId } });
+      return json({ ok: true, message: "會議已取消，並通知正職與兼職" });
+    }
+
     if (action === "schedule-practice") {
       if (account.role !== "manager" && !(employee.type === "full" && employee.canSchedulePractice)) return json({ error: "你沒有安排新人訓練場的權限" }, 403);
       const date = String(input.date ?? ""), start = String(input.start ?? ""), end = String(input.end ?? ""), storeId = String(input.storeId ?? "");
@@ -605,7 +655,7 @@ Deno.serve(async (req) => {
           workItem = { source: "scheduled", attendance_mode: "clock_range", labels: selectedShifts.map((s: any) => {
             const theme = (cfg.themes ?? []).find((t: any) => t.id === s.themeId)?.name;
             const label = s.kind === "theme" ? theme : s.kind === "counter" ? (s.storeId === "ms" ? "謎先生櫃台" : "桌遊大忠店櫃台") :
-              s.kind === "cleaning" ? "每週大清潔" : s.kind === "practice" ? "訓練場" : s.kind === "floor" ? "場控／現場支援" : "其他工作";
+              s.kind === "cleaning" ? "每週大清潔" : s.kind === "practice" ? "訓練場" : s.kind === "meeting" ? `開會（${s.paid ? "計薪" : "不計薪"}）` : s.kind === "floor" ? "場控／現場支援" : "其他工作";
             const role = (s.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "";
             return `${s.start}–${s.end} ${label}${role ? `（${role}）` : ""}`;
           }) };
