@@ -101,7 +101,7 @@ function schSessionCard(s){
 function scheduleAdminView(){
   if(D.me.role!=='manager'){app.innerHTML='<div class="notice error">只有管理員可以排班。</div>';return}
   if(!schDate){schDate=taipeiDate();schWeekStart=schMonday(new Date(schDate+'T00:00:00'))}
-  if(!schStore)schStore=(D.stores[0]||{}).id||'';
+  if(!schStore)schStore=(D.stores.find(store=>store.id==='ms')||D.stores[0]||{}).id||'';
   const wk=[];for(let i=0;i<7;i++){const d=new Date(schWeekStart);d.setDate(schWeekStart.getDate()+i);wk.push(d)}
   const mid=wk[3];
   const storeThemes=D.themes.filter(t=>t.active!==false&&t.storeId===schStore);
