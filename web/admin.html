@@ -808,6 +808,7 @@ function employeeTag(e,label){
 /* 櫃台/駐店班可為每人設定個別時段;未設定時沿用整個班別時間 */
 function asgWindow(sh,a){return{start:(a&&a.start)||sh.start,end:(a&&a.end)||sh.end}}
 function assignedTags(sh,withRole=true){
+  if(sh.kind==='meeting'){const responses=(S.shiftConfirmations||[]).filter(x=>x.shiftId===sh.id),yes=responses.filter(x=>x.status==='attending').length,no=responses.filter(x=>x.status==='declined').length,total=S.employees.filter(e=>e.active&&employedOn(e,sh.date)&&(e.type==='full'||e.type==='part')).length;return `<span class="tag">會參加 ${yes}・不參加 ${no}・未回覆 ${Math.max(0,total-yes-no)}</span>`;}
   const direct=(sh.assignments||[]).filter(a=>a.empId).map(a=>({empId:a.empId,role:a.role,start:a.start,end:a.end}));
   const linked=sh.kind==='theme'?S.shifts.flatMap(src=>(src.linkedThemeAssignments||[]).filter(x=>x.shiftId===sh.id&&x.empId).map(x=>({empId:x.empId,role:'場控'}))):[];
   const seen=new Set();return [...direct,...linked].filter(a=>{const k=a.empId+'|'+a.role;if(seen.has(k))return false;seen.add(k);return true}).map(a=>{const e=emp(a.empId);const t=(a.start||a.end)?` ${a.start||sh.start}–${a.end||sh.end}`:'';return employeeTag(e,(e?.name||'?')+(withRole?`(${a.role}${t})`:t));}).join(' ');
@@ -819,6 +820,7 @@ function shiftRolePeople(sh,role){
 }
 function isShiftUnstaffed(sh){
   if(isCx(sh))return false;
+  if(sh.kind==='meeting')return false;
   if(sh.kind!=='theme')return !(sh.assignments||[]).some(a=>a.empId);
   const t=theme(sh.themeId);if(!t)return true;
   return requiredThemeRoles(t).some(role=>shiftRolePeople(sh,role).length<Number(role==='場控'?t.needGM:t.needNPC));
@@ -904,8 +906,9 @@ function counterCoverageChip(ds,storeId){
   return `<div class="chip" style="background:${bg};color:${color};border:1px solid ${urgent?'#fca5a5':missing?'#fdba74':'#6ee7b7'}" onclick="event.stopPropagation();${action}"><b>${label}</b> ${esc(text)}</div>`;
 }
 function bulkClass(sh){return bulkSelected.has(sh.id)?' bulk-picked':''}
-function shiftAction(sh){return bulkMode?`event.stopPropagation();toggleBulkShift('${sh.id}')`:`event.stopPropagation();openShift('${sh.id}')`}
+function shiftAction(sh){return sh.kind==='meeting'?`event.stopPropagation();openMeetingSummary('${sh.id}')`:bulkMode?`event.stopPropagation();toggleBulkShift('${sh.id}')`:`event.stopPropagation();openShift('${sh.id}')`}
 function chipStyle(sh){
+  if(sh.kind==='meeting')return 'background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd';
   const st=store(sh.storeId),assigned=(sh.assignments||[]).find(a=>a.empId),person=assigned?emp(assigned.empId):null;
   const bg=isCx(sh)?'#94a3b8':(employeeColor(person)||(st?st.color:'#64748b'));
   return `background:${bg};color:${textOn(bg)};border:1px solid ${lum(bg)>0.82?'#cbd5e1':'transparent'}`;
@@ -988,10 +991,11 @@ function shiftLabel(sh){
   if(sh.kind==='floor')return '駐店場控';
   if(sh.kind==='cleaning')return '每周大清潔';
   if(sh.kind==='practice'){const t=theme(sh.trainingThemeId);return t?`訓練場・${t.name}`:'訓練場'}
-  if(sh.kind==='meeting')return `開會（${sh.paid?'計薪':'不計薪'}）${sh.hostName?'・主持人：'+sh.hostName:''}`;
+  if(sh.kind==='meeting')return `開會（${sh.payStatus==='pending'?'計薪待管理員決定':sh.paid?'計薪':'不計薪'}）${sh.hostName?'・主持人：'+sh.hostName:''}`;
   if(sh.kind==='counter')return sh.storeId==='ms'?'謎先生櫃台':sh.storeId==='dz'?'桌遊大忠店櫃台':'櫃台班';
   return '其他班別';
 }
+function openMeetingSummary(id){const sh=byId(S.shifts,id);if(!sh)return;const responses=(S.shiftConfirmations||[]).filter(x=>x.shiftId===id&&['attending','declined'].includes(x.status)),names=status=>responses.filter(x=>x.status===status).map(x=>emp(x.empId)?.name||x.empId),yes=names('attending'),no=names('declined'),answered=new Set(responses.map(x=>x.empId)),waiting=S.employees.filter(e=>e.active&&employedOn(e,sh.date)&&(e.type==='full'||e.type==='part')&&!answered.has(e.id)).map(e=>e.name);alert(`${sh.date} ${sh.start}–${sh.end}\n${shiftLabel(sh)}\n地點：${store(sh.storeId)?.name||''}${sh.note?'\n內容：'+sh.note:''}\n\n會參加：${yes.join('、')||'無'}\n不參加：${no.join('、')||'無'}\n未回覆：${waiting.join('、')||'無'}\n\n計薪方式請由管理員在 LINE「排班 → 開會」調整。`)}
 /* 是否已取消(涵蓋 cancelled / cancelled_typhoon / cancelled_customer / cancelled_other)*/
 function isCx(sh){return sh.status&&String(sh.status).indexOf('cancelled')===0}
 function cxLabel(sh){
@@ -1393,7 +1397,7 @@ function vDaySessions(){
       <td><div class="slotrow">${slotCells(g.base)}${g.surge?`<span style="align-self:center;color:#94a3b8;font-size:12px;margin:0 2px">｜加場</span>${slotCells(g.surge)}`:''}</div></td></tr>`).join('')}
     </table>`;
   }).join('')}
-  ${extra.length?`<h3 style="margin:14px 0 8px">其他工作（清潔／訓練／駐店）</h3>
+  ${extra.length?`<h3 style="margin:14px 0 8px">其他工作（開會／清潔／訓練／駐店）</h3>
     <table><tr><th>時間</th><th>店別</th><th>內容</th><th>人員</th></tr>
     ${extra.map(sh=>`<tr class="${isCx(sh)?'cancelled':''}${bulkClass(sh)}" onclick="${shiftAction(sh)}" style="cursor:pointer">
       <td>${sh.start}–${sh.end}</td><td>${esc(store(sh.storeId)?.name||'')}</td><td>${esc(shiftLabel(sh))}</td>
@@ -1420,7 +1424,7 @@ function moveWeek(n){
 }
 async function copyManualWeekToNext(){
   const days=weekDates(weekAnchor),nextDays=days.map(ds=>{const d=new Date(ds+'T00:00:00');d.setDate(d.getDate()+7);return fmtDate(d)});
-  const source=S.shifts.filter(sh=>days.includes(sh.date)&&!isCx(sh)&&!String(sh.id).startsWith('sb_'));
+  const source=S.shifts.filter(sh=>days.includes(sh.date)&&!isCx(sh)&&sh.kind!=='meeting'&&!String(sh.id).startsWith('sb_'));
   if(!source.length)return alert('本週沒有可複製的人工班次。SimplyBook 場次不會由這裡複製。');
   if(!confirm(`將本週 ${source.length} 筆人工班次複製到下週？\n\n包含櫃台、清潔、訓練場、駐店及人工建立的班次；不包含 SimplyBook 同步場次。`))return;
   let added=0;

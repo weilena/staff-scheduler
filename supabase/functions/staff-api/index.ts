@@ -156,11 +156,13 @@ Deno.serve(async (req) => {
         return {
           id: s.id, date: s.date, storeId: s.storeId, kind: s.kind, themeId: s.themeId, start: s.start, end: s.end,
           trainingThemeId: s.trainingThemeId ?? null,
-          paid: s.kind === "meeting" ? !!s.paid : null,
+          paid: s.kind === "meeting" ? s.paid === true : null,
+          payStatus: s.kind === "meeting" ? String(s.payStatus ?? (s.paid === true ? "paid" : "unpaid")) : null,
           audience: s.kind === "meeting" ? String(s.audience ?? "") : null,
           hostId: s.kind === "meeting" ? String(s.hostId ?? "") : null,
           hostName: s.kind === "meeting" ? String(s.hostName ?? "") : null,
           note: s.kind === "meeting" ? String(s.note ?? "") : null,
+          createdBy: s.kind === "meeting" ? String(s.createdBy ?? "") : null,
           status: s.status ?? "active", assignments: s.assignments ?? [],
           linkedThemeAssignments: s.linkedThemeAssignments ?? [],
           depositPaid: isDepositPaid(s.payment),
@@ -178,6 +180,16 @@ Deno.serve(async (req) => {
           roleCandidates,
         };
       });
+      let meetingResponses: any[] = [];
+      const meetingIds = publicShifts.filter((shift: any) => shift.kind === "meeting" && !String(shift.status ?? "").startsWith("cancelled")).map((shift: any) => String(shift.id));
+      if (account.role === "manager" && meetingIds.length) {
+        const { data, error } = await sb.from("shift_confirmations").select("shift_id,emp_id,status,confirmed_at").in("shift_id", meetingIds);
+        if (error) throw error;
+        meetingResponses = data ?? [];
+      } else {
+        meetingResponses = (shiftConfirmations ?? []).filter((row: any) => meetingIds.includes(String(row.shift_id)) && ["attending", "declined"].includes(String(row.status)))
+          .map((row: any) => ({ ...row, emp_id: employee.id }));
+      }
       const publicPunches = (punches ?? []).map((p: any) => ({
         id: p.id, ts: p.ts, type: p.type, worksite_id: p.worksite_id, verification: p.verification,
         review_state: p.review_state, voided_at: p.voided_at, void_reason: p.void_reason, shift_ids: p.shift_ids ?? [],
@@ -196,7 +208,7 @@ Deno.serve(async (req) => {
       return json({ me: { id: employee.id, name: employee.name, role: account.role, type: employee.type,
           canSchedulePractice: account.role === "manager" || (employee.type === "full" && !!employee.canSchedulePractice) }, stores: cfg.stores, themes: cfg.themes,
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches,
-        attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations,
+        attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations, meetingResponses,
         availabilityRequests, availabilityConfirmations, availability: employee.availX ?? {},
         annualLeave, weeklyOffDay: cfg.settings?.weeklyOffDay ?? 4, holidays: cfg.settings?.holidays ?? {}, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
@@ -527,10 +539,32 @@ Deno.serve(async (req) => {
       return json({ ok: true, message: "已確認收到這個班次" });
     }
 
+    if (action === "meeting-response") {
+      const shiftId = String(input.shiftId ?? ""), response = String(input.response ?? "");
+      if (!["attending", "declined"].includes(response)) return json({ error: "請選擇會參加或不參加" }, 400);
+      const meeting = shifts.find((item: any) => String(item.id) === shiftId && item.kind === "meeting" && item.audience === "all" && !String(item.status ?? "").startsWith("cancelled"));
+      if (!meeting) return json({ error: "找不到這場會議，可能已經取消" }, 404);
+      if (new Date(`${meeting.date}T${meeting.end}:00+08:00`).getTime() <= Date.now()) return json({ error: "已結束的會議不能再更改回覆" }, 409);
+      if (!["full", "part"].includes(String(employee.type)) || !employedOn(employee, meeting.date)) return json({ error: "你不在這場會議的通知名單中" }, 403);
+      const { error } = await sb.from("shift_confirmations").upsert({ shift_id: meeting.id, emp_id: employee.id, status: response, source: "line", confirmed_at: new Date().toISOString() });
+      if (error) throw error;
+      if (meeting.payStatus === "paid") {
+        const assignments = (meeting.assignments ?? []).filter((item: any) => item.empId !== employee.id);
+        if (response === "attending") assignments.push({ role: employee.id === meeting.hostId ? "會議主持（計薪）" : "參加會議（計薪）", empId: employee.id });
+        const updated = { ...meeting, assignments, sourceUpdatedAt: new Date().toISOString() };
+        const { error: shiftError } = await sb.from("shifts").upsert({ id: meeting.id, date: meeting.date, source: "manual", data: updated });
+        if (shiftError) throw shiftError;
+      }
+      await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: "meeting_response", target_type: "shift", target_id: meeting.id,
+        details: { response, date: meeting.date, start: meeting.start, end: meeting.end, hostId: meeting.hostId, paid: !!meeting.paid } });
+      return json({ ok: true, message: response === "attending" ? "已回覆：會參加" : "已回覆：不參加" });
+    }
+
     if (action === "schedule-meeting") {
-      if (account.role !== "manager") return json({ error: "只有管理員可以建立開會提醒" }, 403);
+      if (account.role !== "manager" && employee.type !== "full") return json({ error: "只有管理員或正職可以建立開會提醒" }, 403);
       const date = String(input.date ?? ""), start = String(input.start ?? ""), end = String(input.end ?? ""), storeId = String(input.storeId ?? "");
-      const hostId = String(input.hostId ?? ""), paid = input.paid === true, note = String(input.note ?? "").trim().slice(0, 300);
+      const managerCreated = account.role === "manager", hostId = managerCreated ? String(input.hostId ?? "") : employee.id;
+      const payStatus = managerCreated ? (input.paid === true ? "paid" : "unpaid") : "pending", paid = payStatus === "paid", note = String(input.note ?? "").trim().slice(0, 300);
       const timeOk = (value: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !timeOk(start) || !timeOk(end) || toMinutes(end) <= toMinutes(start)) return json({ error: "請填寫正確的會議日期與起訖時間" }, 400);
       if (new Date(`${date}T${start}:00+08:00`).getTime() <= Date.now()) return json({ error: "會議開始時間必須晚於現在" }, 409);
@@ -541,24 +575,47 @@ Deno.serve(async (req) => {
       const attendees = (cfg.employees ?? []).filter((item: any) => item.active && ["full", "part"].includes(String(item.type)) && employedOn(item, date));
       const id = `meeting_${crypto.randomUUID()}`;
       const assignments = paid ? attendees.map((item: any) => ({ role: item.id === host.id ? "會議主持（計薪）" : "參加會議（計薪）", empId: item.id })) : [];
-      const meeting = { id, date, storeId, kind: "meeting", themeId: null, start, end, status: "active", paid, audience: "all", hostId: host.id, hostName: host.name,
-        note, assignments, createdBy: employee.id, createdVia: "line_manager_meeting" };
+      const meeting = { id, date, storeId, kind: "meeting", themeId: null, start, end, status: "active", paid, payStatus, audience: "all", hostId: host.id, hostName: host.name,
+        note, assignments, createdBy: employee.id, createdVia: managerCreated ? "line_manager_meeting" : "line_fulltime_meeting" };
       const { error } = await sb.from("shifts").insert({ id, date, source: "manual", data: meeting });
       if (error) throw error;
-      const payText = paid ? "本次會議計薪，請依規定上下班定位打卡；工時仍須管理員核准。" : "本次會議不計薪，只需查看提醒，不需打卡。";
+      const payText = payStatus === "pending" ? "本次會議由正職建立，是否計薪等待管理員決定。" : paid ? "本次會議計薪，請依規定上下班定位打卡；工時仍須管理員核准。" : "本次會議不計薪，只需查看提醒，不需打卡。";
       const label = `${date} ${start}–${end} ${store.name}・主持人：${host.name}`;
       for (const attendee of attendees) await queueNotification(sb, attendee.id, "meeting_reminder", {
-        title: `${paid ? "計薪" : "不計薪"}會議提醒`, text: `${label}。${note ? `內容：${note}。` : ""}${payText}`,
+        title: `${payStatus === "pending" ? "計薪待確認" : paid ? "計薪" : "不計薪"}會議提醒`, text: `${label}。${note ? `內容：${note}。` : ""}${payText}`,
       }, true, `meeting:${id}:${attendee.id}`);
-      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "schedule_meeting", target_type: "shift", target_id: id,
-        details: { date, start, end, storeId, hostId: host.id, hostName: host.name, paid, note, attendeeCount: attendees.length } });
-      return json({ ok: true, message: `會議已建立，將提醒 ${attendees.length} 位在職正職與兼職` });
+      await sb.from("audit_log").insert({ actor_type: managerCreated ? "line_manager" : "line_employee", actor_id: employee.id, action: "schedule_meeting", target_type: "shift", target_id: id,
+        details: { date, start, end, storeId, hostId: host.id, hostName: host.name, paid, payStatus, note, attendeeCount: attendees.length } });
+      return json({ ok: true, message: `會議已建立，將提醒 ${attendees.length} 位在職正職與兼職${payStatus === "pending" ? "；是否計薪等待管理員決定" : ""}` });
+    }
+
+    if (action === "manager-set-meeting-pay") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以決定會議是否計薪" }, 403);
+      const shiftId = String(input.shiftId ?? ""), payStatus = String(input.payStatus ?? "");
+      if (!["paid", "unpaid"].includes(payStatus)) return json({ error: "請選擇計薪或不計薪" }, 400);
+      const meeting = shifts.find((item: any) => item.id === shiftId && item.kind === "meeting" && !String(item.status ?? "").startsWith("cancelled"));
+      if (!meeting) return json({ error: "找不到這場會議" }, 404);
+      if (new Date(`${meeting.date}T${meeting.start}:00+08:00`).getTime() <= Date.now()) return json({ error: "會議開始後不能再更改計薪方式" }, 409);
+      const attendees = (cfg.employees ?? []).filter((item: any) => item.active && ["full", "part"].includes(String(item.type)) && employedOn(item, meeting.date));
+      const { data: responses } = await sb.from("shift_confirmations").select("emp_id,status").eq("shift_id", meeting.id);
+      const declined = new Set((responses ?? []).filter((item: any) => item.status === "declined").map((item: any) => item.emp_id));
+      const paid = payStatus === "paid", assignments = paid ? attendees.filter((item: any) => !declined.has(item.id)).map((item: any) => ({ role: item.id === meeting.hostId ? "會議主持（計薪）" : "參加會議（計薪）", empId: item.id })) : [];
+      const updated = { ...meeting, paid, payStatus, assignments, payDecidedAt: new Date().toISOString(), payDecidedBy: employee.id };
+      const { error } = await sb.from("shifts").upsert({ id: meeting.id, date: meeting.date, source: "manual", data: updated });
+      if (error) throw error;
+      for (const attendee of attendees) await queueNotification(sb, attendee.id, "meeting_pay_decision", {
+        title: `會議已確認${paid ? "計薪" : "不計薪"}`, text: `${meeting.date} ${meeting.start}–${meeting.end}・主持人：${meeting.hostName}。${paid ? "請上下班定位打卡，核准後計入工時。" : "只需出席，不需為本會議打卡。"}`,
+      }, true, `meeting-pay:${meeting.id}:${payStatus}:${attendee.id}`);
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "manager_set_meeting_pay", target_type: "shift", target_id: meeting.id,
+        details: { payStatus, paid, attendeeCount: attendees.length } });
+      return json({ ok: true, message: `已設定為${paid ? "計薪" : "不計薪"}會議，並通知全體` });
     }
 
     if (action === "cancel-meeting") {
-      if (account.role !== "manager") return json({ error: "只有管理員可以取消會議" }, 403);
+      if (account.role !== "manager" && employee.type !== "full") return json({ error: "只有管理員或建立會議的正職可以取消會議" }, 403);
       const shiftId = String(input.shiftId ?? ""), meeting = shifts.find((item: any) => item.id === shiftId && item.kind === "meeting" && !String(item.status ?? "").startsWith("cancelled"));
       if (!meeting) return json({ error: "找不到可取消的會議" }, 404);
+      if (account.role !== "manager" && meeting.createdBy !== employee.id) return json({ error: "正職只能取消自己建立的會議" }, 403);
       const cancelled = { ...meeting, status: "cancelled_manual", cancelledAt: new Date().toISOString(), cancelledBy: employee.id };
       const { error } = await sb.from("shifts").upsert({ id: meeting.id, date: meeting.date, source: "manual", data: cancelled });
       if (error) throw error;
