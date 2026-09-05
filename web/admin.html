@@ -679,7 +679,7 @@ function todayStr(){return fmtDate(new Date())}
 function monthStr(){return todayStr().slice(0,7)}
 function previousMonthStr(){const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-1);return fmtDate(d).slice(0,7)}
 function dateWD(ds){return new Date(ds+'T00:00:00').getDay()}
-/* 當日有效可上班時間:特定日期回報 > 每週固定 */
+/* 當日有效可上班時間：只採特定日期回報；正職空白預設可上班，兼職空白不可排。 */
 function effectiveAvail(e,ds){
   if(e.availX&&e.availX[ds])return e.availX[ds];
   return e.type==='full'?{on:true,start:'09:00',end:'22:30',assumedAvailable:true}:{on:false,start:'',end:'',leaveType:'未回報',unreported:true};
@@ -2895,17 +2895,10 @@ function tglCounter(empId,storeId,on){
 /* ============ 可上班時間 ============ */
 let availEmp='',availOverviewMonth=(()=>{const d=new Date();d.setDate(1);d.setMonth(d.getMonth()+1);return fmtDate(d).slice(0,7)})();
 function setAvailOverviewMonth(value){if(value){availOverviewMonth=value;render()}}
-/* 全員整週固定可上班時段總覽(排班基本盤;特定日期回報會覆蓋) */
-function weeklyFixedOverviewHtml(actives){
-  const wds=[1,2,3,4,5,6,0];
-  const head=wds.map(d=>`<th style="min-width:66px;text-align:center;${weeklyOffDay()===d?'background:#f8fafc;color:#667085':''}">週${WD[d]}${weeklyOffDay()===d?'<br><small>公休</small>':''}</th>`).join('');
-  const rows=actives.map(e=>`<tr><th style="position:sticky;left:0;z-index:1;background:#fff;min-width:96px;text-align:left">${esc(e.name)}<br><span class="pill ${e.type==='full'?'in':'out'}" style="font-size:11px">${e.type==='full'?'正職':'兼職'}</span></th>${wds.map(d=>{const a=e.avail?.[d];if(a&&a.on)return `<td style="background:#eff8ff;color:#175cd3;text-align:center;white-space:nowrap;font-size:12px">${esc(a.start)}<br>–${esc(a.end)}</td>`;if(a&&a.on===false)return '<td style="background:#fef3f2;color:#b42318;text-align:center;font-size:12px">固定休</td>';return `<td style="background:#f8fafc;color:#98a2b3;text-align:center;font-size:12px">${e.type==='full'?'全天':'未設'}</td>`}).join('')}</tr>`).join('');
-  return `<div class="card"><div class="row"><h2 class="grow">🕒 全員整週固定可上班時段</h2></div><p class="muted">每位員工「每週固定」的可上班時段,是排班的基本盤(特定日期回報會覆蓋這裡)。在下方「每人可上班時段設定」調整。正職未設＝全天可上班;兼職未設＝需回報。</p><div style="overflow:auto;max-width:100%;border:1px solid #e4e7ec;border-radius:10px"><table style="min-width:100%;margin:0"><tr><th style="position:sticky;left:0;z-index:2;background:#f8fafc">員工</th>${head}</tr>${rows}</table></div></div>`;
-}
 function availabilityOverviewHtml(actives){
   const [y,m]=availOverviewMonth.split('-').map(Number),days=new Date(y,m,0).getDate(),dates=Array.from({length:days},(_,i)=>`${availOverviewMonth}-${String(i+1).padStart(2,'0')}`),confirmed=new Set((LINE.availabilityConfirmations||[]).filter(x=>x.month===availOverviewMonth).map(x=>x.emp_id)),done=actives.filter(e=>confirmed.has(e.id)).length;
   const head=dates.map(d=>`<th style="min-width:43px;text-align:center;${isWeeklyOff(d)?'background:#f8fafc;color:#667085':''}">${Number(d.slice(8))}<br><small>週${WD[dateWD(d)]}${isWeeklyOff(d)?'<br>公休':''}</small></th>`).join('');
-  const rows=actives.map(e=>`<tr><th style="position:sticky;left:0;z-index:1;background:#fff;min-width:125px;text-align:left">${esc(e.name)}<br><span class="pill ${confirmed.has(e.id)?'in':'out'}">${confirmed.has(e.id)?'已填完':'未填完'}</span></th>${dates.map(d=>{const a=e.availX?.[d];if(!a)return e.type==='full'?'<td style="background:#f0fdf4;color:#166534;text-align:center">可上班<br><small>全天</small></td>':'<td style="background:#f2f4f7;color:#667085;text-align:center">未回報<br><small>不可排</small></td>';if(a.on)return `<td style="background:#eff8ff;color:#175cd3;text-align:center;white-space:nowrap">可上班<br><small>${esc(a.start||'')}–${esc(a.end||'')}</small></td>`;const reason=a.leaveType&&a.leaveType!=='不可上班'?`<br><small>${esc(a.leaveType)}</small>`:'';return `<td style="background:#fef3f2;color:#b42318;text-align:center;white-space:nowrap">不可上班${reason}</td>`}).join('')}</tr>`).join('');
+  const rows=actives.map(e=>`<tr><th style="position:sticky;left:0;z-index:1;background:#fff;min-width:125px;text-align:left">${esc(e.name)}<br><span class="pill ${confirmed.has(e.id)?'in':'out'}">${confirmed.has(e.id)?'已填完':'未填完'}</span></th>${dates.map(d=>{const a=e.availX?.[d];if(!a)return e.type==='full'?'<td style="background:#f0fdf4;color:#166534;text-align:center;white-space:nowrap">可上班<br><small>09:00–22:30</small></td>':'<td style="background:#f2f4f7;color:#667085;text-align:center">未回報<br><small>不可排</small></td>';if(a.on)return `<td style="background:#eff8ff;color:#175cd3;text-align:center;white-space:nowrap">可上班<br><small>${esc(a.start||'09:00')}–${esc(a.end||'22:30')}</small></td>`;const reason=a.leaveType&&a.leaveType!=='不可上班'?`<br><small>${esc(a.leaveType)}</small>`:'';return `<td style="background:#fef3f2;color:#b42318;text-align:center;white-space:nowrap">不可上班${reason}</td>`}).join('')}</tr>`).join('');
   return `<div class="card"><div class="row"><h2 class="grow">📋 全員整月可上班／不可上班統整</h2><input type="month" value="${availOverviewMonth}" onchange="setAvailOverviewMonth(this.value)" style="width:auto"><span class="pill ${done===actives.length?'in':'out'}">已填完 ${done}／${actives.length}</span></div><p class="muted">正職空白＝可上班；兼職空白＝未回報（不可排），必須填寫可上班。正職設定不可上班時，須選休假、特休、事假或病假。週四原則公休，如可配合特殊場次仍可填寫可上班。「已填完」以員工在 LINE@ 按下確認鍵為準。</p><div style="overflow:auto;max-width:100%;border:1px solid #e4e7ec;border-radius:10px"><table style="min-width:${130+days*58}px;margin:0"><tr><th style="position:sticky;left:0;z-index:2;background:#f8fafc">員工／狀態</th>${head}</tr>${rows}</table></div></div>`;
 }
 function vAvail(){
@@ -2915,7 +2908,7 @@ function vAvail(){
   const e=availEmp?emp(availEmp):null;
   if(!actives.length)return `<div class="card"><h2>可上班時間</h2><p class="muted">請先到「員工」頁新增員工。</p></div>`;
   const xs=Object.entries(e.availX||{}).sort((a,b)=>a[0].localeCompare(b[0]));
-  return `${availabilityOverviewHtml(actives)}${weeklyFixedOverviewHtml(actives)}<details style="margin:0 0 16px"><summary style="cursor:pointer;color:#64748b;padding:8px 4px;font-weight:600">📅 Google 日曆（已隱藏 · 已改用 LINE 回報；點開僅供舊資料手動匯入）</summary><div class="card" style="margin-top:8px"><h2>📅 選用：Google 日曆舊資料匯入</h2>
+  return `${availabilityOverviewHtml(actives)}<details style="margin:0 0 16px"><summary style="cursor:pointer;color:#64748b;padding:8px 4px;font-weight:600">📅 Google 日曆（已隱藏 · 已改用 LINE 回報；點開僅供舊資料手動匯入）</summary><div class="card" style="margin-top:8px"><h2>📅 選用：Google 日曆舊資料匯入</h2>
     <p class="muted" style="margin-bottom:8px">日常的整月可上班／不可上班請直接使用 LINE@，不需綁定 Google。此區只保留給舊資料手動匯入，不會後台自動抓取，也不會覆蓋 LINE 已儲存的回報。</p>
     <div class="row" style="margin-bottom:8px">
       <input id="icalUrl" class="grow" placeholder="貼上 Google 日曆的私人 iCal 網址(.ics 結尾)" value="${esc(S.icalUrl||'')}">
@@ -2934,22 +2927,12 @@ function vAvail(){
   </div></details>
   <div class="card">
     <details open>
-      <summary style="cursor:pointer;font-weight:600;font-size:15px">🕒 每人可上班時段設定(每週固定基本盤 ＋ 特定日期例外)</summary>
+      <summary style="cursor:pointer;font-weight:600;font-size:15px">🕒 每人特定日期可上班／不可上班設定</summary>
       <div style="margin-top:12px">
         <div class="row" style="margin-bottom:12px">
           <select onchange="availEmp=this.value;render()">${actives.map(x=>`<option value="${x.id}" ${x.id===availEmp?'selected':''}>${esc(x.name)}</option>`).join('')}</select>
-          <span class="muted">改動即時儲存。判斷順序:特定日期回報 > 每週固定。</span></div>
-        <h3 style="margin:6px 0 8px">每週固定(基本盤)</h3>
-        <p class="muted" style="margin-bottom:8px">正職與兼職未填特定日期時，一律視為可上班；特定日期回報優先於每週固定設定。</p>
-        <table><tr><th>星期</th><th>可上班</th><th>從</th><th>到</th></tr>
-        ${[1,2,3,4,5,6,0].map(d=>{
-          const a=e.avail?.[d]||{on:false,start:'09:00',end:'22:00'};
-          return `<tr><td>週${WD[d]}</td>
-            <td><input type="checkbox" ${a.on?'checked':''} onchange="setAvail('${e.id}',${d},'on',this.checked)"></td>
-            <td><input type="time" value="${a.start}" onchange="setAvail('${e.id}',${d},'start',this.value)"></td>
-            <td><input type="time" value="${a.end}" onchange="setAvail('${e.id}',${d},'end',this.value)"></td></tr>`;
-        }).join('')}</table>
-        <h3 style="margin:16px 0 8px">特定日期回報(排休/例外)</h3>
+          <span class="muted">改動即時儲存；日常請優先由員工在 LINE@ 回報整月資料。</span></div>
+        <h3 style="margin:16px 0 8px">特定日期回報</h3>
         <div class="row" style="margin-bottom:8px">
           <input type="date" id="axDate">
           <select id="axOn"><option value="1">可上班</option><option value="0">排休/不可</option></select>
@@ -3079,11 +3062,6 @@ async function loadIcal(doImport){
       Object.keys(byDate).sort().map(d=>`<tr><td>${d}(週${WD[dateWD(d)]})</td><td>${byDate[d].map(s=>`<span class="tag">${esc(s)}</span>`).join(' ')}</td></tr>`).join('')+
       `</table><p class="muted" style="margin-top:6px">共 ${evs.length} 筆。按「解析並匯入為可上班時間」可自動轉入排班判斷。</p>`;
   }catch(e){box.innerHTML='<p class="warn">抓取失敗:'+esc(e.message)+'</p>'}
-}
-function setAvail(empId,d,k,v){
-  const e=emp(empId);e.avail=e.avail||defaultAvail();
-  e.avail[d]=e.avail[d]||{on:true,start:'09:00',end:'22:00'};
-  e.avail[d][k]=v;save();
 }
 function addAvailX(){
   const e=emp(availEmp);if(!e)return;

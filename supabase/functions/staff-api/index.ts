@@ -99,7 +99,7 @@ Deno.serve(async (req) => {
         availabilityConfirmationQuery,
       ]);
       const publicEmployees = (cfg.employees ?? []).filter((e: any) => e.active).map((e: any) => account.role === "manager"
-        ? { id: e.id, name: e.name, color: e.simplybookColor ?? "", type: e.type, skills: e.skills ?? {}, avail: e.avail ?? null, availX: e.availX ?? {} }
+        ? { id: e.id, name: e.name, color: e.simplybookColor ?? "", type: e.type, skills: e.skills ?? {}, availX: e.availX ?? {} }
         : { id: e.id, name: e.name });
       // bootstrap 只回前後 60 天，但 getContext 會載入完整歷史班次。候選人與撞班判斷
       // 若每次都掃描全部歷史資料，班次超過 1000 筆後會讓 LINE 啟動逾時。
@@ -228,7 +228,7 @@ Deno.serve(async (req) => {
           canSchedulePractice: account.role === "manager" || (employee.type === "full" && !!employee.canSchedulePractice) }, stores: cfg.stores, themes: cfg.themes,
         employees: publicEmployees, shifts: publicShifts, worksites, punches: publicPunches,
         attendanceDays, attendanceRequests, overtimeReviews, sessionCheckins, shiftConfirmations, meetingResponses, meetingAudience,
-        availabilityRequests, availabilityConfirmations, availability: employee.availX ?? {}, myAvail: employee.avail ?? {},
+        availabilityRequests, availabilityConfirmations, availability: employee.availX ?? {},
         annualLeave, weeklyOffDay: cfg.settings?.weeklyOffDay ?? 4, holidays: cfg.settings?.holidays ?? {}, liffId: Deno.env.get("LINE_LIFF_ID") ?? "" });
     }
 
