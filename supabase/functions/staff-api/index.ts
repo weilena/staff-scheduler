@@ -938,7 +938,7 @@ Deno.serve(async (req) => {
       if (!entries.length || entries.length > 31) return json({ error: "請選擇 1 至 31 個日期" }, 400);
       const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
       const timeOk = (value: unknown) => /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value ?? ""));
-      const allowedLeave = employee.type === "full" ? ["休假", "特休", "事假", "病假"] : ["不可上班"];
+      const allowedLeave = employee.type === "full" ? ["休假", "特休", "事假", "病假"] : ["休假"];
       const normalized: any[] = [];
       for (const source of entries) {
         const date = String(source?.date ?? ""), on = source?.on === true;
@@ -949,7 +949,7 @@ Deno.serve(async (req) => {
           if (!timeOk(start) || !timeOk(end) || start >= end) return json({ error: `${date} 的可上班時間不正確` }, 400);
           Object.assign(requested, { start, end });
         } else {
-          const leaveType = String(source?.leaveType ?? (employee.type === "full" ? "休假" : "不可上班"));
+          const leaveType = String(source?.leaveType ?? "休假");
           if (!allowedLeave.includes(leaveType)) return json({ error: `${date} 的假別不正確` }, 400);
           Object.assign(requested, { start: "09:00", end: "22:30", leaveType, leaveDays: Math.max(0.5, Math.min(1, Number(source?.leaveDays) || 1)) });
         }
