@@ -55,7 +55,9 @@ const SCH_PAL=['#2563eb','#e11d48','#16a34a','#d97706','#7c3aed','#0891b2','#db2
 const SCH_WD=['週一','週二','週三','週四','週五','週六','週日'],SCH_WS=['一','二','三','四','五','六','日'];
 function schFmt(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 function schMonday(d){const wd=(d.getDay()+6)%7,m=new Date(d);m.setDate(d.getDate()-wd);return m}
-function schThemeColor(id){const i=D.themes.findIndex(t=>t.id===id);return SCH_PAL[(i<0?0:i)%SCH_PAL.length]}
+// 主題固定專屬色(避免依索引撞色):越獄者/詭獄、外婆/詭獄加場等都各自不同
+const SCH_THEME_COLOR={gy:'#7c3aed',gyx:'#db2777',wp:'#0891b2',gd:'#2563eb',gc:'#16a34a',yyz:'#ea580c',gea:'#b45309',slqk:'#ca8a04'};
+function schThemeColor(id){return SCH_THEME_COLOR[id]||SCH_PAL[Math.max(0,D.themes.findIndex(t=>t.id===id))%SCH_PAL.length]}
 function schEmpColor(e){if(e.color)return e.color;const i=D.employees.findIndex(x=>x.id===e.id);return SCH_PAL[(i<0?0:i)%SCH_PAL.length]||'#64748b'}
 function schEmpAvail(e,date){if(e.availX&&e.availX[date])return e.availX[date];const day=new Date(date+'T00:00:00').getDay();return (e.avail&&(e.avail[day]||e.avail[String(day)]))||{on:true,start:'09:00',end:'22:30',assumedAvailable:true}}
 function schRoleSlots(s){const t=D.themes.find(x=>x.id===s.themeId),slots=(s.assignments||[]).map(a=>({role:a.role,empId:a.empId}));if(t&&String(t.name).startsWith('詭獄')&&!slots.some(x=>x.role==='場控'))slots.push({role:'場控',empId:''});return slots}
