@@ -49,12 +49,17 @@ Deno.serve(async (req) => {
     const nextMonth = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit" }).format(monthDate);
     const { data: confirmations } = await sb.from("availability_month_confirmations").select("emp_id").eq("month", nextMonth);
     const confirmed = new Set((confirmations ?? []).map((row: any) => String(row.emp_id)));
-    const activeEmployees = new Set((cfg.employees ?? []).filter((row: any) => row.active).map((row: any) => String(row.id)));
+    const activeEmployeeTypes = new Map((cfg.employees ?? []).filter((row: any) => row.active).map((row: any) => [String(row.id), String(row.type)]));
     const { data: accounts } = await sb.from("line_accounts").select("emp_id").eq("active", true);
-    for (const row of accounts ?? []) if (activeEmployees.has(String(row.emp_id)) && !confirmed.has(String(row.emp_id))) await queueNotification(sb, String(row.emp_id), "availability_reminder", {
-      title: `${nextMonth.replace("-", "年")} 月班表填寫提醒`, text: "你尚未確認下個月的可上班／休假已填完，請完成填寫並按「確認本月已填完」。空白日期視為可上班，週四也請依本人狀況填寫。",
-      links: portal ? [{ label: "填寫下個月班表", uri: link("availability") }] : [],
-    }, false, `availability-reminder:${nextMonth}:${row.emp_id}`);
+    for (const row of accounts ?? []) {
+      const empId = String(row.emp_id), type = activeEmployeeTypes.get(empId);
+      if (!type || confirmed.has(empId)) continue;
+      const rule = type === "full" ? "正職空白日期視為可上班。" : "兼職空白日期視為未回報（不可排），請填寫可上班日期。";
+      await queueNotification(sb, empId, "availability_reminder", {
+        title: `${nextMonth.replace("-", "年")} 月班表填寫提醒`, text: `你尚未確認下個月的可上班／不可上班已填完，請完成填寫並按「確認本月已填完」。${rule}週四原則公休，如可配合特殊場次仍可填寫可上班。`,
+        links: portal ? [{ label: "填寫下個月班表", uri: link("availability") }] : [],
+      }, false, `availability-reminder:${nextMonth}:${row.emp_id}`);
+    }
   }
 
   const reminderHour = Math.min(22, Math.max(0, Number(cfg.settings?.reminderHour ?? 20)));

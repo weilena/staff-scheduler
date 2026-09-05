@@ -815,8 +815,9 @@ Deno.serve(async (req) => {
       const { error } = await sb.from("availability_month_confirmations").upsert({ emp_id: employee.id, month, confirmed_at: confirmedAt, updated_at: confirmedAt }, { onConflict: "emp_id,month" });
       if (error) throw error;
       await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: "confirm_monthly_availability",
-        target_type: "availability_month", target_id: `${employee.id}:${month}`, details: { month, blankMeansAvailable: true } });
-      return json({ ok: true, month, confirmedAt, message: `已確認 ${month.replace("-", " 年 ")} 月的可上班／休假已填完` });
+        target_type: "availability_month", target_id: `${employee.id}:${month}`,
+        details: { month, blankRule: employee.type === "full" ? "available" : "unreported_unavailable" } });
+      return json({ ok: true, month, confirmedAt, message: `已確認 ${month.replace("-", " 年 ")} 月的可上班／不可上班已填完` });
     }
 
     if (action === "attendance-request") {

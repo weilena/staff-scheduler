@@ -47,8 +47,9 @@ export function employedOn(emp: any, date: string) {
 
 function availability(emp: any, date: string) {
   if (emp?.availX?.[date]) return emp.availX[date];
-  const day = new Date(`${date}T00:00:00+08:00`).getDay();
-  return emp?.avail?.[day] ?? emp?.avail?.[String(day)] ?? { on: true, start: "09:00", end: "22:30", assumedAvailable: true };
+  return emp?.type === "full"
+    ? { on: true, start: "09:00", end: "22:30", assumedAvailable: true }
+    : { on: false, start: "", end: "", leaveType: "未回報", unreported: true };
 }
 
 export function eligibilityErrors(emp: any, target: any, role: string, shifts: any[], cfg: any, ignoreIds: string[] = []) {
