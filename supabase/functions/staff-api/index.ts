@@ -143,7 +143,7 @@ Deno.serve(async (req) => {
         const extraRoles = writebackTheme && String(writebackTheme.name ?? "").startsWith("詭獄") && !(s.assignments ?? []).some((a: any) => a.role === "場控") ? ["場控"] : [];
         const roleSet = new Set<string>([...emptyRoles, ...extraRoles]);
         // 只對「尚有空位的場次」算候選(避免對全部場次×全部角色計算讓 bootstrap 過重逾時);已排要換人先按 ✕ 清空即出現候選。
-        if (account.role === "manager" && s.kind === "theme" && !cancelled && roleSet.size) {
+        if (account.role === "manager" && (s.kind === "theme" || (s.kind === "counter" && s.storeId === "dz")) && !cancelled && roleSet.size) {
           const pool = (cfg.employees ?? []).filter((candidate: any) => candidate.active && employedOn(candidate, s.date) &&
             !(s.assignments ?? []).some((a: any) => a.empId === candidate.id));
           const ranked = rankCandidatesByWorkload(pool, monthShifts, s.date, 99);

@@ -90,7 +90,8 @@ async function schAssign(empId){
 function schSessionCard(s){
   const t=D.themes.find(x=>x.id===s.themeId),slots=schRoleSlots(s),filled=slots.every(r=>r.empId),multi=slots.length>1;
   const dep=s.depositPaid&&!filled?`<span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:14px;background:#dcfce7;color:#166534;flex:0 0 auto">已收訂金</span>`:'';
-  const time=`<div style="min-width:58px;text-align:center;flex:0 0 auto"><div style="font-weight:600;font-size:15px">${s.start}</div><div style="margin-top:4px">${t?schPill(t):esc(s.start)}</div></div>`;
+  const pill=s.kind==='counter'?`<span style="display:inline-block;background:#475569;color:#fff;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;white-space:nowrap">大忠櫃台</span>`:(t?schPill(t):esc(s.start));
+  const time=`<div style="min-width:58px;text-align:center;flex:0 0 auto"><div style="font-weight:600;font-size:15px">${s.start}</div><div style="margin-top:4px">${pill}</div></div>`;
   if(multi){
     return `<div style="padding:9px 10px;margin-bottom:6px;border-radius:10px;border:1px solid #d0d5dd;background:#fff;display:flex;align-items:center;gap:7px">${time}<div style="flex:1;display:flex;gap:5px;min-width:0">${slots.map(r=>schRoleChip(s,r,true)).join('')}</div>${dep}</div>`;
   }
@@ -107,6 +108,8 @@ function scheduleAdminView(){
   const pick=schThemes.length?schThemes:storeThemes.map(t=>t.id);
   let list=D.shifts.filter(s=>s.kind==='theme'&&!isCancelled(s)&&s.date===schDate&&s.storeId===schStore&&pick.includes(s.themeId));
   if(schDepOnly)list=list.filter(s=>s.depositPaid&&schRoleSlots(s).some(r=>!r.empId));
+  // 大忠櫃台(翊嘉固定/休假待補):週四店休不排;「只看未安排」時僅列尚缺人的
+  if(schStore==='dz'&&!isThursday(schDate)){let counters=D.shifts.filter(s=>s.kind==='counter'&&s.storeId==='dz'&&!isCancelled(s)&&s.date===schDate);if(schDepOnly)counters=counters.filter(s=>schRoleSlots(s).some(r=>!r.empId));list=counters.concat(list);}
   list.sort((a,b)=>(a.start||'').localeCompare(b.start||''));
   let need=0,depNeed=0;list.forEach(s=>schRoleSlots(s).forEach(r=>{if(!r.empId){need++;if(s.depositPaid)depNeed++}}));
   let cal='';

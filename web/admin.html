@@ -837,15 +837,17 @@ async function ensureYijiaCounterSchedule(){
   const now=new Date(todayStr()+'T00:00:00'),start=new Date(now.getFullYear(),now.getMonth(),1),end=new Date(now);end.setDate(end.getDate()+75);
   const rows=[]; // 收集待寫入的自動櫃台班(先前漏宣告會讓整個自動排班中斷)
   for(let d=new Date(start);d<=end;d.setDate(d.getDate()+1)){
-    const ds=fmtDate(d),hours=dzCounterDefaultTime(ds),availability=effectiveAvail(e,ds);if(!hours||!employedOn(e,ds)||!availability?.on)continue;
+    const ds=fmtDate(d),hours=dzCounterDefaultTime(ds);if(!hours)continue; // 週四/公休不排大忠櫃台
+    const availability=effectiveAvail(e,ds),yijiaOn=employedOn(e,ds)&&!!availability?.on; // 翊嘉當天有空才自動帶入,否則建空位待管理員安排
     const id='auto_dz_counter_'+ds.replaceAll('-',''),existingById=S.shifts.find(sh=>sh.id===id);
-    if(existingById)continue; // 手動取消自動班時保留取消狀態，不會再次生成。
+    if(existingById)continue; // 手動取消或已建立(含空位)時不再覆蓋。
     const existing=activeCounterShifts(ds,'dz');
     if(existing.some(sh=>(sh.assignments||[]).some(a=>a.empId)))continue;
     if(existing.length){
-      const sh=existing[0];sh.assignments=sh.assignments||[];sh.assignments.push({role:'櫃台',empId:e.id});sh.autoAssigned='yijia_fixed_counter';rows.push(sh);continue;
+      if(yijiaOn){const sh=existing[0];sh.assignments=sh.assignments||[];sh.assignments.push({role:'櫃台',empId:e.id});sh.autoAssigned='yijia_fixed_counter';rows.push(sh);}
+      continue;
     }
-    const sh={id,date:ds,storeId:'dz',kind:'counter',start:hours.start,end:hours.end,assignments:[{role:'櫃台',empId:e.id}],note:'依翊嘉固定班自動帶入',status:'normal',autoAssigned:'yijia_fixed_counter'};
+    const sh={id,date:ds,storeId:'dz',kind:'counter',start:hours.start,end:hours.end,assignments:[{role:'櫃台',empId:yijiaOn?e.id:''}],note:yijiaOn?'依翊嘉固定班自動帶入':'翊嘉休假，待安排大忠櫃台人力',status:'normal',autoAssigned:'yijia_fixed_counter'};
     S.shifts.push(sh);rows.push(sh);
   }
   if(!rows.length)return;
