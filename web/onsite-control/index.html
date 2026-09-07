@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#19231f" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="styles.css" />
+  <title>密室現場中控</title>
+</head>
+<body>
+  <header>
+    <div><p class="eyebrow">OFFLINE FIRST</p><h1>密室現場中控</h1></div>
+    <div class="header-actions"><span id="connection" class="pill">離線資料庫</span><button id="sync" class="sync-button">同步 0</button></div>
+  </header>
+
+  <main>
+    <section class="quick-actions" aria-label="快速新增">
+      <button data-open="task">＋ 工作</button>
+      <button data-open="purchase">＋ 採購</button>
+      <button data-open="stock">＋ 領用／備品</button>
+      <button data-open="receipt">＋ 發票</button>
+    </section>
+
+    <section class="summary" aria-label="今日摘要">
+      <article><strong id="taskCount">0</strong><span>未完成工作</span></article>
+      <article><strong id="purchaseCount">0</strong><span>待處理採購</span></article>
+      <article><strong id="stockCount">0</strong><span>低庫存／領用</span></article>
+    </section>
+
+    <section class="panel">
+      <div class="section-title"><h2>資料庫中控</h2><span class="mini">點選即可新增</span></div>
+      <div id="databaseGrid" class="database-grid"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-title"><h2>現場紀錄</h2><button id="backup" class="text-button">匯出備份</button></div>
+      <input id="search" class="search" type="search" placeholder="搜尋方案、負責人、材料或靈感…" />
+      <div id="records" class="records"><p class="empty">尚無紀錄。從上方按鈕快速新增。</p></div>
+    </section>
+
+    <section class="panel setup">
+      <div class="section-title"><h2>離線使用</h2></div>
+      <p>本機資料會保存在這支手機。拍照、採購、施工與領用可在沒有網路時記錄。</p>
+      <p id="syncHint" class="sync-hint">有網路後，可按右上角「同步」送至案件進度系統。</p>
+      <label class="import-label">匯入備份<input id="restore" type="file" accept="application/json" /></label>
+    </section>
+  </main>
+
+  <dialog id="entryDialog">
+    <form id="entryForm" method="dialog">
+      <div class="dialog-head"><h2 id="dialogTitle">新增紀錄</h2><button type="button" id="closeDialog" class="icon-button" aria-label="關閉">×</button></div>
+      <input id="entryType" name="type" type="hidden" />
+      <label id="titleLabel">名稱／事項<input name="title" required placeholder="例如：關卡一鏡面貼施工" /></label>
+      <label id="projectLabel">方案<input name="project" list="projects" placeholder="例如：時光倒流" /></label>
+      <datalist id="projects"><option>時光倒流</option><option>恐怖密室</option><option>新主題開發</option></datalist>
+      <label id="personLabel">負責／領用人<input name="person" list="people" placeholder="輸入或選擇人名" /></label>
+      <datalist id="people"><option>未指派</option></datalist>
+      <label class="type-field purchase-field receipt-field stock-field">金額（NT$）<input name="amount" inputmode="decimal" type="number" min="0" step="1" placeholder="0" /></label>
+      <label class="type-field stock-field">數量<input name="quantity" inputmode="numeric" type="number" min="0" step="1" placeholder="1" /></label>
+      <label class="type-field task-field purchase-field">期限／到貨日<input name="due" type="date" /></label>
+      <label>備註<textarea name="note" rows="3" placeholder="位置、店家、訂單號、狀況…"></textarea></label>
+      <label class="photo-label">拍照或選擇發票／現場照片<input name="photo" type="file" accept="image/*" capture="environment" /></label>
+      <button class="save" value="default">儲存到本機</button>
+    </form>
+  </dialog>
+
+  <template id="recordTemplate">
+    <article class="record">
+      <div><span class="record-type"></span><h3></h3><p class="meta"></p><p class="note"></p></div>
+      <button class="delete" aria-label="刪除這筆紀錄">刪除</button>
+    </article>
+  </template>
+  <script src="app.js"></script>
+</body>
+</html>
