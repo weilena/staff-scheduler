@@ -61,7 +61,12 @@ export function eligibilityErrors(emp: any, target: any, role: string, shifts: a
   const prep = Number(cfg.settings?.prepMin ?? 10), travel = Number(cfg.settings?.travelMin ?? 12);
   const start = toMinutes(target.start) - prep, end = toMinutes(target.end);
   if (!avail?.on) errors.push("當日未設定可上班");
-  else if (toMinutes(avail.start) > start || toMinutes(avail.end) < end) errors.push("超出可上班時間");
+  else {
+    // 支援一天兩段可上班:班次落在任一段內即可(中間空檔不算可上班)。
+    const segs: number[][] = [[toMinutes(avail.start), toMinutes(avail.end)]];
+    if (avail.start2 && avail.end2) segs.push([toMinutes(avail.start2), toMinutes(avail.end2)]);
+    if (!segs.some(([s, e]) => s <= start && e >= end)) errors.push("超出可上班時間");
+  }
   if (role === "櫃台" && !(emp.counters ?? []).includes(target.storeId)) errors.push("未具此店櫃台資格");
   if (target.kind === "theme" && ["場控", "NPC"].includes(role) && !(emp.skills?.[target.themeId] ?? []).includes(role)) errors.push(`未具${role}技能`);
   for (const shift of shifts) {

@@ -948,6 +948,13 @@ Deno.serve(async (req) => {
           const start = String(source?.start ?? ""), end = String(source?.end ?? "");
           if (!timeOk(start) || !timeOk(end) || start >= end) return json({ error: `${date} 的可上班時間不正確` }, 400);
           Object.assign(requested, { start, end });
+          // 選填第二段(一天兩段可上班):需晚於第一段。
+          const start2 = String(source?.start2 ?? ""), end2 = String(source?.end2 ?? "");
+          if (start2 || end2) {
+            if (!timeOk(start2) || !timeOk(end2) || start2 >= end2) return json({ error: `${date} 的第二段時間不正確` }, 400);
+            if (start2 < end) return json({ error: `${date} 第二段需在第一段之後(不可重疊)` }, 400);
+            Object.assign(requested, { start2, end2 });
+          }
         } else {
           const leaveType = String(source?.leaveType ?? "休假");
           if (!allowedLeave.includes(leaveType)) return json({ error: `${date} 的假別不正確` }, 400);

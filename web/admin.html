@@ -1339,7 +1339,7 @@ function manpowerTags(ds,compact){
   if(!list.length)return '<span class="muted">尚無員工</span>';
   return list.map(e=>{
     const a=effectiveAvail(e,ds);
-    if(a&&a.on)return employeeTag(e,`${e.name} ${a.start}–${a.end}`);
+    if(a&&a.on)return employeeTag(e,`${e.name} ${a.start}–${a.end}${a.start2&&a.end2?`、${a.start2}–${a.end2}`:''}`);
     return `<span class="tag" style="background:#f1f5f9;color:#94a3b8">${esc(e.name)} 休</span>`;
   }).join(' ');
 }
@@ -1745,7 +1745,12 @@ function empWarnings(e,date,start,end,storeId,role){
   const s=toMin(start)!=null?toMin(start)-prep:null, en=toMin(end);
   const av=effectiveAvail(e,date);
   if(!av||!av.on)w.push(av?.unreported?'當日未回報（不可排）':'當日設定不可上班');
-  else if(s!=null&&en!=null&&(toMin(av.start)>s||toMin(av.end)<en))w.push(`超出可上班時段${av.start}–${av.end}(開場前${prep}分要到)`);
+  else if(s!=null&&en!=null){
+    // 支援一天兩段可上班:落在任一段內即可,不硬擋(與 LINE 後端 eligibilityErrors 一致)。
+    const segs=[[toMin(av.start),toMin(av.end)]];
+    if(av.start2&&av.end2)segs.push([toMin(av.start2),toMin(av.end2)]);
+    if(!segs.some(([ss,ee])=>ss<=s&&ee>=en))w.push(`超出可上班時段${av.start}–${av.end}${av.start2&&av.end2?`、${av.start2}–${av.end2}`:''}(開場前${prep}分要到)`);
+  }
   if(s==null||en==null)return w;
   for(const sh of S.shifts){
     if(sh.id===editShiftId||sh.date!==date||isCx(sh))continue;
@@ -2180,7 +2185,7 @@ function attendanceMonthGrid(e,month){
   const head=dates.map(d=>{const holiday=holidayName(d);return `<th style="${holiday?'background:#b91c1c;color:#fff':'background:#f8fafc'}">${holiday?'國定':'一般日'}<br>${Number(d.slice(8))}<br>週${WD[dateWD(d)]}${holiday?`<br><small>${esc(holiday)}</small>`:''}</th>`}).join('');
   const row=(label,bg,fn)=>`<tr style="background:${bg}"><th class="row-label" style="background:${bg}">${label}</th>${dates.map(d=>`<td>${fn(data[d],d)}</td>`).join('')}</tr>`;
   return `${fullLeaveSummaryHtml(e,month)}<div class="attendance-scroll"><table class="attendance-matrix" style="min-width:${Math.max(1200,days*112+145)}px"><thead><tr><th class="row-label" style="background:#fff3cd">項目</th>${head}</tr></thead><tbody>
-    ${row('可上班／不可上班','#fee2e2',(x,d)=>{if(isTyphoonClosed(d))return '<span class="att-error">🌀颱風停班</span>';if(S.closedDates.includes(d))return '<span class="muted">店休</span>';if(isWeeklyOff(d)&&!e.weeklyOffExempt)return '<span class="muted">公休</span>';const a=effectiveAvail(e,d);if(a&&a.unreported)return '<span class="muted">未回報<br>不可排</span>';if(a&&a.on===false)return `<span class="att-error">不可上班${a.leaveType&&a.leaveType!=='不可上班'?`<br><small>${esc(a.leaveType)}</small>`:''}</span>`;if(a&&a.on&&(a.start!=='09:00'||a.end!=='22:30'))return `<span class="muted">可上班<br>${esc(a.start)}–${esc(a.end)}</span>`;return '—'})}
+    ${row('可上班／不可上班','#fee2e2',(x,d)=>{if(isTyphoonClosed(d))return '<span class="att-error">🌀颱風停班</span>';if(S.closedDates.includes(d))return '<span class="muted">店休</span>';if(isWeeklyOff(d)&&!e.weeklyOffExempt)return '<span class="muted">公休</span>';const a=effectiveAvail(e,d);if(a&&a.unreported)return '<span class="muted">未回報<br>不可排</span>';if(a&&a.on===false)return `<span class="att-error">不可上班${a.leaveType&&a.leaveType!=='不可上班'?`<br><small>${esc(a.leaveType)}</small>`:''}</span>`;if(a&&a.on&&(a.start!=='09:00'||a.end!=='22:30'))return `<span class="muted">可上班<br>${esc(a.start)}–${esc(a.end)}${a.start2&&a.end2?`<br>＋${esc(a.start2)}–${esc(a.end2)}`:''}</span>`;return '—'})}
     ${row('管理員派班','#fff8d8',x=>x.manager)}
     ${row('正職安排訓練','#fef3c7',x=>x.training)}
     ${row('SimplyBook 主題','#fce7f3',x=>x.sb)}
@@ -2899,7 +2904,7 @@ function availabilityOverviewHtml(actives){
   const [y,m]=availOverviewMonth.split('-').map(Number),days=new Date(y,m,0).getDate(),dates=Array.from({length:days},(_,i)=>`${availOverviewMonth}-${String(i+1).padStart(2,'0')}`),confirmed=new Set((LINE.availabilityConfirmations||[]).filter(x=>x.month===availOverviewMonth).map(x=>x.emp_id)),done=actives.filter(e=>confirmed.has(e.id)).length;
   const head=dates.map(d=>{const hol=holidayName(d);return `<th style="min-width:${hol?76:58}px;text-align:center;${hol?'background:#fff7ed;color:#b54708':isWeeklyOff(d)?'background:#f8fafc;color:#667085':''}">${Number(d.slice(8))}<br><small>週${WD[dateWD(d)]}${isWeeklyOff(d)?'<br>公休':''}${hol?`<br><span style="font-weight:800">💰 ${esc(hol)}</span>`:''}</small></th>`}).join('');
   const leaveStyle={休假:['#f2f4f7','#475467'],特休:['#ecfdf3','#067647'],事假:['#fffaeb','#b54708'],病假:['#fef3f2','#b42318']};
-  const rows=actives.map(e=>{const empBg=employeeColor(e)||'#fff',empText=employeeColor(e)?textOn(empBg):'#18212f';return `<tr><th style="position:sticky;left:0;z-index:1;background:${empBg};color:${empText};min-width:125px;text-align:left">${esc(e.name)}<br><span class="pill ${confirmed.has(e.id)?'in':'out'}">${confirmed.has(e.id)?'已填完':'未填完'}</span></th>${dates.map(d=>{const a=e.availX?.[d];if(!a)return e.type==='full'?'<td style="background:#f0fdf4;color:#166534;text-align:center;white-space:nowrap">可上班<br><small>09:00–22:30</small></td>':'<td style="background:#f2f4f7;color:#667085;text-align:center">未回報<br><small>不可排</small></td>';if(a.on)return `<td style="background:#eff8ff;color:#175cd3;text-align:center;white-space:nowrap">可上班<br><small>${esc(a.start||'09:00')}–${esc(a.end||'22:30')}</small></td>`;const reason=e.type==='full'&&['休假','特休','事假','病假'].includes(a.leaveType)?a.leaveType:'休假',[bg,color]=leaveStyle[reason];return `<td style="background:${bg};color:${color};text-align:center;white-space:nowrap;font-weight:700">${esc(reason)}</td>`}).join('')}</tr>`}).join('');
+  const rows=actives.map(e=>{const empBg=employeeColor(e)||'#fff',empText=employeeColor(e)?textOn(empBg):'#18212f';return `<tr><th style="position:sticky;left:0;z-index:1;background:${empBg};color:${empText};min-width:125px;text-align:left">${esc(e.name)}<br><span class="pill ${confirmed.has(e.id)?'in':'out'}">${confirmed.has(e.id)?'已填完':'未填完'}</span></th>${dates.map(d=>{const a=e.availX?.[d];if(!a)return e.type==='full'?'<td style="background:#f0fdf4;color:#166534;text-align:center;white-space:nowrap">可上班<br><small>09:00–22:30</small></td>':'<td style="background:#f2f4f7;color:#667085;text-align:center">未回報<br><small>不可排</small></td>';if(a.on)return `<td style="background:#eff8ff;color:#175cd3;text-align:center;white-space:nowrap">可上班<br><small>${esc(a.start||'09:00')}–${esc(a.end||'22:30')}</small>${a.start2&&a.end2?`<br><small style="color:#7c3aed">＋${esc(a.start2)}–${esc(a.end2)}</small>`:''}</td>`;const reason=e.type==='full'&&['休假','特休','事假','病假'].includes(a.leaveType)?a.leaveType:'休假',[bg,color]=leaveStyle[reason];return `<td style="background:${bg};color:${color};text-align:center;white-space:nowrap;font-weight:700">${esc(reason)}</td>`}).join('')}</tr>`}).join('');
   return `<div class="card"><div class="row"><h2 class="grow">📋 全員整月可上班／不可上班統整</h2><input type="month" value="${availOverviewMonth}" onchange="setAvailOverviewMonth(this.value)" style="width:auto"><span class="pill ${done===actives.length?'in':'out'}">已填完 ${done}／${actives.length}</span></div><p class="muted">正職空白＝可上班；兼職空白＝未回報（不可排），必須填寫可上班。正職設定不可上班時，須選休假、特休、事假或病假。週四原則公休，如可配合特殊場次仍可填寫可上班。「已填完」以員工在 LINE@ 按下確認鍵為準。</p><div style="overflow:auto;max-width:100%;border:1px solid #e4e7ec;border-radius:10px"><table style="min-width:${130+days*58}px;margin:0"><tr><th style="position:sticky;left:0;z-index:2;background:#f8fafc">員工／狀態</th>${head}</tr>${rows}</table></div></div>`;
 }
 function vAvail(){
