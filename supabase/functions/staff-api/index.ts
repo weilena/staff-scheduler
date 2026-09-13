@@ -1005,7 +1005,17 @@ Deno.serve(async (req) => {
       const requested = input.requested ?? {};
       const workItemCode = String(requested.workItemCode ?? "");
       if (!MANUAL_WORK_ITEMS[workItemCode]) return json({ error: "請選擇補卡的主題或工作項目" }, 400);
-      requested.workItem = { code: workItemCode, labels: [MANUAL_WORK_ITEMS[workItemCode]], source: "attendance_request" };
+      const linkedShiftId = String(requested.shiftId ?? ""), linkedShift = linkedShiftId
+        ? shifts.find((s: any) => String(s.id) === linkedShiftId && s.date === punchDate && !String(s.status ?? "").startsWith("cancelled"))
+        : null;
+      const linkedAssignment = linkedShift && (linkedShift.assignments ?? []).find((a: any) => a.empId === employee.id);
+      if (linkedShiftId && (!linkedShift || !linkedAssignment)) return json({ error: "選取的場次不在本人當日排班，請重新選擇" }, 400);
+      const linkedTheme = linkedShift?.kind === "theme" ? (cfg.themes ?? []).find((t: any) => t.id === linkedShift.themeId)?.name : null;
+      const linkedLabel = linkedShift
+        ? `${linkedShift.start}–${linkedShift.end} ${linkedTheme ?? MANUAL_WORK_ITEMS[workItemCode]}（${linkedAssignment.role}）`
+        : MANUAL_WORK_ITEMS[workItemCode];
+      requested.role = linkedAssignment?.role ?? String(requested.role ?? "");
+      requested.workItem = { code: workItemCode, labels: [linkedLabel], source: "attendance_request", shiftId: linkedShiftId || null, role: linkedAssignment?.role ?? null };
       delete requested.workItemCode;
       const timeOk = (v: unknown) => /^([01]\d|2[0-3]):[0-5]\d$/.test(String(v ?? ""));
       if (["missing_in", "missing_out", "npc_checkin"].includes(requestType) && !timeOk(requested.time)) return json({ error: "請填寫正確的補卡時間" }, 400);
