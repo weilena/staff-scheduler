@@ -413,14 +413,31 @@ Deno.serve(async (req) => {
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: "月份格式錯誤" }, 400);
       const [year, monthNo] = month.split("-").map(Number);
       const nextMonth = dateText(new Date(Date.UTC(year, monthNo, 1))).slice(0, 7);
-      const [{ data: daily, error: dailyError }, { data: attendanceRequests, error: attendanceRequestError }, { data: shiftRequests, error: shiftRequestError }] = await Promise.all([
+      const [{ data: daily, error: dailyError }, { data: attendanceRequests, error: attendanceRequestError }, { data: shiftRequests, error: shiftRequestError }, { data: monthCheckins, error: monthCheckinsError }] = await Promise.all([
         sb.from("attendance_daily").select("emp_id,work_date,scheduled_minutes,actual_minutes,payable_minutes,status,note,anomalies").gte("work_date", `${month}-01`).lt("work_date", `${nextMonth}-01`).order("work_date", { ascending: true }),
         sb.from("attendance_requests").select("id,emp_id,punch_date,request_type,requested,reason,status,created_at").eq("status", "pending").order("created_at", { ascending: true }),
         sb.from("shift_requests").select("id,request_type,shift_id,requester_emp_id,status,details,created_at").eq("status", "pending_manager").order("created_at", { ascending: true }),
+        sb.from("session_checkins").select("emp_id,shift_id"),
       ]);
       if (dailyError) throw dailyError;
       if (attendanceRequestError) throw attendanceRequestError;
       if (shiftRequestError) throw shiftRequestError;
+      if (monthCheckinsError) throw monthCheckinsError;
+      const completedNpc = new Set((monthCheckins ?? []).map((row: any) => `${row.emp_id}|${row.shift_id}`));
+      const pendingNpc = new Set((attendanceRequests ?? []).filter((row: any) => row.request_type === "npc_checkin")
+        .map((row: any) => `${row.emp_id}|${row.requested?.shiftId ?? ""}`));
+      const now = Date.now(), missingNpcCheckins: any[] = [];
+      for (const shift of shifts) {
+        if (String(shift.date ?? "").slice(0, 7) !== month || shift.kind !== "theme" || String(shift.status ?? "").startsWith("cancelled")) continue;
+        if (new Date(`${shift.date}T${shift.end}:00+08:00`).getTime() > now) continue;
+        const themeName = (cfg.themes ?? []).find((theme: any) => theme.id === shift.themeId)?.name ?? "主題場次";
+        for (const assignment of shift.assignments ?? []) {
+          if (String(assignment.role ?? "").toUpperCase() !== "NPC" || !assignment.empId) continue;
+          const key = `${assignment.empId}|${shift.id}`;
+          if (!completedNpc.has(key) && !pendingNpc.has(key)) missingNpcCheckins.push({ shiftId: shift.id, empId: assignment.empId,
+            date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, themeId: shift.themeId, themeName });
+        }
+      }
       const employees = (cfg.employees ?? []).filter((e: any) => e.active).map((candidate: any) => {
         const attendance = (daily ?? []).filter((row: any) => row.emp_id === candidate.id), workItems: any[] = [];
         for (const shift of shifts) {
@@ -447,7 +464,26 @@ Deno.serve(async (req) => {
         const candidates = shift ? (cfg.employees ?? []).filter((person: any) => person.active && person.id !== replacedEmpId && !(shift.assignments ?? []).some((a: any) => a.empId === person.id) && eligibilityErrors(person, shift, role, shifts, cfg, [shift.id]).length === 0).map((person: any) => ({ id: person.id, name: person.name })) : [];
         return { ...request, shift: shift ? { id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind, themeId: shift.themeId } : null, candidates };
       });
-      return json({ month, employees, attendanceRequests: attendanceRequests ?? [], shiftRequests: changes });
+      return json({ month, employees, attendanceRequests: attendanceRequests ?? [], missingNpcCheckins, shiftRequests: changes });
+    }
+
+    if (action === "manager-record-npc-checkin") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以補登 NPC 報到" }, 403);
+      const shiftId = String(input.shiftId ?? ""), empId = String(input.empId ?? "");
+      const shift = shifts.find((row: any) => String(row.id) === shiftId && !String(row.status ?? "").startsWith("cancelled"));
+      const assignment = (shift?.assignments ?? []).find((row: any) => row.empId === empId && String(row.role ?? "").toUpperCase() === "NPC");
+      if (!shift || !assignment) return json({ error: "找不到本人原排班的 NPC 場次" }, 404);
+      if (new Date(`${shift.date}T${shift.end}:00+08:00`).getTime() > Date.now()) return json({ error: "場次尚未結束，不能補登 NPC 報到" }, 409);
+      const { data: existing, error: existingError } = await sb.from("session_checkins").select("id").eq("emp_id", empId).eq("shift_id", shiftId).maybeSingle();
+      if (existingError) throw existingError;
+      if (existing) return json({ error: "這一場 NPC 已有報到紀錄" }, 409);
+      const checkedInAt = `${shift.date}T${shift.start}:00+08:00`;
+      const { error } = await sb.from("session_checkins").insert({ emp_id: empId, shift_id: shiftId, checked_in_at: checkedInAt,
+        verification: "manager_approved", source: "manager_direct", note: "管理員確認 NPC 有執行，補登忘記報到" });
+      if (error) throw error;
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "manager_record_npc_checkin",
+        target_type: "shift", target_id: shiftId, details: { empId, checkedInAt, reason: "forgot_checkin" } });
+      return json({ ok: true });
     }
 
     if (action === "manager-review-day") {
