@@ -752,7 +752,10 @@ Deno.serve(async (req) => {
       const startsAt = new Date(`${date}T${start}:00+08:00`).getTime();
       if (startsAt <= Date.now()) return json({ error: "訓練場開始時間必須晚於現在" }, 409);
       const id = `practice_${crypto.randomUUID()}`, target = { id, date, storeId, kind: "practice", themeId: null, trainingThemeId: trainingTheme.id, start, end, status: "active", assignments: [] };
-      const traineeErrors = trainees.map((trainee: any) => ({ trainee, errors: eligibilityErrors(trainee, target, "訓練場", shifts, cfg) })), companionErrors = eligibilityErrors(companion, target, "陪練", shifts, cfg);
+      // 訓練班允許尚未填整月可上班資料的新人直接加入；若已明確填不可上班，仍保留提醒。
+      const practiceErrors = (person: any, role: string) => eligibilityErrors(person, target, role, shifts, cfg)
+        .filter((message: string) => message !== "當日未設定可上班" || !!person?.availX?.[date]);
+      const traineeErrors = trainees.map((trainee: any) => ({ trainee, errors: practiceErrors(trainee, "訓練場") })), companionErrors = practiceErrors(companion, "陪練");
       const conflicts = [...traineeErrors.filter(row => row.errors.length).map(row => `${row.trainee.name}：${row.errors.join("、")}`), ...(companionErrors.length ? [`${companion.name}：${companionErrors.join("、")}`] : [])];
       if (conflicts.length && input.force !== true) return json({ error: "部分人員有可上班或撞班提醒，確認後仍可建立", code: "PRACTICE_WARNINGS", warnings: conflicts }, 409);
       const shift = { ...target, note, traineeIds, schedulingWarnings: conflicts, forceScheduled: conflicts.length > 0,
