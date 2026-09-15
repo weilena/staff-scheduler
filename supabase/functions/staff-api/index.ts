@@ -739,35 +739,38 @@ Deno.serve(async (req) => {
     if (action === "schedule-practice") {
       if (account.role !== "manager" && !(employee.type === "full" && employee.canSchedulePractice)) return json({ error: "你沒有安排新人訓練場的權限" }, 403);
       const date = String(input.date ?? ""), start = String(input.start ?? ""), end = String(input.end ?? ""), storeId = String(input.storeId ?? "");
-      const traineeId = String(input.traineeId ?? ""), companionId = String(input.companionId ?? ""), trainingThemeId = String(input.trainingThemeId ?? ""), note = String(input.note ?? "").trim();
+      const traineeIds = [...new Set((Array.isArray(input.traineeIds) ? input.traineeIds : [input.traineeId]).map(String).filter(Boolean))];
+      const companionId = String(input.companionId ?? ""), trainingThemeId = String(input.trainingThemeId ?? ""), note = String(input.note ?? "").trim();
       const timeOk = (v: string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !timeOk(start) || !timeOk(end) || toMinutes(end) <= toMinutes(start)) return json({ error: "請填寫正確的訓練日期與起訖時間" }, 400);
       if (!(cfg.stores ?? []).some((s: any) => s.id === storeId)) return json({ error: "訓練場地錯誤" }, 400);
       const trainingTheme = (cfg.themes ?? []).find((t: any) => t.id === trainingThemeId && t.active !== false);
       if (!trainingTheme || trainingTheme.storeId !== storeId) return json({ error: "請選擇這個場地的訓練主題" }, 400);
-      const trainee = (cfg.employees ?? []).find((e: any) => e.id === traineeId && e.active), companion = (cfg.employees ?? []).find((e: any) => e.id === companionId && e.active);
-      if (!trainee || !companion) return json({ error: "請選擇在職的受訓員工與陪練人員" }, 400);
-      if (trainee.id === companion.id) return json({ error: "受訓員工與陪練人員不可為同一人" }, 400);
+      const trainees = traineeIds.map(id => (cfg.employees ?? []).find((e: any) => e.id === id && e.active)).filter(Boolean), companion = (cfg.employees ?? []).find((e: any) => e.id === companionId && e.active);
+      if (!traineeIds.length || trainees.length !== traineeIds.length || !companion) return json({ error: "請選擇在職的受訓員工與訓練／陪練人員" }, 400);
+      if (traineeIds.includes(companion.id)) return json({ error: "訓練／陪練人員不可同時列為受訓新人" }, 400);
       const startsAt = new Date(`${date}T${start}:00+08:00`).getTime();
       if (startsAt <= Date.now()) return json({ error: "訓練場開始時間必須晚於現在" }, 409);
       const id = `practice_${crypto.randomUUID()}`, target = { id, date, storeId, kind: "practice", themeId: null, trainingThemeId: trainingTheme.id, start, end, status: "active", assignments: [] };
-      const traineeErrors = eligibilityErrors(trainee, target, "訓練場", shifts, cfg), companionErrors = eligibilityErrors(companion, target, "陪練", shifts, cfg);
-      if (traineeErrors.length || companionErrors.length) return json({ error: [traineeErrors.length ? `${trainee.name}：${traineeErrors.join("、")}` : "", companionErrors.length ? `${companion.name}：${companionErrors.join("、")}` : ""].filter(Boolean).join("；") }, 409);
-      const shift = { ...target, note, assignments: [{ role: "訓練場", empId: trainee.id }, { role: "陪練", empId: companion.id }],
+      const traineeErrors = trainees.map((trainee: any) => ({ trainee, errors: eligibilityErrors(trainee, target, "訓練場", shifts, cfg) })), companionErrors = eligibilityErrors(companion, target, "陪練", shifts, cfg);
+      const conflicts = [...traineeErrors.filter(row => row.errors.length).map(row => `${row.trainee.name}：${row.errors.join("、")}`), ...(companionErrors.length ? [`${companion.name}：${companionErrors.join("、")}`] : [])];
+      if (conflicts.length) return json({ error: conflicts.join("；") }, 409);
+      const shift = { ...target, note, traineeIds, assignments: [...trainees.map((trainee: any) => ({ role: "訓練場", empId: trainee.id })), { role: "陪練", empId: companion.id }],
         createdBy: employee.id, createdVia: "line_practice_scheduler" };
       const { error } = await sb.from("shifts").insert({ id, date, source: "manual", data: shift });
       if (error) throw error;
       const label = `${date} ${start}–${end} ${(cfg.stores ?? []).find((s: any) => s.id === storeId)?.name ?? ""}・訓練主題：${trainingTheme.name}`;
-      await queueNotification(sb, trainee.id, "practice_assigned", { title: "新人訓練場安排", text: `${label}，陪練：${companion.name}。請至 LINE 班表確認並依規定上下班打卡。` }, true, `practice:${id}:trainee`);
-      await queueNotification(sb, companion.id, "practice_companion", { title: "陪練工作安排", text: `${label}，受訓員工：${trainee.name}。請至 LINE 班表確認並依規定上下班打卡。` }, true, `practice:${id}:companion`);
-      const informed = new Set([trainee.id, companion.id, employee.id]);
+      const traineeNames = trainees.map((trainee: any) => trainee.name).join("、");
+      for (const trainee of trainees) await queueNotification(sb, trainee.id, "practice_assigned", { title: "新人訓練場安排", text: `${label}，訓練／陪練：${companion.name}，同場受訓：${traineeNames}。請至 LINE 班表確認並依規定上下班打卡。` }, true, `practice:${id}:trainee:${trainee.id}`);
+      await queueNotification(sb, companion.id, "practice_companion", { title: "訓練／陪練工作安排", text: `${label}，受訓員工：${traineeNames}。請至 LINE 班表確認並依規定上下班打卡。` }, true, `practice:${id}:companion`);
+      const informed = new Set([...traineeIds, companion.id, employee.id]);
       const { data: managers } = await sb.from("line_accounts").select("emp_id").eq("role", "manager").eq("active", true);
       for (const manager of managers ?? []) if (!informed.has(manager.emp_id)) await queueNotification(sb, manager.emp_id, "practice_scheduled_manager", {
-        title: "訓練場已安排", text: `${employee.name}安排 ${label}：${trainee.name} 受訓，由 ${companion.name} 陪練。`,
+        title: "訓練場已安排", text: `${employee.name}安排 ${label}：${traineeNames} 受訓，由 ${companion.name} 訓練／陪練。`,
       }, false, `practice:${id}:manager:${manager.emp_id}`);
       await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: "schedule_practice", target_type: "shift", target_id: id,
-        details: { traineeId: trainee.id, traineeName: trainee.name, companionId: companion.id, trainingThemeId: trainingTheme.id, trainingThemeName: trainingTheme.name, date, start, end, storeId } });
-      return json({ ok: true, message: "訓練場已建立，受訓員工、陪練人員與管理員都會收到資訊" });
+        details: { traineeIds, traineeNames: trainees.map((trainee: any) => trainee.name), companionId: companion.id, trainingThemeId: trainingTheme.id, trainingThemeName: trainingTheme.name, date, start, end, storeId } });
+      return json({ ok: true, message: `多人訓練場已建立，共 ${trainees.length} 位受訓人員；每人都已連結班表與訓練時數` });
     }
 
     if (action === "session-report") {
