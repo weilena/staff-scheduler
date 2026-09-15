@@ -27,7 +27,7 @@ const MANUAL_WORK_ITEMS: Record<string, string> = {
 
 type AttendanceEstimate = { estimatedMinutes: number; estimatedSegments: Array<{ in: string; out: string }>; estimateAnomalies: string[] };
 function estimateAttendanceAfterRequest(existing: any[], requestType: string, requested: any): AttendanceEstimate | null {
-  if (requestType === "npc_checkin") return null;
+  if (["npc_checkin", "gm_checkin"].includes(requestType)) return null;
   const events = (existing ?? []).map((p: any) => ({ type: String(p.type), time: String(p.ts ?? "").slice(11, 16), virtual: false }));
   if (requestType === "correction") events.push(
     { type: "in", time: String(requested.inTime ?? ""), virtual: true },
@@ -90,7 +90,7 @@ Deno.serve(async (req) => {
       const [{ data: worksites }, { data: punches }, { data: sessionCheckins }, { data: shiftConfirmations }, { data: attendanceDays }, { data: attendanceRequests }, { data: overtimeReviews }, { data: availabilityRequests }, { data: availabilityConfirmations }] = await Promise.all([
         sb.from("worksites").select("id,name,radius_m,enabled").eq("enabled", true),
         sb.from("punches").select("id,ts,type,worksite_id,verification,review_state,voided_at,void_reason,shift_ids,raw").eq("emp_id", employee.id).gte("ts", from).order("ts", { ascending: false }).limit(60),
-        sb.from("session_checkins").select("id,shift_id,checked_in_at,worksite_id,verification,source,note").eq("emp_id", employee.id).gte("checked_in_at", from).order("checked_in_at", { ascending: false }).limit(100),
+        sb.from("session_checkins").select("id,shift_id,checked_in_at,worksite_id,verification,source,note,no_show,guest_status,guest_status_at").eq("emp_id", employee.id).gte("checked_in_at", from).order("checked_in_at", { ascending: false }).limit(100),
         sb.from("shift_confirmations").select("shift_id,status,confirmed_at").eq("emp_id", employee.id),
         sb.from("attendance_daily").select("*").eq("emp_id", employee.id).gte("work_date", from).order("work_date", { ascending: false }).limit(70),
         sb.from("attendance_requests").select("*").eq("emp_id", employee.id).order("created_at", { ascending: false }).limit(30),
@@ -426,16 +426,23 @@ Deno.serve(async (req) => {
       const completedNpc = new Set((monthCheckins ?? []).map((row: any) => `${row.emp_id}|${row.shift_id}`));
       const pendingNpc = new Set((attendanceRequests ?? []).filter((row: any) => row.request_type === "npc_checkin")
         .map((row: any) => `${row.emp_id}|${row.requested?.shiftId ?? ""}`));
-      const now = Date.now(), missingNpcCheckins: any[] = [];
+      const pendingGm = new Set((attendanceRequests ?? []).filter((row: any) => row.request_type === "gm_checkin")
+        .map((row: any) => `${row.emp_id}|${row.requested?.shiftId ?? ""}`));
+      const now = Date.now(), missingNpcCheckins: any[] = [], missingGmCheckins: any[] = [], unassignedGmCheckins: any[] = [];
       for (const shift of shifts) {
         if (String(shift.date ?? "").slice(0, 7) !== month || shift.kind !== "theme" || String(shift.status ?? "").startsWith("cancelled")) continue;
         if (new Date(`${shift.date}T${shift.end}:00+08:00`).getTime() > now) continue;
         const themeName = (cfg.themes ?? []).find((theme: any) => theme.id === shift.themeId)?.name ?? "主題場次";
+        if (String(themeName).startsWith("詭獄") && !(shift.assignments ?? []).some((assignment: any) => assignment.empId && String(assignment.role ?? "") === "場控"))
+          unassignedGmCheckins.push({ shiftId: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId,
+            themeId: shift.themeId, themeName, candidates: (cfg.employees ?? []).filter((person: any) => person.active).map((person: any) => ({ id: person.id, name: person.name })) });
         for (const assignment of shift.assignments ?? []) {
-          if (String(assignment.role ?? "").toUpperCase() !== "NPC" || !assignment.empId) continue;
+          if (!assignment.empId) continue;
           const key = `${assignment.empId}|${shift.id}`;
-          if (!completedNpc.has(key) && !pendingNpc.has(key)) missingNpcCheckins.push({ shiftId: shift.id, empId: assignment.empId,
-            date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, themeId: shift.themeId, themeName });
+          if (String(assignment.role ?? "").toUpperCase() === "NPC" && !completedNpc.has(key) && !pendingNpc.has(key))
+            missingNpcCheckins.push({ shiftId: shift.id, empId: assignment.empId, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, themeId: shift.themeId, themeName });
+          if (String(assignment.role ?? "") === "場控" && String(themeName).startsWith("詭獄") && !completedNpc.has(key) && !pendingGm.has(key))
+            missingGmCheckins.push({ shiftId: shift.id, empId: assignment.empId, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, themeId: shift.themeId, themeName });
         }
       }
       const employees = (cfg.employees ?? []).filter((e: any) => e.active).map((candidate: any) => {
@@ -464,7 +471,7 @@ Deno.serve(async (req) => {
         const candidates = shift ? (cfg.employees ?? []).filter((person: any) => person.active && person.id !== replacedEmpId && !(shift.assignments ?? []).some((a: any) => a.empId === person.id) && eligibilityErrors(person, shift, role, shifts, cfg, [shift.id]).length === 0).map((person: any) => ({ id: person.id, name: person.name })) : [];
         return { ...request, shift: shift ? { id: shift.id, date: shift.date, start: shift.start, end: shift.end, storeId: shift.storeId, kind: shift.kind, themeId: shift.themeId } : null, candidates };
       });
-      return json({ month, employees, attendanceRequests: attendanceRequests ?? [], missingNpcCheckins, shiftRequests: changes });
+      return json({ month, employees, attendanceRequests: attendanceRequests ?? [], missingNpcCheckins, missingGmCheckins, unassignedGmCheckins, shiftRequests: changes });
     }
 
     if (action === "manager-record-npc-checkin") {
@@ -483,6 +490,42 @@ Deno.serve(async (req) => {
       if (error) throw error;
       await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "manager_record_npc_checkin",
         target_type: "shift", target_id: shiftId, details: { empId, checkedInAt, reason: "forgot_checkin" } });
+      return json({ ok: true });
+    }
+
+    if (action === "manager-record-gm-checkin") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以補登場控完成" }, 403);
+      const shiftId = String(input.shiftId ?? ""), empId = String(input.empId ?? "");
+      const shift = shifts.find((row: any) => String(row.id) === shiftId && !String(row.status ?? "").startsWith("cancelled"));
+      const assignment = (shift?.assignments ?? []).find((row: any) => row.empId === empId && String(row.role ?? "") === "場控");
+      const themeName = (cfg.themes ?? []).find((theme: any) => theme.id === shift?.themeId)?.name ?? "";
+      if (!shift || !assignment || !String(themeName).startsWith("詭獄")) return json({ error: "找不到本人原排班的詭獄場控場次" }, 404);
+      if (new Date(`${shift.date}T${shift.end}:00+08:00`).getTime() > Date.now()) return json({ error: "場次尚未結束，不能補登場控完成" }, 409);
+      const { data: existing, error: existingError } = await sb.from("session_checkins").select("id").eq("emp_id", empId).eq("shift_id", shiftId).maybeSingle();
+      if (existingError) throw existingError;
+      if (existing) return json({ error: "這一場場控已有完成紀錄" }, 409);
+      const checkedInAt = `${shift.date}T${shift.end}:00+08:00`;
+      const { error } = await sb.from("session_checkins").insert({ emp_id: empId, shift_id: shiftId, checked_in_at: checkedInAt,
+        verification: "manager_approved", source: "manager_direct", note: "管理員確認詭獄場控有執行，補登忘記完成" });
+      if (error) throw error;
+      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "manager_record_gm_checkin",
+        target_type: "shift", target_id: shiftId, details: { empId, checkedInAt, reason: "forgot_completion" } });
+      return json({ ok: true });
+    }
+
+    if (action === "manager-resolve-unassigned-gm") {
+      if (account.role !== "manager") return json({ error: "只有管理員可以補排場控" }, 403);
+      const shiftId = String(input.shiftId ?? ""), empId = String(input.empId ?? "");
+      const shift = shifts.find((row: any) => String(row.id) === shiftId && !String(row.status ?? "").startsWith("cancelled"));
+      const selectedEmployee = (cfg.employees ?? []).find((person: any) => person.id === empId && person.active);
+      const themeName = (cfg.themes ?? []).find((theme: any) => theme.id === shift?.themeId)?.name ?? "";
+      if (!shift || !selectedEmployee || !String(themeName).startsWith("詭獄")) return json({ error: "找不到詭獄場次或員工" }, 404);
+      if (new Date(`${shift.date}T${shift.end}:00+08:00`).getTime() > Date.now()) return json({ error: "場次尚未結束，不能補登完成" }, 409);
+      if ((shift.assignments ?? []).some((row: any) => row.empId && String(row.role ?? "") === "場控")) return json({ error: "此場已有場控，請重新整理" }, 409);
+      const checkedInAt = `${shift.date}T${shift.end}:00+08:00`;
+      const { data, error } = await sb.rpc("resolve_unassigned_gm", { p_shift: shiftId, p_emp: empId, p_checked_at: checkedInAt, p_actor: employee.id });
+      if (error) throw error;
+      if (!data?.ok) return json({ error: data?.msg ?? "補排場控失敗" }, 409);
       return json({ ok: true });
     }
 
@@ -746,13 +789,33 @@ Deno.serve(async (req) => {
       // 即可回報被指派的主題，並保留實際定位店別供管理員核對。
       if (!site || site.distance > site.radius_m + Math.min(accuracy, 50)) return json({ error: "目前不在允許的打卡地點範圍內" }, 403);
       const checkedInAt = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date()).replace(" ", "T");
-      // 放鳥:客人沒到場。只有 NPC 場放鳥才有薪水(1 小時),場控放鳥無薪,故僅 NPC 記錄放鳥旗標。
-      const noShow = String(role).toUpperCase() === "NPC" && !!input.noShow;
       const { error } = await sb.from("session_checkins").insert({ emp_id: employee.id, shift_id: shift.id, checked_in_at: checkedInAt,
         worksite_id: site.id, latitude: lat, longitude: lng, accuracy_m: accuracy, verification: "line_location", source: "line",
-        no_show: noShow, note: `${role}${shift.kind === "practice" ? "確認" : "場次完成"}${noShow ? "・客人放鳥" : ""}` });
+        no_show: false, note: `${role}${shift.kind === "practice" ? "確認" : "場次完成"}` });
       if (error) return json({ error: error.code === "23505" ? "這個場次已經回報過" : error.message }, error.code === "23505" ? 409 : 500);
-      return json({ ok: true, ts: checkedInAt, site: site.name, role, noShow });
+      return json({ ok: true, ts: checkedInAt, site: site.name, role });
+    }
+
+    if (action === "guest-status") {
+      const shiftId = String(input.shiftId ?? ""), status = String(input.status ?? "");
+      if (!["arrived", "no_show"].includes(status)) return json({ error: "請選擇客人有來或放鳥" }, 400);
+      const shift = shifts.find((s: any) => String(s.id) === shiftId && s.kind === "theme" && !String(s.status ?? "").startsWith("cancelled"));
+      const today = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+      const directRole = (shift?.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "";
+      const linkedRole = shift && shifts.some((source: any) => (source.linkedThemeAssignments ?? []).some((link: any) => link.empId === employee.id && String(link.shiftId) === String(shift.id))) ? "場控" : "";
+      const role = directRole || linkedRole;
+      const reportableRole = String(role).toUpperCase() === "NPC" ? "NPC" : String(role);
+      if (!shift || shift.date !== today || !["NPC", "場控"].includes(reportableRole)) return json({ error: "只能回報今天指派給你的 NPC 或場控客況" }, 403);
+      const { data: checkin, error: checkinError } = await sb.from("session_checkins").select("id").eq("emp_id", employee.id).eq("shift_id", shift.id).maybeSingle();
+      if (checkinError) throw checkinError;
+      if (!checkin) return json({ error: `請先完成${reportableRole === "NPC" ? " NPC 報到" : "本場完成"}，再填客人是否到場` }, 409);
+      const guestStatusAt = new Date().toISOString(), noShow = reportableRole === "NPC" && status === "no_show";
+      const { error } = await sb.from("session_checkins").update({ guest_status: status, guest_status_at: guestStatusAt,
+        guest_status_by: employee.id, no_show: noShow }).eq("id", checkin.id);
+      if (error) throw error;
+      await sb.from("audit_log").insert({ actor_type: "line_employee", actor_id: employee.id, action: "report_guest_status",
+        target_type: "shift", target_id: shift.id, details: { role, status, noShowPayFlag: noShow } });
+      return json({ ok: true, status, message: status === "no_show" ? "已記錄：放鳥（客人沒有來）" : "已記錄：無（客人有來）" });
     }
 
     if (action === "request-haunted-prison-gm-assist") {
@@ -1035,7 +1098,7 @@ Deno.serve(async (req) => {
       const reason = String(input.reason ?? "").trim();
       if (!reason) return json({ error: "請填寫補卡原因" }, 400);
       const requestType = String(input.requestType ?? "");
-      if (!["missing_in", "missing_out", "correction", "npc_checkin"].includes(requestType)) return json({ error: "請選擇補上班卡、補下班卡、NPC 補報到或更正整日時間" }, 400);
+      if (!["missing_in", "missing_out", "correction", "npc_checkin", "gm_checkin"].includes(requestType)) return json({ error: "請選擇補上班卡、補下班卡、NPC／場控補完成或更正整日時間" }, 400);
       const punchDate = String(input.punchDate ?? "");
       if (!/^\d{4}-\d{2}-\d{2}$/.test(punchDate)) return json({ error: "補卡日期格式錯誤" }, 400);
       const requested = input.requested ?? {};
@@ -1054,7 +1117,7 @@ Deno.serve(async (req) => {
       requested.workItem = { code: workItemCode, labels: [linkedLabel], source: "attendance_request", shiftId: linkedShiftId || null, role: linkedAssignment?.role ?? null };
       delete requested.workItemCode;
       const timeOk = (v: unknown) => /^([01]\d|2[0-3]):[0-5]\d$/.test(String(v ?? ""));
-      if (["missing_in", "missing_out", "npc_checkin"].includes(requestType) && !timeOk(requested.time)) return json({ error: "請填寫正確的補卡時間" }, 400);
+      if (["missing_in", "missing_out", "npc_checkin", "gm_checkin"].includes(requestType) && !timeOk(requested.time)) return json({ error: "請填寫正確的補卡時間" }, 400);
       if (requestType === "correction" && (!timeOk(requested.inTime) || !timeOk(requested.outTime) || requested.inTime >= requested.outTime))
         return json({ error: "請填寫正確且先後順序一致的上下班時間" }, 400);
       if (requestType === "npc_checkin") {
@@ -1062,13 +1125,20 @@ Deno.serve(async (req) => {
         const role = (shift?.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "";
         if (!shift || shift.date !== punchDate || String(role).toUpperCase() !== "NPC") return json({ error: "NPC 補報到必須連結到本人過去的 NPC 場次" }, 400);
       }
+      if (requestType === "gm_checkin") {
+        const shift = shifts.find((s: any) => String(s.id) === String(requested.shiftId ?? ""));
+        const role = (shift?.assignments ?? []).find((a: any) => a.empId === employee.id)?.role ?? "";
+        const themeName = (cfg.themes ?? []).find((theme: any) => theme.id === shift?.themeId)?.name ?? "";
+        if (!shift || shift.date !== punchDate || role !== "場控" || !String(themeName).startsWith("詭獄"))
+          return json({ error: "場控補完成必須連結到本人過去的詭獄／詭獄加場場控" }, 400);
+      }
       const { data: pendingSameDay } = await sb.from("attendance_requests").select("request_type,requested").eq("emp_id", employee.id).eq("punch_date", punchDate).eq("status", "pending");
-      const duplicate = (pendingSameDay ?? []).some((r: any) => requestType === "npc_checkin"
+      const duplicate = (pendingSameDay ?? []).some((r: any) => ["npc_checkin", "gm_checkin"].includes(requestType)
         ? r.request_type === requestType && String(r.requested?.shiftId ?? "") === String(requested.shiftId ?? "")
         : r.request_type === requestType && JSON.stringify(r.requested ?? {}) === JSON.stringify(requested));
       if (duplicate) return json({ error: "這個場次已有相同的待審補卡申請" }, 409);
       let estimate: AttendanceEstimate | null = null;
-      if (requestType !== "npc_checkin") {
+      if (!["npc_checkin", "gm_checkin"].includes(requestType)) {
         const nextDate = dateText(new Date(Date.parse(`${punchDate}T00:00:00Z`) + DAY));
         const { data: dayPunches, error: punchError } = await sb.from("punches").select("id,ts,type").eq("emp_id", employee.id)
           .is("voided_at", null).gte("ts", `${punchDate}T00:00:00`).lt("ts", `${nextDate}T00:00:00`).order("ts", { ascending: true });
