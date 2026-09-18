@@ -1,4 +1,4 @@
-import { getContext, json, queueNotification, serviceClient } from "../_shared/common.ts";
+import { finalizeGuestArrivals, getContext, json, queueNotification, serviceClient } from "../_shared/common.ts";
 
 async function push(to: string, payload: any) {
   const actions = Array.isArray(payload.links) && payload.links.length ? [{
@@ -39,6 +39,7 @@ Deno.serve(async (req) => {
   const tomorrow = new Date(new Date(`${localDate}T00:00:00+08:00`).getTime() + 86_400_000);
   const tomorrowDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(tomorrow);
   const { cfg, shifts } = await getContext(sb);
+  await finalizeGuestArrivals(sb, shifts, now);
   const portal = Deno.env.get("LINE_LIFF_URL") ?? (Deno.env.get("LINE_LIFF_ID") ? `https://liff.line.me/${Deno.env.get("LINE_LIFF_ID")}` : "");
   const link = (tab: string) => `${portal}${portal.includes("?") ? "&" : "?"}tab=${tab}`;
 

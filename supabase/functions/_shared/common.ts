@@ -137,3 +137,33 @@ export async function queueNotification(sb: any, employeeId: string, category: s
   }, { onConflict: "idempotency_key", ignoreDuplicates: true });
   if (error) throw error;
 }
+
+// NPC 已報到且開場超過 20 分鐘仍未填客況時，自動視為客人有來。
+// 只處理尚未確認且 no_show=false 的紀錄，絕不覆蓋員工已選的「放鳥」。
+export async function finalizeGuestArrivals(sb: any, shifts: any[], now = new Date()) {
+  const localDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  const fromDate = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(now.getTime() - 7 * 86_400_000));
+  const eligible = (shifts ?? []).filter((shift: any) => shift.kind === "theme" && shift.date >= fromDate && shift.date <= localDate &&
+    !String(shift.status ?? "").startsWith("cancelled") && new Date(`${shift.date}T${shift.start}:00+08:00`).getTime() + 20 * 60_000 <= now.getTime());
+  if (!eligible.length) return 0;
+  const npcByShift = new Map<string, Set<string>>();
+  for (const shift of eligible) for (const assignment of shift.assignments ?? []) {
+    if (assignment.empId && String(assignment.role ?? "").toUpperCase() === "NPC") {
+      const shiftId = String(shift.id), employees = npcByShift.get(shiftId) ?? new Set<string>();
+      employees.add(String(assignment.empId));npcByShift.set(shiftId, employees);
+    }
+  }
+  const shiftIds = [...npcByShift.keys()];if (!shiftIds.length) return 0;
+  const { data: rows, error: readError } = await sb.from("session_checkins").select("id,emp_id,shift_id").in("shift_id", shiftIds)
+    .is("guest_status", null).eq("no_show", false);
+  if (readError) throw readError;
+  const ids = (rows ?? []).filter((row: any) => npcByShift.get(String(row.shift_id))?.has(String(row.emp_id))).map((row: any) => row.id);
+  if (!ids.length) return 0;
+  const markedAt = now.toISOString();
+  const { error: updateError } = await sb.from("session_checkins").update({ guest_status: "arrived", guest_status_at: markedAt,
+    guest_status_by: "system:auto_20m" }).in("id", ids).is("guest_status", null).eq("no_show", false);
+  if (updateError) throw updateError;
+  await sb.from("audit_log").insert({ actor_type: "system", actor_id: "auto_20m", action: "auto_confirm_guest_arrived",
+    target_type: "session_checkins", target_id: "batch", details: { count: ids.length, checkinIds: ids, markedAt } });
+  return ids.length;
+}

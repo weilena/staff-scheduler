@@ -3,7 +3,7 @@
 //  1. bootstrap 的 publicShifts 每筆多回 roleCandidates(每個尚未排人的角色，附「有資格＋當天有空＋不衝堂」的候選人{id,name}，依場數排序，供一鍵排)。
 //  2. 新增 action "manager-assign"(限 account.role==='manager')：把 empId 寫進指定 shift 的該 role 空位(或清空)，eligibilityErrors 防呆，並設 data.manualEdit=true 避免每分鐘 SimplyBook 同步覆蓋。寫回 shifts 表。
 // 前端搭配在 web/staff.html 的「排班」分頁(scheduleAdminNav)。有衝突或要調整再找我，謝謝！
-import { cors, distanceMeters, eligibilityErrors, employedOn, getContext, json, queueNotification, rankCandidatesByWorkload, serviceClient, toMinutes, verifyLineIdToken } from "../_shared/common.ts";
+import { cors, distanceMeters, eligibilityErrors, employedOn, finalizeGuestArrivals, getContext, json, queueNotification, rankCandidatesByWorkload, serviceClient, toMinutes, verifyLineIdToken } from "../_shared/common.ts";
 
 const DAY = 86_400_000;
 const dateText = (d: Date) => d.toISOString().slice(0, 10);
@@ -84,6 +84,7 @@ Deno.serve(async (req) => {
 
     if (action === "bootstrap") {
       const now = new Date(), from = dateText(new Date(now.getTime() - 60 * DAY)), to = dateText(new Date(now.getTime() + 60 * DAY));
+      await finalizeGuestArrivals(sb, shifts, now);
       const availabilityConfirmationQuery = account.role === "manager"
         ? sb.from("availability_month_confirmations").select("emp_id,month,confirmed_at").gte("month", from.slice(0, 7)).order("month", { ascending: true })
         : sb.from("availability_month_confirmations").select("emp_id,month,confirmed_at").eq("emp_id", employee.id).gte("month", from.slice(0, 7)).order("month", { ascending: true });
