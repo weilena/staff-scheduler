@@ -9,6 +9,9 @@
 :root{
   --accent:#2563eb; --accent2:#7c3aed; --bg:#f4f6fa; --card:#fff;
   --line:#e2e8f0; --txt:#1e293b; --muted:#64748b; --warn:#d97706; --danger:#dc2626; --ok:#059669;
+  /* 統一的輔助 token(把原本散落各處的內嵌顏色收成同一套,方便維持整體一致) */
+  --surface-2:#eef2f7; --line-soft:#edf1f5; --text-2:#334155; --accent-soft:#eff6ff;
+  --shadow-card:0 1px 2px rgba(15,23,42,.05),0 2px 8px rgba(15,23,42,.04);
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:"Segoe UI","Microsoft JhengHei",sans-serif;background:var(--bg);color:var(--txt);font-size:15px}
@@ -16,11 +19,11 @@ header{background:#0f172a;color:#fff;padding:10px 16px;display:flex;align-items:
 header h1{font-size:17px;font-weight:700}
 nav{display:flex;flex-direction:column;gap:5px;flex:1;min-width:0}
 .navmain{display:flex;gap:4px;flex-wrap:wrap}
-nav button{background:transparent;border:none;color:#cbd5e1;padding:7px 12px;border-radius:8px;cursor:pointer;font-size:14px}
+nav button{background:transparent;border:none;color:#cbd5e1;padding:7px 12px;border-radius:8px;cursor:pointer;font-size:14px;transition:background .12s,color .12s}
 nav button:hover{background:#1e293b;color:#fff}
 .navmain button.on{background:var(--accent);color:#fff;font-weight:600}
 .subnav{display:flex;gap:4px;flex-wrap:wrap;background:#1e293b;border-radius:9px;padding:3px;align-self:flex-start}
-.subnav button{padding:5px 12px;font-size:13px;color:#94a3b8}
+.subnav button{padding:5px 12px;font-size:13px;color:#94a3b8;cursor:pointer;transition:background .12s,color .12s}
 .subnav button.on{background:#475569;color:#fff;font-weight:600}
 .attendance-scroll{overflow:auto;max-width:100%;max-height:68vh;overscroll-behavior:contain;border:1px solid #e2e8f0;border-radius:10px}
 .attendance-matrix{border-collapse:collapse;min-width:1200px;margin:0}
@@ -32,11 +35,15 @@ nav button:hover{background:#1e293b;color:#fff}
 .att-segment{padding:3px 0;border-bottom:1px dotted #94a3b8}.att-segment:last-child{border:0}
 .att-ok{color:#15803d;font-weight:700}.att-pending{color:#b45309;font-weight:700}.att-error{color:#b91c1c;font-weight:700}
 main{max-width:1600px;margin:18px auto;padding:0 14px 60px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
-.card h2{font-size:16px;margin-bottom:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px;box-shadow:var(--shadow-card)}
+.card h2{font-size:16px;font-weight:700;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--line-soft);color:var(--text-2)}
+.card h2[style*="margin:0"]{padding-bottom:0;border-bottom:none}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .grow{flex:1}
-button.btn{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:14px}
+button.btn{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:14px;transition:filter .12s,box-shadow .12s}
+button.btn:hover{filter:brightness(1.08)}
+button.btn:active{filter:brightness(.94)}
+button.btn:disabled{opacity:.45;cursor:not-allowed;filter:none}
 button.btn.gray{background:#e2e8f0;color:var(--txt)}
 button.btn.red{background:var(--danger)}
 button.btn.green{background:var(--ok)}
@@ -44,13 +51,16 @@ button.btn.sm{padding:4px 9px;font-size:13px}
 input,select{border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:14px;background:#fff;color:var(--txt);font-family:inherit}
 input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
 table{width:100%;border-collapse:collapse;font-size:14px}
-th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:middle}
-th{background:#f1f5f9;font-weight:600;white-space:nowrap}
+th,td{border:1px solid var(--line-soft);padding:9px 11px;text-align:left;vertical-align:middle}
+th{background:var(--surface-2);font-weight:700;white-space:nowrap;color:var(--text-2);border-bottom:2px solid var(--line)}
+tr:hover td{background:var(--accent-soft)}
 .payroll-wrap{width:100%;max-width:100%;overflow:hidden}
 .payroll-table{width:100%;max-width:100%;table-layout:fixed;font-size:18px;line-height:1.45}
 .payroll-table th,.payroll-table td{padding:11px 7px;vertical-align:middle;overflow-wrap:anywhere;word-break:break-word;white-space:normal}
-.payroll-table th{line-height:1.3;font-size:18px;color:#334155;text-align:center;background:#eaf0f7;font-weight:800}
-.payroll-table tr:hover td{background:#f8fafc}
+.payroll-table th{line-height:1.3;font-size:18px;color:var(--text-2);text-align:center;background:var(--surface-2);font-weight:800;border-bottom:2px solid var(--line)}
+.payroll-table td{border-color:var(--line-soft)}
+.payroll-table tr:hover td{background:var(--surface-2)}
+.payroll-table tr:last-child td{background:var(--accent-soft);font-weight:800;border-top:2px solid var(--accent)}
 .payroll-table td:nth-child(-n+8){text-align:center;white-space:normal}
 .payroll-table td:nth-child(9){text-align:left;white-space:normal}
 .payroll-table td:nth-child(10){text-align:center;white-space:normal}
@@ -154,6 +164,7 @@ th{background:#f1f5f9;font-weight:600;white-space:nowrap}
 @media(max-width:640px){
   header{padding:8px 10px;gap:7px}header h1{font-size:15px}nav{width:100%}.navmain,.subnav{flex-wrap:nowrap;overflow-x:auto;width:100%}nav button{white-space:nowrap;padding:6px 9px}
   main{padding:0 5px 70px;margin-top:6px}.card{padding:8px;border-radius:8px}.row{gap:6px}
+  th,td{padding:6px 7px}
   .seg{width:100%}.seg button{flex:1;padding:8px 6px}
   .schedwrap{display:block}.loadpanel{width:100%;position:static;max-height:none;order:0;margin-top:12px;padding:9px}.loadpanel:not([open]){display:block}
   .bulkbar{overflow-x:auto;flex-wrap:nowrap;padding:7px}.bulkbar>*{flex:0 0 auto}.bulkbar .muted{display:none}
