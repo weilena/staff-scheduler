@@ -501,7 +501,7 @@ async function afterLogin(){
   S=Object.assign({},cfg.data,{
     shifts:(shRes.data||[]).map(function(r){return r.data}),
     punches:(puRes.data||[]).map(function(p){return{id:p.id,empId:p.emp_id,type:p.type,ts:p.ts,source:p.source,worksiteId:p.worksite_id,verification:p.verification,reviewState:p.review_state,voidedAt:p.voided_at,voidReason:p.void_reason,shiftIds:p.shift_ids||[],raw:p.raw||{},workItem:p.raw?.work_item||null}}),
-    sessionCheckins:(ciRes.data||[]).map(function(x){return{id:x.id,empId:x.emp_id,shiftId:x.shift_id,checkedInAt:x.checked_in_at,worksiteId:x.worksite_id,verification:x.verification,source:x.source,note:x.note||''}}),
+    sessionCheckins:(ciRes.data||[]).map(function(x){return{id:x.id,empId:x.emp_id,shiftId:x.shift_id,checkedInAt:x.checked_in_at,worksiteId:x.worksite_id,verification:x.verification,source:x.source,note:x.note||'',noShow:!!x.no_show}}),
     shiftConfirmations:(cfRes.data||[]).map(function(x){return{shiftId:x.shift_id,empId:x.emp_id,status:x.status,confirmedAt:x.confirmed_at}})
   });
   // 舊資料仍可能使用「練習場」角色名稱；載入時改為「訓練場」並回存，
@@ -3398,7 +3398,12 @@ function vData(){
   </div>
   ${schedAuditHtml()}`;
 }
-function exportJSON(){dl(JSON.stringify(S,null,2),`排班系統備份_${todayStr()}.json`,'application/json')}
+function exportJSON(){
+  // lineBindingsSnapshot 只是備份用的快照,不影響匯入還原(importJSON 不會讀這個欄位);
+  // 換 LINE 官方帳號後,舊的 line_user_id 全部失效、需要重新綁定,這份清單讓你照著補發驗證碼,不用憑記憶重建。
+  const lineBindingsSnapshot=S.employees.map(e=>{const a=(LINE.accounts||[]).find(x=>x.emp_id===e.id);return{name:e.name,bound:!!a,displayName:a?.display_name||'',role:a?.role||''}});
+  dl(JSON.stringify(Object.assign({},S,{lineBindingsSnapshot}),null,2),`排班系統備份_${todayStr()}.json`,'application/json')
+}
 function importJSON(input){
   const f=input.files[0];if(!f)return;
   const r=new FileReader();
@@ -3409,6 +3414,7 @@ function importJSON(input){
     const shifts=d.shifts||[],punches=d.punches||[];
     const cfg=Object.assign({},d);delete cfg.shifts;delete cfg.punches;
     for(const k of Object.keys(cfg))if(/^(migr|sim)/i.test(k))delete cfg[k];
+    delete cfg.lineBindingsSnapshot;
     await sbc.from('shifts').delete().neq('id','');
     await sbc.from('punches').delete().neq('id','');
     await sbc.from('config').upsert({id:1,data:cfg});
