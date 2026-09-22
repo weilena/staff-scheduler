@@ -920,12 +920,15 @@ function counterCoverageChip(ds,storeId){
   const shifts=activeCounterShifts(ds,storeId),label=storeId==='dz'?'大忠櫃台':'謎先生櫃台';
   const closed=isWeeklyOff(ds)||S.closedDates.includes(ds);
   if(closed&&!shifts.length)return `<div class="chip" style="background:#e5e7eb;color:#6b7280;border:1px solid #d1d5db" onclick="event.stopPropagation();openShift(null,'${ds}',{storeId:'${storeId}',kind:'counter'})"><b>${label}</b> 公休・仍可安排</div>`;
-  const people=[...new Set(shifts.flatMap(sh=>(sh.assignments||[]).filter(a=>a.empId).map(a=>emp(a.empId)?.name||a.empId)))];
+  const peopleIds=[...new Set(shifts.flatMap(sh=>(sh.assignments||[]).filter(a=>a.empId).map(a=>a.empId)))];
+  const people=peopleIds.map(id=>emp(id)?.name||id);
   const urgent=storeId==='dz'&&yijiaNeedsDzCoverage(ds),missing=!shifts.length||!people.length;
-  const bg=urgent?'#fee2e2':missing?'#fff7ed':'#ecfdf5',color=urgent?'#b91c1c':missing?'#9a3412':'#047857';
+  // 已排好且只有一人時,跟排班表其他色塊一樣用該員工的 SimplyBook 顏色;缺人/緊急仍保留警示色不被蓋掉。
+  const staffedColor=peopleIds.length===1?employeeColor(emp(peopleIds[0])):'';
+  const bg=urgent?'#fee2e2':missing?'#fff7ed':(staffedColor||'#ecfdf5'),color=urgent?'#b91c1c':missing?'#9a3412':(staffedColor?textOn(staffedColor):'#047857');
   const text=urgent?'⚠ 翊嘉休假・需安排人力':people.length?people.join('／'):'＋ 尚未安排';
   const action=shifts.length===1?`openShift('${shifts[0].id}')`:`openShift(null,'${ds}',{storeId:'${storeId}',kind:'counter'})`;
-  return `<div class="chip" style="background:${bg};color:${color};border:1px solid ${urgent?'#fca5a5':missing?'#fdba74':'#6ee7b7'}" onclick="event.stopPropagation();${action}"><b>${label}</b> ${esc(text)}</div>`;
+  return `<div class="chip" style="background:${bg};color:${color};border:1px solid ${urgent?'#fca5a5':missing?'#fdba74':(staffedColor?'transparent':'#6ee7b7')}" onclick="event.stopPropagation();${action}"><b>${label}</b> ${esc(text)}</div>`;
 }
 function bulkClass(sh){return bulkSelected.has(sh.id)?' bulk-picked':''}
 function shiftAction(sh){return sh.kind==='meeting'?`event.stopPropagation();openMeetingSummary('${sh.id}')`:bulkMode?`event.stopPropagation();toggleBulkShift('${sh.id}')`:`event.stopPropagation();openShift('${sh.id}')`}
