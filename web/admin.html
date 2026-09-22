@@ -327,6 +327,17 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
       <div class="field grow"><label>超過40場每場加給</label><input type="number" id="efExtraSessionRate" min="0" placeholder="依員工設定"></div>
     </div>
     <div class="row">
+      <div class="field grow"><label>投保薪資(元)</label><input type="number" id="efInsuredSalary" min="0" placeholder="留空=薪資單不顯示勞健保"></div>
+      <div class="field grow"><label>勞保自付額(元/月)</label><input type="number" id="efLaborInsFee" min="0" step="0.1" placeholder="由會計核算後填入"></div>
+      <div class="field grow"><label>健保自付額(元/月・本人)</label><input type="number" id="efHealthInsFee" min="0" step="0.1" placeholder="由會計核算後填入"></div>
+      <div class="field grow"><label>加保眷屬人數</label><input type="number" id="efDependents" min="0" step="1" placeholder="健保計算最多算3個眷屬"></div>
+    </div>
+    <div class="row" style="align-items:center">
+      <button type="button" class="btn gray sm" onclick="suggestInsuranceFee(true)">依 115年官方級距表試算勞健保自付額</button>
+      <span class="muted" id="efInsuranceHint">僅適用正職範圍(投保薪資 $29,500–$45,800);試算結果會填入上方欄位,請核對後再儲存</span>
+    </div>
+    <p class="muted" style="margin:-4px 0 0">薪資單「實發金額」= 應發總額 − 勞保自付額 − 健保自付額 × (1 + 眷屬人數,最多算 4 人)。試算僅供參考,最終以你儲存的數字為準,系統不會自己覆蓋。</p>
+    <div class="row">
       <div class="field grow"><label>到職日</label><input type="date" id="efStartDate"></div>
       <div class="field grow"><label>離職日(最後工作日)</label><input type="date" id="efEndDate"></div>
     </div>
@@ -2660,6 +2671,31 @@ function vEmps(){
     :'<p class="muted">尚無員工,點右上「新增員工」開始。技能與可上班時間分別在「技能表」「可上班時間」頁設定。</p>'}
   </div>`;
 }
+/* 115年(2026)勞保投保薪資分級表(正職範圍,11級,$29,500~$45,800)。
+   來源:勞動部公告 115 年適用之勞工保險投保薪資分級表(115.01.01生效)。
+   ⚠️ 每年會調整,年度異動時請更新此清單與下方費率;僅適用一般正職(月薪≧基本工資)範圍,
+   兼職/部分工時的投保薪資判定另有巢狀規則(比照職訓機構受訓學員分級),不在此試算範圍內,請人工核對。 */
+const LABOR_INSURANCE_GRADES_2026=[29500,30300,31800,33300,34800,36300,38200,40100,42000,43900,45800];
+const LABOR_INSURANCE_RATE_2026=0.125,LABOR_INSURANCE_EMP_SHARE_2026=0.20; // 勞保(普通事故11.5%+就業保險1%)=12.5%,員工分擔20%
+const HEALTH_INSURANCE_RATE_2026=0.0517,HEALTH_INSURANCE_EMP_SHARE_2026=0.30; // 健保費率5.17%,第1類員工分擔30%
+function suggestInsuranceFee(confirmMode){
+  const raw=Number(document.getElementById('efInsuredSalary').value)||0;
+  const hint=document.getElementById('efInsuranceHint');
+  if(!raw){if(confirmMode)alert('請先填投保薪資');return}
+  if(raw<LABOR_INSURANCE_GRADES_2026[0]||raw>LABOR_INSURANCE_GRADES_2026[LABOR_INSURANCE_GRADES_2026.length-1]){
+    if(confirmMode)alert(`投保薪資 ${raw} 不在正職分級表範圍($29,500–$45,800)內,無法用這張表試算,請人工核對兼職/部分工時的投保薪資規則後手動填入。`);
+    return;
+  }
+  const grade=LABOR_INSURANCE_GRADES_2026.find(g=>raw<=g)||LABOR_INSURANCE_GRADES_2026[LABOR_INSURANCE_GRADES_2026.length-1];
+  const labor=Math.round(grade*LABOR_INSURANCE_RATE_2026*LABOR_INSURANCE_EMP_SHARE_2026*10)/10;
+  const health=Math.round(grade*HEALTH_INSURANCE_RATE_2026*HEALTH_INSURANCE_EMP_SHARE_2026*10)/10;
+  if(confirmMode){
+    if(!confirm(`依 115 年官方級距表(對應級距 $${grade}):\n勞保自付額約 $${labor}\n健保自付額(本人)約 $${health}\n\n填入上方欄位?(仍請核對後再儲存)`))return;
+    document.getElementById('efLaborInsFee').value=labor;
+    document.getElementById('efHealthInsFee').value=health;
+  }
+  if(hint)hint.textContent=`對應級距 $${grade}・試算:勞保$${labor}／健保$${health}(僅供參考,請核對)`;
+}
 function openEmp(id){
   editEmpId=id;const e=id?emp(id):null;
   document.getElementById('dlgEmpTitle').textContent=e?'編輯員工':'新增員工';
@@ -2681,6 +2717,10 @@ function openEmp(id){
   document.getElementById('efExtraSessionRate').value=e?(e.extraSessionRate||''):'';
   document.getElementById('efRestNote').value=e?(e.restNote||''):'';
   document.getElementById('efAnnualLeave').value=e?(e.annualLeaveQuota||''):'';
+  document.getElementById('efInsuredSalary').value=e?(e.insuredSalary||''):'';
+  document.getElementById('efLaborInsFee').value=e?(e.laborInsFee||''):'';
+  document.getElementById('efHealthInsFee').value=e?(e.healthInsFee||''):'';
+  document.getElementById('efDependents').value=e?(e.dependents||''):'';
   document.getElementById('efWeeklyOffExempt').checked=!!e?.weeklyOffExempt;
   document.getElementById('efManager').checked=!!e?.isManager;
   document.getElementById('efActive').checked=e?e.active:true;
@@ -2710,6 +2750,10 @@ function saveEmp(){
     canSchedulePractice:document.getElementById('efPracticeScheduler').checked,
     restNote:document.getElementById('efRestNote').value.trim(),
     weeklyOffExempt:document.getElementById('efWeeklyOffExempt').checked,
+    insuredSalary:Number(document.getElementById('efInsuredSalary').value)||0,
+    laborInsFee:Number(document.getElementById('efLaborInsFee').value)||0,
+    healthInsFee:Number(document.getElementById('efHealthInsFee').value)||0,
+    dependents:Math.max(0,Number(document.getElementById('efDependents').value)||0),
     annualLeaveQuota:Number(document.getElementById('efAnnualLeave').value)||0,
     isManager:document.getElementById('efManager').checked,
     simplybookColor
