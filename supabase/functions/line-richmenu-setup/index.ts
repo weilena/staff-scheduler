@@ -40,6 +40,11 @@ Deno.serve(async (request) => {
   if (!/^https:\/\/liff\.line\.me\//.test(liff)) {
     return json({ error: "LINE_LIFF_URL is missing or invalid" }, 500);
   }
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+  if (!/^https:\/\/.+\.supabase\.co$/.test(supabaseUrl)) {
+    return json({ error: "SUPABASE_URL is missing or invalid" }, 500);
+  }
+  const webhookEndpoint = `${supabaseUrl}/functions/v1/line-webhook`;
 
   try {
     const body = await request.json();
@@ -48,13 +53,20 @@ Deno.serve(async (request) => {
     }
     const imageMime = body.imageMime === "image/jpeg" ? "image/jpeg" : "image/png";
 
+    await lineFetch("/v2/bot/channel/webhook/endpoint", token, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: webhookEndpoint }),
+    });
+    const webhookTest = await (await lineFetch("/v2/bot/channel/webhook/test", token, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: webhookEndpoint }),
+    })).json();
+    const webhookInfo = await (await lineFetch("/v2/bot/channel/webhook/endpoint", token)).json();
+
     const menuName = "mythworker 員工選單";
     const oldMenus = await (await lineFetch("/v2/bot/richmenu/list", token)).json();
-    for (const menu of oldMenus.richmenus || []) {
-      if (menu.name === menuName) {
-        await lineFetch(`/v2/bot/richmenu/${menu.richMenuId}`, token, { method: "DELETE" });
-      }
-    }
 
     const createResponse = await lineFetch("/v2/bot/richmenu", token, {
       method: "POST",
@@ -81,7 +93,19 @@ Deno.serve(async (request) => {
     }, true);
     await lineFetch(`/v2/bot/user/all/richmenu/${richMenuId}`, token, { method: "POST" });
 
-    return json({ ok: true, richMenuId });
+    for (const menu of oldMenus.richmenus || []) {
+      if (menu.name === menuName && menu.richMenuId !== richMenuId) {
+        await lineFetch(`/v2/bot/richmenu/${menu.richMenuId}`, token, { method: "DELETE" });
+      }
+    }
+
+    return json({
+      ok: true,
+      richMenuId,
+      webhookEndpoint: webhookInfo.endpoint,
+      webhookActive: webhookInfo.active,
+      webhookTest,
+    });
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : String(error) }, 500);
   }
