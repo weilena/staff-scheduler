@@ -29,7 +29,7 @@ Edge Functions → Secrets 新增以下名稱；值只能存於 Supabase：
 | `LINE_CHANNEL_ACCESS_TOKEN` | Messaging API 的 Channel access token |
 | `LINE_LOGIN_CHANNEL_ID` | LINE Login channel ID |
 | `LINE_LIFF_ID` | LIFF ID |
-| `LINE_LIFF_URL` | 上方的 `staff.html` 網址 |
+| `LINE_LIFF_URL` | 完整 LIFF 網址（`https://liff.line.me/<LIFF ID>`） |
 | `DISPATCH_SECRET` | 自行產生至少32字元亂碼 |
 
 原有 SimplyBook Secrets 繼續保留：`SB_COMPANY`、`SB_USER_LOGIN`、`SB_USER_PASSWORD`、`SYNC_SECRET`。

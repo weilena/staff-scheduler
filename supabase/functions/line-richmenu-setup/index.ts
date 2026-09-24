@@ -36,6 +36,10 @@ Deno.serve(async (request) => {
 
   const token = Deno.env.get("LINE_CHANNEL_ACCESS_TOKEN") || "";
   if (!token) return json({ error: "LINE_CHANNEL_ACCESS_TOKEN is missing" }, 500);
+  const liff = Deno.env.get("LINE_LIFF_URL") || "";
+  if (!/^https:\/\/liff\.line\.me\//.test(liff)) {
+    return json({ error: "LINE_LIFF_URL is missing or invalid" }, 500);
+  }
 
   try {
     const body = await request.json();
@@ -52,7 +56,6 @@ Deno.serve(async (request) => {
       }
     }
 
-    const liff = "https://liff.line.me/2010690079-ysvO02nW";
     const createResponse = await lineFetch("/v2/bot/richmenu", token, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
