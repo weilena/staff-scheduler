@@ -52,6 +52,10 @@ Deno.serve(async (request) => {
       return json({ error: "imageBase64 is required" }, 400);
     }
     const imageMime = body.imageMime === "image/jpeg" ? "image/jpeg" : "image/png";
+    const binary = Uint8Array.from(atob(body.imageBase64), (char) => char.charCodeAt(0));
+    if (binary.byteLength > 1_000_000) {
+      return json({ error: "Rich menu image must be 1 MB or smaller" }, 400);
+    }
 
     await lineFetch("/v2/bot/channel/webhook/endpoint", token, {
       method: "PUT",
@@ -85,7 +89,6 @@ Deno.serve(async (request) => {
     });
     const { richMenuId } = await createResponse.json();
 
-    const binary = Uint8Array.from(atob(body.imageBase64), (char) => char.charCodeAt(0));
     await lineFetch(`/v2/bot/richmenu/${richMenuId}/content`, token, {
       method: "POST",
       headers: { "Content-Type": imageMime },
