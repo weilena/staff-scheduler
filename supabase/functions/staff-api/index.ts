@@ -11,14 +11,6 @@ const isDepositPaid = (payment: any) => {
   const status = String(payment?.depositStatus ?? "").trim().toLowerCase();
   return ["paid", "completed", "success", "succeeded", "confirmed", "1", "true"].includes(status);
 };
-const SB_LOGIN_URL = "https://user-api.simplybook.asia/login";
-const SB_ADMIN_URL = "https://user-api.simplybook.asia/admin/";
-async function simplyBookRpc(url: string, headers: Record<string, string>, method: string, params: unknown[]) {
-  const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify({ jsonrpc: "2.0", method, params, id: crypto.randomUUID() }) });
-  const payload = await response.json();
-  if (!response.ok || payload.error) throw new Error(`${method}: ${JSON.stringify(payload.error ?? payload)}`);
-  return payload.result;
-}
 const MANUAL_WORK_ITEMS: Record<string, string> = {
   grandma: "外婆", haunted_shop: "詭店", haunted_prison: "詭獄", shit_power: "屎力全開",
   haunted_toilet: "詭廁", escapee: "越獄者", orphan: "孤兒怨", mr_mystery_counter: "謎先生櫃台",
@@ -135,9 +127,6 @@ Deno.serve(async (req) => {
           }
         }
         const writebackTheme = (cfg.themes ?? []).find((theme: any) => theme.id === s.themeId);
-        const writebackRole = writebackTheme && (Number(writebackTheme.payNPC) || 0) > 0 ? "NPC" : "場控";
-        const writebackCandidates = account.role === "manager" && String(s.id).startsWith("sb_") && (s.assignments ?? []).some((a: any) => !a.empId && a.role === writebackRole)
-          ? (cfg.employees ?? []).filter((candidate: any) => candidate.active && eligibilityErrors(candidate, s, writebackRole, dayShifts, cfg, [s.id]).length === 0).map((candidate: any) => ({ id: candidate.id, name: candidate.name })) : [];
         // 管理員 LINE 排班用:每個尚未排人的角色，列出「有資格＋當天有空＋不衝堂」的候選人(依場數少到多排序，供一鍵排)
         const roleCandidates: Record<string, Array<{ id: string; name: string; warnings: string[] }>> = {};
         // 詭獄／詭獄加場除了 SimplyBook 帶的 NPC，還可排場控(即使 assignments 尚無此欄位)。
@@ -177,8 +166,6 @@ Deno.serve(async (req) => {
           customer: s.customer ? { name: s.customer.name ?? "", phone: s.customer.phone ?? "" } : null,
           payment: s.payment ? { depositAmount: s.payment.depositAmount ?? null, depositStatus: s.payment.depositStatus ?? "", system: s.payment.system ?? "", currency: s.payment.depositCurrency ?? s.payment.currency ?? "" } : null,
           replacementCandidates,
-          writebackRole: writebackCandidates.length ? writebackRole : null,
-          writebackCandidates,
           candidateGroups: emptyRoles.length ? {
             onSite: onSite.map((candidate: any) => candidate.name),
             available: ranked.filter((candidate: any) => !onSiteIds.has(candidate.id)).map((candidate: any) => candidate.name),
@@ -601,40 +588,6 @@ Deno.serve(async (req) => {
       }
       await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "review_shift_request", target_type: "shift_request", target_id: requestId, details: { decision, replacementEmpId: replacementEmpId || null } });
       return json({ ok: true });
-    }
-
-    if (action === "manager-assign-writeback") {
-      if (account.role !== "manager") return json({ error: "只有管理員可以回填 SimplyBook" }, 403);
-      const shiftId = String(input.shiftId ?? ""), empId = String(input.empId ?? "");
-      if (!shiftId.startsWith("sb_")) return json({ error: "只有已存在的 SimplyBook 預約可以回填人員" }, 400);
-      const shift = shifts.find((row: any) => String(row.id) === shiftId && !String(row.status ?? "").startsWith("cancelled"));
-      const selectedEmployee = (cfg.employees ?? []).find((row: any) => row.id === empId && row.active);
-      const theme = (cfg.themes ?? []).find((row: any) => row.id === shift?.themeId);
-      const role = theme && (Number(theme.payNPC) || 0) > 0 ? "NPC" : "場控";
-      const slot = (shift?.assignments ?? []).find((row: any) => !row.empId && row.role === role);
-      if (!shift || !selectedEmployee || !slot) return json({ error: `場次不存在、已排人，或缺少可回填的${role}欄位` }, 409);
-      const errors = eligibilityErrors(selectedEmployee, shift, role, shifts, cfg, [shift.id]);
-      if (errors.length) return json({ error: errors.join("、") }, 409);
-      const company = Deno.env.get("SB_COMPANY"), userLogin = Deno.env.get("SB_USER_LOGIN"), userKey = Deno.env.get("SB_USER_PASSWORD");
-      if (!company || !userLogin || !userKey) return json({ error: "SimplyBook Secrets 尚未設定完整" }, 500);
-      const token = await simplyBookRpc(SB_LOGIN_URL, {}, "getUserToken", [company, userLogin, userKey]);
-      const headers = { "X-Company-Login": company, "X-User-Token": String(token) };
-      const unitsRaw = await simplyBookRpc(SB_ADMIN_URL, headers, "getUnitList", []);
-      const units: any[] = Array.isArray(unitsRaw) ? unitsRaw : Object.values(unitsRaw ?? {});
-      const employeeNames = [selectedEmployee.name, ...(selectedEmployee.aliases ?? [])];
-      const unit = units.find((row: any) => employeeNames.includes(String(row.name ?? "").trim()));
-      if (!unit) return json({ error: `SimplyBook 找不到服務供應者「${selectedEmployee.name}」` }, 409);
-      const bookingCode = shiftId.slice(3);
-      const bookingsRaw = await simplyBookRpc(SB_ADMIN_URL, headers, "getBookings", [{ date_from: shift.date, date_to: shift.date, booking_type: "non_cancelled" }]);
-      const bookings: any[] = Array.isArray(bookingsRaw) ? bookingsRaw : Object.values(bookingsRaw ?? {});
-      const booking = bookings.find((row: any) => String(row.code ?? "") === bookingCode || String(row.id ?? "") === bookingCode);
-      if (!booking) return json({ error: `SimplyBook 查無預約 ${bookingCode}` }, 404);
-      await simplyBookRpc(SB_ADMIN_URL, headers, "editBook", [Number(booking.id), { unit_id: Number(unit.id) }]);
-      slot.empId = selectedEmployee.id; shift.manualEdit = true; shift.simplybookWritebackAt = new Date().toISOString();
-      const { error: saveError } = await sb.from("shifts").upsert({ id: shift.id, date: shift.date, source: "simplybook", data: shift });
-      if (saveError) throw saveError;
-      await sb.from("audit_log").insert({ actor_type: "line_manager", actor_id: employee.id, action: "simplybook_assign_writeback", target_type: "shift", target_id: shift.id, details: { empId: selectedEmployee.id, role, bookingId: booking.id, unitId: unit.id } });
-      return json({ ok: true, message: `${selectedEmployee.name} 已排入${role}，並回填 SimplyBook` });
     }
 
     if (action === "confirm-shift") {

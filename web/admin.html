@@ -297,7 +297,6 @@ dialog::backdrop{background:rgba(15,23,42,.45)}
   </div>
   <div class="dlg-f">
     <button class="btn red" id="sfDelete" onclick="deleteShift()">刪除</button>
-    <button class="btn gray" id="sfWriteback" onclick="writebackShift()" title="把此場次的負責人回寫到 SimplyBook(可能觸發客人通知信)" hidden>⇪ 回寫 SimplyBook</button>
     <span class="grow"></span>
     <button class="btn gray" onclick="dlgShift.close()">取消</button>
     <button class="btn" onclick="saveShift()">儲存</button>
@@ -1500,7 +1499,6 @@ function openShift(id,presetDate,preset){
   const sh=id?byId(S.shifts,id):null;
   document.getElementById('dlgShiftTitle').textContent=sh?'編輯班次':'新增班次';
   document.getElementById('sfDelete').style.display=sh?'':'none';
-  document.getElementById('sfWriteback').style.display='none'; // 回寫 SimplyBook 功能暫時關閉(要重開:改回 (sh&&String(sh.id).indexOf('sb_')===0&&!isDemo())?'':'none' 並移除按鈕的 hidden)
   fillStoreSelect(document.getElementById('sfStore'),sh?sh.storeId:(preset?preset.storeId:S.stores[0].id));
   document.getElementById('sfDate').value=sh?sh.date:(presetDate||todayStr());
   document.getElementById('sfKind').value=sh?sh.kind:(preset?.kind||'theme');
@@ -1954,30 +1952,6 @@ function deleteShift(){
   S.shifts=S.shifts.filter(x=>x.id!==editShiftId);
   dlgShift.close();render();
 }
-/* 回寫 SimplyBook:單筆手動,按了才改;可能觸發 SimplyBook 寄通知信給客人 */
-async function writebackShift(){
-  if(!editShiftId||String(editShiftId).indexOf('sb_')!==0)return;
-  // 回寫對象=該主題在 SimplyBook 的供應者角色(payNPC>0 → NPC,否則場控);詭獄只送 NPC 欄位的人
-  const t=theme(document.getElementById('sfTheme').value);
-  const primaryRole=t&&(Number(t.payNPC)||0)>0?'NPC':'場控';
-  const sel=dlgSlotsArr.find(s=>s.empId&&s.role===primaryRole);
-  if(!sel)return alert('SimplyBook 這個主題的服務供應者是「'+primaryRole+'」,請先在'+primaryRole+'欄位選人並「儲存」後再回寫');
-  const e=emp(sel.empId);
-  if(!confirm('把此場次的 '+primaryRole+'「'+(e?e.name:'?')+'」回寫到 SimplyBook 的服務供應者?\n\n注意:SimplyBook 可能會依其通知設定寄信給客人。'))return;
-  const btn=document.getElementById('sfWriteback');
-  btn.disabled=true;btn.textContent='回寫中…';
-  try{
-    const r=await sbc.functions.invoke('sb-writeback',{body:{shiftId:editShiftId}});
-    if(r.error)throw new Error(r.error.message||JSON.stringify(r.error));
-    if(r.data&&r.data.error)throw new Error(r.data.error+(r.data.hint?'\n'+r.data.hint:''));
-    alert('✅ 回寫完成:'+(r.data&&r.data.message?r.data.message:(e?e.name:'')+' 已更新到 SimplyBook'));
-  }catch(err){
-    alert('❌ 回寫失敗:'+err.message);
-  }finally{
-    btn.disabled=false;btn.textContent='⇪ 回寫 SimplyBook';
-  }
-}
-
 /* ============ 打卡 ============ */
 let punchEmp='',punchMonth=monthStr(),punchDay=todayStr();
 function lastPunch(empId){
